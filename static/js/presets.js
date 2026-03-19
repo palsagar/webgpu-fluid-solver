@@ -113,8 +113,8 @@ export function loadPreset(name, solver, interaction) {
         const cx = (i + 0.5) * h / domainWidth;
         const cy = (j + 0.5) * h / domainHeight;
         let s = 1.0;
-        // Top and bottom walls
-        if (j === 0 || j === numY - 1) s = 0.0;
+        // Left wall, top and bottom walls
+        if (i === 0 || j === 0 || j === numY - 1) s = 0.0;
         // Step block
         if (cx < sg.x1 && cy < sg.y1) s = 0.0;
         sData[i * n + j] = s;
@@ -133,9 +133,15 @@ export function loadPreset(name, solver, interaction) {
     }
   }
 
+  solver.resetFlipState();
   solver.writeSolidMask(sData);
   solver.writeVelocityU(uData);
+  solver.writeVelocityV(new Float32Array(numX * numY));
   solver.writeSmoke(mData);
+  // Also zero the New buffers to avoid stale ping-pong data
+  solver.device.queue.writeBuffer(solver.uNew, 0, new Float32Array(numX * numY));
+  solver.device.queue.writeBuffer(solver.vNew, 0, new Float32Array(numX * numY));
+  solver.device.queue.writeBuffer(solver.mNew, 0, mData);
 
   interaction.boundaryMask = sData.slice();
   interaction._uData.set(uData);
@@ -149,13 +155,33 @@ export function loadPreset(name, solver, interaction) {
     const oy = preset.obstacle.y * domainHeight;
     interaction.rasterizeObstacle(ox, oy, 0, 0);
   } else if (preset.obstacles) {
+    // Rasterize all obstacles into a single solid mask to avoid overwriting
+    const sMulti = interaction._sData;
+    sMulti.set(interaction.boundaryMask);
     for (const obs of preset.obstacles) {
-      interaction.activeShape = obs.shape;
-      interaction.obstacleRadius = obs.radius;
       const ox = obs.x * domainWidth;
       const oy = obs.y * domainHeight;
-      interaction.rasterizeObstacle(ox, oy, 0, 0);
+      const r = obs.radius;
+      for (let i = 0; i < numX; i++) {
+        for (let j = 0; j < numY; j++) {
+          const idx = i * n + j;
+          if (interaction.boundaryMask[idx] === 0) continue;
+          const cx = (i + 0.5) * h;
+          const cy = (j + 0.5) * h;
+          const dx = cx - ox, dy = cy - oy;
+          if (dx * dx + dy * dy < r * r) {
+            sMulti[idx] = 0.0;
+          }
+        }
+      }
     }
+    solver.writeSolidMask(sMulti);
+    // Store last obstacle position for dragging
+    const last = preset.obstacles[preset.obstacles.length - 1];
+    interaction.obstacleX = last.x * domainWidth;
+    interaction.obstacleY = last.y * domainHeight;
+    interaction.obstacleRadius = last.radius;
+    interaction.activeShape = last.shape;
   }
 
   // Build smoke inlet data for wind tunnel presets (first column, numY floats)

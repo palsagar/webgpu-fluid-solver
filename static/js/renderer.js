@@ -84,7 +84,7 @@ export class Renderer {
         this.fieldData = new Float32Array(raw.slice(0));
         this._stagingBuffer.unmap();
         this.readbackPending = false;
-      });
+      }).catch(() => { this.readbackPending = false; });
     }
 
     if (this.fieldData) {
@@ -217,6 +217,10 @@ export class Renderer {
       stagingU.destroy();
       stagingV.destroy();
       this._velReadbackPending = false;
+    }).catch(() => {
+      try { stagingU.destroy(); } catch (_) {}
+      try { stagingV.destroy(); } catch (_) {}
+      this._velReadbackPending = false;
     });
   }
 
@@ -225,10 +229,10 @@ export class Renderer {
     const h1 = 1.0 / h;
     x = Math.max(Math.min(x, numX * h), h);
     y = Math.max(Math.min(y, numY * h), h);
-    const x0 = Math.min(Math.floor((x - dx) * h1), numX - 1);
+    const x0 = Math.max(0, Math.min(Math.floor((x - dx) * h1), numX - 1));
     const tx = ((x - dx) - x0 * h) * h1;
     const x1 = Math.min(x0 + 1, numX - 1);
-    const y0 = Math.min(Math.floor((y - dy) * h1), numY - 1);
+    const y0 = Math.max(0, Math.min(Math.floor((y - dy) * h1), numY - 1));
     const ty = ((y - dy) - y0 * h) * h1;
     const y1 = Math.min(y0 + 1, numY - 1);
     const sx = 1.0 - tx, sy = 1.0 - ty;

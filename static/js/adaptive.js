@@ -47,11 +47,13 @@ export class AdaptiveController {
     downscale() {
         this.currentTierIndex--;
         this.applyTier();
+        this.renderer.showTierChange(this.tiers[this.currentTierIndex], -1);
     }
 
     upscale() {
         this.currentTierIndex++;
         this.lastUpscaleTime = Date.now();
         this.applyTier();
+        this.renderer.showTierChange(this.tiers[this.currentTierIndex], 1);
     }
 }

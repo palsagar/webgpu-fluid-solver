@@ -326,6 +326,13 @@ export class FluidSolver {
     this._writeParamsTo(this.uniformBufBlack, 1);
   }
 
+  resetFlipState() {
+    this._advectVelFlip = false;
+    this._advectSmokeFlip = false;
+    this._advectVelBindGroup = this.advectVelBindGroupA;
+    this._advectSmokeBindGroup = this.advectSmokeBindGroupA;
+  }
+
   writeSolidMask(data) { this.device.queue.writeBuffer(this.s, 0, data); }
   writeVelocityU(data) { this.device.queue.writeBuffer(this.u, 0, data); }
   writeVelocityV(data) { this.device.queue.writeBuffer(this.v, 0, data); }
