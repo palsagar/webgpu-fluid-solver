@@ -99,6 +99,10 @@ fn advect_velocity(@builtin(global_invocation_id) id: vec3u) {
 
     let idx = i * n + j;
 
+    // Copy current values (equivalent to CPU's newU.set(u), newV.set(v))
+    buf4[idx] = u[idx];
+    buf5[idx] = v[idx];
+
     // u component: face at (i*h, j*h + h/2)
     if (s[idx] != 0.0 && s[(i - 1u) * n + j] != 0.0 && j < n - 1u) {
         let x = f32(i) * h;
@@ -142,6 +146,9 @@ fn advect_smoke(@builtin(global_invocation_id) id: vec3u) {
     if (i < 1u || i >= nx - 1u || j < 1u || j >= n - 1u) { return; }
 
     let idx = i * n + j;
+
+    // Copy current value (equivalent to CPU's newM.set(m))
+    buf5[idx] = buf4[idx];
 
     if (s[idx] != 0.0) {
         let cu = (u[idx] + u[(i + 1u) * n + j]) * 0.5;
