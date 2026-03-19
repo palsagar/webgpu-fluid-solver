@@ -19,7 +19,7 @@ export const PRESETS = {
     lidVel: 1.0,
     obstacle: null,
     boundaryType: 'cavity',
-    show: { pressure: true, smoke: false, streamlines: true, velocities: false },
+    show: { pressure: true, smoke: false, streamlines: false, velocities: false },
   },
   backwardStep: {
     name: 'Backward Step',
@@ -27,7 +27,7 @@ export const PRESETS = {
     obstacle: null,
     boundaryType: 'backwardStep',
     stepGeometry: { x0: 0, x1: 0.3, y0: 0, y1: 0.5 },
-    show: { pressure: true, smoke: false, streamlines: true, velocities: false },
+    show: { pressure: false, smoke: true, streamlines: false, velocities: false },
   },
   channelFlow: {
     name: 'Channel Flow',
@@ -124,6 +124,10 @@ export function loadPreset(name, solver, interaction) {
         if (i === 1 && cy >= sg.y1) uData[i * n + j] = inVel;
       }
     }
+    // Smoke inlet at inflow cells
+    for (let j = 0; j < numY; j++) {
+      if (uData[1 * n + j] > 0) mData[j] = 0.0;
+    }
 
   } else if (bt === 'box') {
     for (let i = 0; i < numX; i++) {
@@ -196,10 +200,10 @@ export function loadPreset(name, solver, interaction) {
     interaction.activeShape = last.shape;
   }
 
-  // Build smoke inlet data for wind tunnel presets (first column, numY floats)
+  // Build smoke inlet data for any preset with inflow (first column, numY floats)
   let smokeInletData = null;
-  if (bt === 'windTunnel') {
-    smokeInletData = mData.slice(0, numY); // column 0: indices [0..numY-1]
+  if (preset.inVel > 0 && (bt === 'windTunnel' || bt === 'backwardStep')) {
+    smokeInletData = mData.slice(0, numY); // column 0 of the mData we just built
   }
 
   // Build boundary velocity data that must be re-applied each frame
