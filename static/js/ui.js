@@ -235,11 +235,21 @@ export class UI {
         const resVal = document.getElementById('val-resolution');
         if (resEl) {
             resEl.addEventListener('input', () => {
-                if (resVal) resVal.textContent = parseInt(resEl.value);
+                const tier = parseInt(resEl.value);
+                if (resVal) resVal.textContent = tier;
+                if (this.adaptive) {
+                    this.adaptive.manualOverride = true;
+                    const tierIndex = this.adaptive.tiers.indexOf(tier) !== -1
+                        ? this.adaptive.tiers.indexOf(tier)
+                        : this.adaptive.tiers.findIndex(t => t >= tier);
+                    this.adaptive.currentTierIndex = Math.max(0, tierIndex);
+                    this.adaptive.applyTier();
+                }
             });
         }
 
         document.getElementById('btn-defaults')?.addEventListener('click', () => {
+            if (this.adaptive) this.adaptive.manualOverride = false;
             this.reapplyCurrentPreset();
         });
     }

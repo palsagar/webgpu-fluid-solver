@@ -2,6 +2,7 @@ import { FluidSolver } from './fluid-solver.js';
 import { Renderer } from './renderer.js';
 import { Interaction } from './interaction.js';
 import { UI } from './ui.js';
+import { AdaptiveController } from './adaptive.js';
 
 async function init() {
     if (!navigator.gpu) {
@@ -33,12 +34,14 @@ async function init() {
     const interaction = new Interaction(renderer.canvas, solver);
 
     const ui = new UI(solver, renderer, interaction);
+    const adaptive = new AdaptiveController(solver, renderer, interaction, ui);
+    ui.adaptive = adaptive;
 
     function frame() {
-        if (!solver.paused) {
-            solver.step(ui.numIters);
-        }
+        const t0 = performance.now();
+        if (!solver.paused) solver.step(ui.numIters);
         renderer.draw();
+        adaptive.tick(performance.now() - t0);
         requestAnimationFrame(frame);
     }
     requestAnimationFrame(frame);
