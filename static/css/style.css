@@ -304,3 +304,22 @@ input[type="range"]::-moz-range-thumb {
   color: #6e7681;
   margin-top: 2px;
 }
+
+.tier-indicator {
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    font-size: 24px;
+    font-family: monospace;
+    color: #7ee787;
+    background: rgba(0,0,0,0.7);
+    padding: 8px 16px;
+    border-radius: 8px;
+    pointer-events: none;
+    animation: fadeOut 1.5s forwards;
+}
+@keyframes fadeOut {
+    from { opacity: 1; }
+    to { opacity: 0; }
+}

@@ -10,6 +10,8 @@ export class Renderer {
     this.showSmoke = true;
     this.showStreamlines = false;
     this.showVelocities = false;
+    this.showObstacle = true;
+    this.interaction = null;
 
     this.readbackPending = false;
     this.fieldData = null;
@@ -100,6 +102,95 @@ export class Renderer {
     if (this.showVelocities && this.uData) {
       this._drawVelocityArrows(this._ctx);
     }
+    if (this.showObstacle && this.interaction) {
+      this.drawObstacle(this._ctx, this.interaction);
+    }
+  }
+
+  setInteraction(interaction) {
+    this.interaction = interaction;
+  }
+
+  drawObstacle(ctx, interaction) {
+    const { numX, numY, h } = this;
+    const domainWidth = numX * h;
+    const domainHeight = numY * h;
+    const cw = this._canvas.width;
+    const ch = this._canvas.height;
+    const cX = x => x / domainWidth * cw;
+    const cY = y => (1 - y / domainHeight) * ch;
+
+    const cx = interaction.obstacleX;
+    const cy = interaction.obstacleY;
+    const r = interaction.obstacleRadius;
+    const shape = interaction.activeShape;
+
+    const fillColor = this.showPressure ? '#000000' : '#DDDDDD';
+    ctx.fillStyle = fillColor;
+    ctx.strokeStyle = '#000000';
+    ctx.lineWidth = 1;
+
+    if (shape === 'circle') {
+      ctx.beginPath();
+      ctx.arc(cX(cx), cY(cy), r / domainWidth * cw, 0, 2 * Math.PI);
+      ctx.fill();
+      ctx.stroke();
+    } else if (shape === 'square') {
+      const hw = r / domainWidth * cw;
+      const hh = r / domainHeight * ch;
+      ctx.fillRect(cX(cx) - hw, cY(cy) - hh, 2 * hw, 2 * hh);
+      ctx.strokeRect(cX(cx) - hw, cY(cy) - hh, 2 * hw, 2 * hh);
+    } else if (shape === 'airfoil') {
+      const chord = r * 4;
+      const n = 20;
+      const upperPts = [];
+      const lowerPts = [];
+      for (let k = 0; k <= n; k++) {
+        const xc = k / n;
+        const lx = xc * chord - chord * 0.5; // sim coords relative to center
+        const yt = 5 * 0.12 * chord * (
+          0.2969 * Math.sqrt(xc)
+          - 0.1260 * xc
+          - 0.3516 * xc * xc
+          + 0.2843 * xc * xc * xc
+          - 0.1015 * xc * xc * xc * xc
+        );
+        upperPts.push([cx + lx, cy + yt]);
+        lowerPts.push([cx + lx, cy - yt]);
+      }
+      ctx.beginPath();
+      ctx.moveTo(cX(upperPts[0][0]), cY(upperPts[0][1]));
+      for (let k = 1; k <= n; k++) {
+        ctx.lineTo(cX(upperPts[k][0]), cY(upperPts[k][1]));
+      }
+      for (let k = n; k >= 0; k--) {
+        ctx.lineTo(cX(lowerPts[k][0]), cY(lowerPts[k][1]));
+      }
+      ctx.closePath();
+      ctx.fill();
+      ctx.stroke();
+    } else if (shape === 'wedge') {
+      const wedgeLen = r * 3;
+      const tanHA = Math.tan(15 * Math.PI / 180);
+      const apexX = cx - wedgeLen * 0.5;
+      const baseX = cx + wedgeLen * 0.5;
+      const halfH = wedgeLen * tanHA;
+      ctx.beginPath();
+      ctx.moveTo(cX(apexX), cY(cy));
+      ctx.lineTo(cX(baseX), cY(cy + halfH));
+      ctx.lineTo(cX(baseX), cY(cy - halfH));
+      ctx.closePath();
+      ctx.fill();
+      ctx.stroke();
+    }
+  }
+
+  showTierChange(tier, direction) {
+    const div = document.createElement('div');
+    div.className = 'tier-indicator';
+    div.textContent = (direction > 0 ? '↑ ' : '↓ ') + tier + '×' + tier;
+    this._canvas.parentElement.appendChild(div);
+    setTimeout(() => div.remove(), 1500);
   }
 
   readbackVelocity() {

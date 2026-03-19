@@ -33,15 +33,33 @@ async function init() {
     const renderer = new Renderer(container, device, solver);
     const interaction = new Interaction(renderer.canvas, solver);
 
+    renderer.setInteraction(interaction);
+
     const ui = new UI(solver, renderer, interaction);
     const adaptive = new AdaptiveController(solver, renderer, interaction, ui);
     ui.adaptive = adaptive;
+
+    let frameTimeSmoothed = 0;
+    let hudCounter = 0;
+    const perfHud = document.getElementById('perf-hud');
 
     function frame() {
         const t0 = performance.now();
         if (!solver.paused) solver.step(ui.numIters);
         renderer.draw();
-        adaptive.tick(performance.now() - t0);
+        const frameTime = performance.now() - t0;
+        adaptive.tick(frameTime);
+
+        frameTimeSmoothed = frameTimeSmoothed * 0.9 + frameTime * 0.1;
+        hudCounter++;
+        if (hudCounter % 10 === 0) {
+            perfHud.textContent =
+                frameTimeSmoothed.toFixed(1) + ' ms/frame | ' +
+                Math.round(1000 / frameTimeSmoothed) + ' fps\n' +
+                'grid: ' + solver.numX + '×' + solver.numY +
+                ' | iters: ' + ui.numIters;
+        }
+
         requestAnimationFrame(frame);
     }
     requestAnimationFrame(frame);
