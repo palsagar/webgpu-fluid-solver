@@ -16,8 +16,6 @@ struct Params {
 
 @compute @workgroup_size(8, 8)
 fn main(@builtin(global_invocation_id) id: vec3u) {
-    // Reference all bindings so auto-layout includes them
-    _ = u[0];
     let i = id.x;
     let j = id.y;
     let n = params.numY;

@@ -92,12 +92,47 @@ export class FluidSolver {
     const boundaryMod  = device.createShaderModule({ code: boundaryWgsl });
     const advectMod    = device.createShaderModule({ code: advectWgsl });
 
-    solver.integratePipeline   = device.createComputePipeline({ layout: 'auto', compute: { module: integrateMod, entryPoint: 'main' } });
-    solver.pressurePipeline    = device.createComputePipeline({ layout: 'auto', compute: { module: pressureMod,  entryPoint: 'main' } });
-    solver.boundaryHPipeline   = device.createComputePipeline({ layout: 'auto', compute: { module: boundaryMod,  entryPoint: 'extrapolate_horizontal' } });
-    solver.boundaryVPipeline   = device.createComputePipeline({ layout: 'auto', compute: { module: boundaryMod,  entryPoint: 'extrapolate_vertical' } });
-    solver.advectVelPipeline   = device.createComputePipeline({ layout: 'auto', compute: { module: advectMod,    entryPoint: 'advect_velocity' } });
-    solver.advectSmokePipeline = device.createComputePipeline({ layout: 'auto', compute: { module: advectMod,    entryPoint: 'advect_smoke' } });
+    // Create explicit bind group layouts so all declared bindings are included
+    // (auto-layout only includes statically-used bindings, which breaks shared bind groups)
+    const UNIFORM  = 'uniform';
+    const STORAGE  = 'storage';
+    const RO_STORAGE = 'read-only-storage';
+
+    const bglEntry = (binding, type) => ({
+      binding,
+      visibility: GPUShaderStage.COMPUTE,
+      buffer: { type },
+    });
+
+    // Layout for integrate/boundary: uniform(0) + storage(1,2) + read-only-storage(3)
+    // Boundary shaders only use a subset but we include all so one bind group works
+    solver._integrateBGL = device.createBindGroupLayout({
+      entries: [bglEntry(0, UNIFORM), bglEntry(1, STORAGE), bglEntry(2, STORAGE), bglEntry(3, RO_STORAGE)],
+    });
+
+    // Layout for pressure: uniform(0) + storage(1,2) + read-only-storage(3) + storage(4)
+    solver._pressureBGL = device.createBindGroupLayout({
+      entries: [bglEntry(0, UNIFORM), bglEntry(1, STORAGE), bglEntry(2, STORAGE), bglEntry(3, RO_STORAGE), bglEntry(4, STORAGE)],
+    });
+
+    // Layout for boundary: uniform(0) + storage(1,2)
+    solver._boundaryBGL = device.createBindGroupLayout({
+      entries: [bglEntry(0, UNIFORM), bglEntry(1, STORAGE), bglEntry(2, STORAGE)],
+    });
+
+    // Layout for advect: uniform(0) + read-only(1,2,3) + read-write(4,5)
+    solver._advectBGL = device.createBindGroupLayout({
+      entries: [bglEntry(0, UNIFORM), bglEntry(1, RO_STORAGE), bglEntry(2, RO_STORAGE), bglEntry(3, RO_STORAGE), bglEntry(4, STORAGE), bglEntry(5, STORAGE)],
+    });
+
+    const makePipelineLayout = (bgl) => device.createPipelineLayout({ bindGroupLayouts: [bgl] });
+
+    solver.integratePipeline   = device.createComputePipeline({ layout: makePipelineLayout(solver._integrateBGL), compute: { module: integrateMod, entryPoint: 'main' } });
+    solver.pressurePipeline    = device.createComputePipeline({ layout: makePipelineLayout(solver._pressureBGL),  compute: { module: pressureMod,  entryPoint: 'main' } });
+    solver.boundaryHPipeline   = device.createComputePipeline({ layout: makePipelineLayout(solver._boundaryBGL),  compute: { module: boundaryMod,  entryPoint: 'extrapolate_horizontal' } });
+    solver.boundaryVPipeline   = device.createComputePipeline({ layout: makePipelineLayout(solver._boundaryBGL),  compute: { module: boundaryMod,  entryPoint: 'extrapolate_vertical' } });
+    solver.advectVelPipeline   = device.createComputePipeline({ layout: makePipelineLayout(solver._advectBGL),    compute: { module: advectMod,    entryPoint: 'advect_velocity' } });
+    solver.advectSmokePipeline = device.createComputePipeline({ layout: makePipelineLayout(solver._advectBGL),    compute: { module: advectMod,    entryPoint: 'advect_smoke' } });
 
     solver._createBindGroups();
 
@@ -111,105 +146,48 @@ export class FluidSolver {
 
   _createBindGroups() {
     const device = this.device;
-    const layout0 = (pipeline) => pipeline.getBindGroupLayout(0);
-
     const entry = (binding, buffer) => ({ binding, resource: { buffer } });
 
     // Integrate: [uniformBuf, u, v, s]
     this.integrateBindGroup = device.createBindGroup({
-      layout: layout0(this.integratePipeline),
-      entries: [
-        entry(0, this.uniformBuf),
-        entry(1, this.u),
-        entry(2, this.v),
-        entry(3, this.s),
-      ],
+      layout: this._integrateBGL,
+      entries: [entry(0, this.uniformBuf), entry(1, this.u), entry(2, this.v), entry(3, this.s)],
     });
 
-    // Pressure red: [uniformBufRed, u, v, s, p]
+    // Pressure red/black: [uniformBufRed/Black, u, v, s, p]
     this.pressureRedBindGroup = device.createBindGroup({
-      layout: layout0(this.pressurePipeline),
-      entries: [
-        entry(0, this.uniformBufRed),
-        entry(1, this.u),
-        entry(2, this.v),
-        entry(3, this.s),
-        entry(4, this.p),
-      ],
+      layout: this._pressureBGL,
+      entries: [entry(0, this.uniformBufRed), entry(1, this.u), entry(2, this.v), entry(3, this.s), entry(4, this.p)],
     });
-
-    // Pressure black: [uniformBufBlack, u, v, s, p]
     this.pressureBlackBindGroup = device.createBindGroup({
-      layout: layout0(this.pressurePipeline),
-      entries: [
-        entry(0, this.uniformBufBlack),
-        entry(1, this.u),
-        entry(2, this.v),
-        entry(3, this.s),
-        entry(4, this.p),
-      ],
+      layout: this._pressureBGL,
+      entries: [entry(0, this.uniformBufBlack), entry(1, this.u), entry(2, this.v), entry(3, this.s), entry(4, this.p)],
     });
 
     // Boundary: [uniformBuf, u, v]
     this.boundaryBindGroup = device.createBindGroup({
-      layout: layout0(this.boundaryHPipeline),
-      entries: [
-        entry(0, this.uniformBuf),
-        entry(1, this.u),
-        entry(2, this.v),
-      ],
+      layout: this._boundaryBGL,
+      entries: [entry(0, this.uniformBuf), entry(1, this.u), entry(2, this.v)],
     });
 
-    // Advect velocity A: [uniformBuf, u, v, s, uNew, vNew]
+    // Advect velocity A/B (ping-pong)
     this.advectVelBindGroupA = device.createBindGroup({
-      layout: layout0(this.advectVelPipeline),
-      entries: [
-        entry(0, this.uniformBuf),
-        entry(1, this.u),
-        entry(2, this.v),
-        entry(3, this.s),
-        entry(4, this.uNew),
-        entry(5, this.vNew),
-      ],
+      layout: this._advectBGL,
+      entries: [entry(0, this.uniformBuf), entry(1, this.u), entry(2, this.v), entry(3, this.s), entry(4, this.uNew), entry(5, this.vNew)],
     });
-
-    // Advect velocity B: [uniformBuf, uNew, vNew, s, u, v]
     this.advectVelBindGroupB = device.createBindGroup({
-      layout: layout0(this.advectVelPipeline),
-      entries: [
-        entry(0, this.uniformBuf),
-        entry(1, this.uNew),
-        entry(2, this.vNew),
-        entry(3, this.s),
-        entry(4, this.u),
-        entry(5, this.v),
-      ],
+      layout: this._advectBGL,
+      entries: [entry(0, this.uniformBuf), entry(1, this.uNew), entry(2, this.vNew), entry(3, this.s), entry(4, this.u), entry(5, this.v)],
     });
 
-    // Advect smoke A: [uniformBuf, u, v, s, m, mNew]
+    // Advect smoke A/B (ping-pong)
     this.advectSmokeBindGroupA = device.createBindGroup({
-      layout: layout0(this.advectSmokePipeline),
-      entries: [
-        entry(0, this.uniformBuf),
-        entry(1, this.u),
-        entry(2, this.v),
-        entry(3, this.s),
-        entry(4, this.m),
-        entry(5, this.mNew),
-      ],
+      layout: this._advectBGL,
+      entries: [entry(0, this.uniformBuf), entry(1, this.u), entry(2, this.v), entry(3, this.s), entry(4, this.m), entry(5, this.mNew)],
     });
-
-    // Advect smoke B: [uniformBuf, u, v, s, mNew, m]
     this.advectSmokeBindGroupB = device.createBindGroup({
-      layout: layout0(this.advectSmokePipeline),
-      entries: [
-        entry(0, this.uniformBuf),
-        entry(1, this.u),
-        entry(2, this.v),
-        entry(3, this.s),
-        entry(4, this.mNew),
-        entry(5, this.m),
-      ],
+      layout: this._advectBGL,
+      entries: [entry(0, this.uniformBuf), entry(1, this.u), entry(2, this.v), entry(3, this.s), entry(4, this.mNew), entry(5, this.m)],
     });
 
     // Start with A
