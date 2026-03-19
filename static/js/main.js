@@ -51,7 +51,6 @@ async function init() {
                 solver.device.queue.writeBuffer(solver.smokeBuffer, 0, ui.smokeInletData);
             }
             if (ui.boundaryVelData) {
-                // Only write specific boundary cells, not the entire buffer
                 const bv = ui.boundaryVelData;
                 const n = solver.numY;
                 if (bv.type === 'inflow') {
@@ -60,10 +59,21 @@ async function init() {
                         solver.u, 1 * n * 4,
                         bv.uData, 1 * n, n
                     );
+                } else if (bv.type === 'lid') {
+                    // Write lid velocity at j=numY-2 for each column
+                    // Build a single Float32Array with the lid row values
+                    if (!bv._lidBuf) {
+                        bv._lidBuf = new Float32Array(1);
+                        bv._lidBuf[0] = bv.lidVel;
+                    }
+                    for (let i = 1; i < bv.numX - 1; i++) {
+                        solver.device.queue.writeBuffer(
+                            solver.u,
+                            (i * n + (n - 2)) * 4,
+                            bv._lidBuf
+                        );
+                    }
                 }
-                // Lid type: no per-frame enforcement needed — the solver's
-                // extrapolate step propagates lid velocity from interior cells,
-                // and advection preserves it via semi-Lagrangian backtracing.
             }
             solver.step(ui.numIters);
         }

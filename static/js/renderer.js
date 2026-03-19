@@ -103,7 +103,7 @@ export class Renderer {
     if (this.showVelocities && this.uData) {
       this._drawVelocityArrows(this._ctx);
     }
-    if (this.showObstacle && this.interaction) {
+    if (this.interaction && this.interaction.showObstacle) {
       this.drawObstacle(this._ctx, this.interaction);
     }
   }

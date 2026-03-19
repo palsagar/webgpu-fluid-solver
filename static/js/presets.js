@@ -154,14 +154,17 @@ export function loadPreset(name, solver, interaction) {
   interaction._uData.set(uData);
   interaction.paintMode = preset.paintMode || false;
 
-  // Rasterize obstacle(s)
+  // Rasterize obstacle(s), or hide obstacle overlay if none
+  interaction.showObstacle = false;
   if (preset.obstacle) {
+    interaction.showObstacle = true;
     interaction.activeShape = preset.obstacle.shape;
     interaction.obstacleRadius = preset.obstacle.radius;
     const ox = preset.obstacle.x * domainWidth;
     const oy = preset.obstacle.y * domainHeight;
     interaction.rasterizeObstacle(ox, oy, 0, 0);
   } else if (preset.obstacles) {
+    interaction.showObstacle = true;
     // Rasterize all obstacles into a single solid mask to avoid overwriting
     const sMulti = interaction._sData;
     sMulti.set(interaction.boundaryMask);
@@ -198,13 +201,14 @@ export function loadPreset(name, solver, interaction) {
   }
 
   // Build boundary velocity data that must be re-applied each frame
-  // (inflow for wind tunnels, lid velocity for cavity)
   let boundaryVelData = null;
   if (bt === 'windTunnel' || bt === 'backwardStep') {
     // Re-apply inflow velocity at i=1 every frame
     boundaryVelData = { type: 'inflow', uData: uData.slice() };
   } else if (bt === 'cavity') {
-    boundaryVelData = { type: 'lid', uData: uData.slice() };
+    // Build a per-column array of lid velocity values to write at j=numY-2
+    const lidVel = preset.lidVel || 0;
+    boundaryVelData = { type: 'lid', lidVel, numX, numY: n };
   }
 
   return { show: preset.show, numIters: preset.numIters, paintMode: preset.paintMode || false, smokeInletData, boundaryVelData };
