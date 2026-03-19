@@ -12,6 +12,9 @@ export class Renderer {
     this.readbackPending = false;
     this.fieldData = null;
 
+    this.activeColormap = 'viridis';
+    this.colormaps = {};
+
     // Create 2D canvas
     this._canvas = document.createElement('canvas');
     this._canvas.style.width = '100%';
@@ -26,6 +29,25 @@ export class Renderer {
     this._imageData = this._ctx.createImageData(this.numX, this.numY);
 
     this._stagingBuffer = this._createStagingBuffer(this.numX, this.numY);
+
+    this._loadColormaps();
+  }
+
+  async _loadColormaps() {
+    const names = ['viridis', 'coolwarm', 'magma'];
+    const offscreen = document.createElement('canvas');
+    offscreen.width = 256;
+    offscreen.height = 1;
+    const ctx = offscreen.getContext('2d');
+
+    for (const name of names) {
+      const resp = await fetch(`/colormaps/${name}.png`);
+      const blob = await resp.blob();
+      const bitmap = await createImageBitmap(blob);
+      ctx.drawImage(bitmap, 0, 0);
+      const imageData = ctx.getImageData(0, 0, 256, 1);
+      this.colormaps[name] = new Uint8Array(imageData.data.buffer);
+    }
   }
 
   get canvas() {
@@ -64,27 +86,39 @@ export class Renderer {
 
   _renderField(data) {
     const { numX, numY } = this;
-    let min = data[0];
-    let max = data[0];
+    let minVal = data[0];
+    let maxVal = data[0];
     for (let i = 1; i < data.length; i++) {
-      if (data[i] < min) min = data[i];
-      if (data[i] > max) max = data[i];
+      if (data[i] < minVal) minVal = data[i];
+      if (data[i] > maxVal) maxVal = data[i];
     }
 
-    const range = max - min || 1;
+    const colormapName = this.showPressure ? 'viridis' : 'magma';
+    const colormapData = this.colormaps[colormapName];
+
     const pixels = this._imageData.data;
 
     // data is indexed [i * numY + j], display row j from bottom to top
     for (let j = 0; j < numY; j++) {
       for (let i = 0; i < numX; i++) {
-        const val = (data[i * numY + j] - min) / range;
-        const gray = Math.floor(val * 255);
-        // Canvas pixel row 0 = top, simulation j=0 = bottom — flip vertically
+        const value = data[i * numY + j];
         const pixelIdx = ((numY - 1 - j) * numX + i) * 4;
-        pixels[pixelIdx]     = gray;
-        pixels[pixelIdx + 1] = gray;
-        pixels[pixelIdx + 2] = gray;
-        pixels[pixelIdx + 3] = 255;
+
+        if (colormapData) {
+          const t = Math.max(0, Math.min(1, (value - minVal) / (maxVal - minVal + 1e-10)));
+          const lutIdx = Math.floor(t * 255) * 4;
+          pixels[pixelIdx]     = colormapData[lutIdx];
+          pixels[pixelIdx + 1] = colormapData[lutIdx + 1];
+          pixels[pixelIdx + 2] = colormapData[lutIdx + 2];
+          pixels[pixelIdx + 3] = 255;
+        } else {
+          // fallback grayscale before colormaps load
+          const gray = Math.floor(Math.max(0, Math.min(1, (value - minVal) / (maxVal - minVal + 1e-10))) * 255);
+          pixels[pixelIdx]     = gray;
+          pixels[pixelIdx + 1] = gray;
+          pixels[pixelIdx + 2] = gray;
+          pixels[pixelIdx + 3] = 255;
+        }
       }
     }
 
@@ -93,8 +127,10 @@ export class Renderer {
     // Update colorbar labels
     const maxEl = document.getElementById('colorbar-max');
     const minEl = document.getElementById('colorbar-min');
-    if (maxEl) maxEl.textContent = max.toFixed(3);
-    if (minEl) minEl.textContent = min.toFixed(3);
+    const unitEl = document.getElementById('colorbar-unit');
+    if (maxEl) maxEl.textContent = maxVal.toFixed(0);
+    if (minEl) minEl.textContent = minVal.toFixed(0);
+    if (unitEl) unitEl.textContent = this.showPressure ? 'N/m²' : '';
   }
 
   resize(numX, numY, h) {
