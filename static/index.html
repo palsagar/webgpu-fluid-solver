@@ -1,2 +1,176 @@
 <!DOCTYPE html>
-<html><body><h1>WebGPU Fluid Solver</h1></body></html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Euler Fluid Solver</title>
+  <link rel="stylesheet" href="css/style.css">
+  <script type="importmap">{ "imports": { "three": "https://esm.sh/three@0.171.0", "three/addons/": "https://esm.sh/three@0.171.0/examples/jsm/" } }</script>
+</head>
+<body>
+
+<div id="no-webgpu">
+  <div>
+    <p>Your browser does not support WebGPU.</p>
+    <p>Please use a recent version of Chrome or Edge.</p>
+  </div>
+</div>
+
+<div id="device-lost-banner">
+  GPU device lost.
+  <button onclick="location.reload()">Reload</button>
+</div>
+
+<div id="app">
+
+  <div id="title-bar">
+    <span id="app-name">Euler Fluid Solver</span>
+    <span class="badge">WebGPU</span>
+  </div>
+
+  <div id="preset-bar">
+    <span class="preset-label">Preset:</span>
+    <button class="preset-btn active" data-preset="wind-tunnel">Wind Tunnel</button>
+    <button class="preset-btn" data-preset="karman-vortex">Kármán Vortex</button>
+    <button class="preset-btn" data-preset="lid-cavity">Lid Cavity</button>
+    <button class="preset-btn" data-preset="backward-step">Backward Step</button>
+    <button class="preset-btn" data-preset="channel-flow">Channel Flow</button>
+    <button class="preset-btn" data-preset="sandbox">Sandbox</button>
+  </div>
+
+  <div id="canvas-container">
+
+    <div id="colorbar">
+      <span id="colorbar-max">0</span>
+      <div id="colorbar-gradient"></div>
+      <span id="colorbar-min">0</span>
+      <span id="colorbar-unit">N/m²</span>
+    </div>
+
+    <div id="perf-hud">-- ms/frame</div>
+
+    <div id="advanced-panel">
+      <div class="panel-header">
+        Advanced
+        <button id="btn-close-advanced">✕</button>
+      </div>
+
+      <div class="panel-section">
+        <div class="section-title">Numerical Parameters</div>
+
+        <div class="slider-row">
+          <div class="slider-header">
+            <span class="slider-name">dt</span>
+            <span class="slider-value" id="val-dt">0.0167</span>
+          </div>
+          <input type="range" id="slider-dt" min="0.004" max="0.033" step="0.001" value="0.0167">
+        </div>
+
+        <div class="slider-row">
+          <div class="slider-header">
+            <span class="slider-name">ω</span>
+            <span class="slider-value" id="val-omega">1.90</span>
+          </div>
+          <input type="range" id="slider-omega" min="1.0" max="1.98" step="0.01" value="1.9">
+        </div>
+
+        <div class="slider-row">
+          <div class="slider-header">
+            <span class="slider-name">Iterations</span>
+            <span class="slider-value" id="val-iters">40</span>
+          </div>
+          <input type="range" id="slider-iters" min="10" max="200" step="1" value="40">
+        </div>
+
+        <div class="slider-row">
+          <div class="slider-header">
+            <span class="slider-name">Inflow velocity</span>
+            <span class="slider-value" id="val-invel">2.00</span>
+          </div>
+          <input type="range" id="slider-invel" min="0.5" max="5.0" step="0.1" value="2.0">
+        </div>
+      </div>
+
+      <div class="panel-section">
+        <div class="section-title">Flow Physics</div>
+
+        <div class="slider-row">
+          <div class="slider-header">
+            <span class="slider-name">Gravity</span>
+            <span class="slider-value" id="val-gravity">0.00</span>
+          </div>
+          <input type="range" id="slider-gravity" min="-20" max="0" step="0.5" value="0">
+        </div>
+
+        <div class="slider-row">
+          <div class="slider-header">
+            <span class="slider-name">Re</span>
+            <span class="slider-value" id="val-re">--</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="panel-section">
+        <div class="section-title">Solver Internals</div>
+
+        <div class="slider-row">
+          <div class="slider-header">
+            <span class="slider-name">Grid resolution</span>
+            <span class="slider-value" id="val-resolution">256</span>
+          </div>
+          <input type="range" id="slider-resolution" min="64" max="1024" step="1" value="256">
+          <div class="slider-hint">Changes take effect on reset</div>
+        </div>
+
+        <button id="btn-defaults" class="btn">Reset to Defaults</button>
+      </div>
+    </div>
+
+  </div>
+
+  <div class="toolbar">
+    <div class="toolbar-group">
+      <span class="toolbar-label">Visualize:</span>
+      <label>
+        <input type="checkbox" data-viz="pressure"> Pressure
+      </label>
+      <label>
+        <input type="checkbox" data-viz="smoke" checked> Smoke
+      </label>
+      <label>
+        <input type="checkbox" data-viz="streamlines"> Streamlines
+      </label>
+      <label>
+        <input type="checkbox" data-viz="velocities"> Velocities
+      </label>
+    </div>
+
+    <div class="toolbar-group">
+      <span class="toolbar-label">Shape:</span>
+      <button class="shape-btn active" data-shape="circle">Circle</button>
+      <button class="shape-btn" data-shape="square">Square</button>
+      <button class="shape-btn" data-shape="airfoil">Airfoil</button>
+      <button class="shape-btn" data-shape="wedge">Wedge</button>
+    </div>
+
+    <div class="toolbar-group">
+      <button id="btn-play" class="btn btn-play">&#9654; Play</button>
+      <button id="btn-step" class="btn">Step</button>
+      <button id="btn-reset" class="btn">Reset</button>
+      <button id="btn-advanced" class="btn btn-advanced">Advanced</button>
+    </div>
+  </div>
+
+</div>
+
+<script>
+  if (!navigator.gpu) {
+    document.getElementById('no-webgpu').style.display = 'flex';
+    document.getElementById('app').style.display = 'none';
+  }
+</script>
+
+<script type="module" src="js/main.js"></script>
+
+</body>
+</html>
