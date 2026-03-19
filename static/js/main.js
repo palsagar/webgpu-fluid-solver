@@ -54,24 +54,24 @@ async function init() {
                 const bv = ui.boundaryVelData;
                 const n = solver.numY;
                 if (bv.type === 'inflow') {
-                    // Write only column i=1 (contiguous in memory)
+                    // Write column i=1 to both u and uNew (ping-pong)
                     solver.device.queue.writeBuffer(
-                        solver.u, 1 * n * 4,
-                        bv.uData, 1 * n, n
+                        solver.u, 1 * n * 4, bv.uData, 1 * n, n
+                    );
+                    solver.device.queue.writeBuffer(
+                        solver.uNew, 1 * n * 4, bv.uData, 1 * n, n
                     );
                 } else if (bv.type === 'lid') {
-                    // Write lid velocity at j=numY-2 for each column
-                    // Build a single Float32Array with the lid row values
+                    // Write lid velocity at j=numY-2 to BOTH u and uNew
+                    // (ping-pong means either could be the active input)
                     if (!bv._lidBuf) {
                         bv._lidBuf = new Float32Array(1);
                         bv._lidBuf[0] = bv.lidVel;
                     }
                     for (let i = 1; i < bv.numX - 1; i++) {
-                        solver.device.queue.writeBuffer(
-                            solver.u,
-                            (i * n + (n - 2)) * 4,
-                            bv._lidBuf
-                        );
+                        const offset = (i * n + (n - 2)) * 4;
+                        solver.device.queue.writeBuffer(solver.u, offset, bv._lidBuf);
+                        solver.device.queue.writeBuffer(solver.uNew, offset, bv._lidBuf);
                     }
                 }
             }
