@@ -51,7 +51,19 @@ async function init() {
                 solver.device.queue.writeBuffer(solver.smokeBuffer, 0, ui.smokeInletData);
             }
             if (ui.boundaryVelData) {
-                solver.writeVelocityU(ui.boundaryVelData.uData);
+                // Only write specific boundary cells, not the entire buffer
+                const bv = ui.boundaryVelData;
+                const n = solver.numY;
+                if (bv.type === 'inflow') {
+                    // Write only column i=1 (contiguous in memory)
+                    solver.device.queue.writeBuffer(
+                        solver.u, 1 * n * 4,
+                        bv.uData, 1 * n, n
+                    );
+                }
+                // Lid type: no per-frame enforcement needed — the solver's
+                // extrapolate step propagates lid velocity from interior cells,
+                // and advection preserves it via semi-Lagrangian backtracing.
             }
             solver.step(ui.numIters);
         }
