@@ -64,13 +64,14 @@ async function init() {
                         solver.uNew, 1 * n * 4, bv.uData, 1 * n, n
                     );
                 } else if (bv.type === 'lid') {
-                    // Write lid velocity at j=numY-2 to both u and uNew
+                    // Write lid velocity at wall cells to both u and uNew
                     if (!bv._lidBuf) {
                         bv._lidBuf = new Float32Array(1);
                         bv._lidBuf[0] = bv.lidVel;
                     }
+                    const lidJ = bv.lidJ;
                     for (let i = 1; i < bv.numX - 1; i++) {
-                        const offset = (i * n + (n - 2)) * 4;
+                        const offset = (i * n + lidJ) * 4;
                         solver.device.queue.writeBuffer(solver.u, offset, bv._lidBuf);
                         solver.device.queue.writeBuffer(solver.uNew, offset, bv._lidBuf);
                     }

@@ -100,8 +100,10 @@ export function loadPreset(name, solver, interaction) {
         let s = 1.0;
         if (i === 0 || i === numX - 1 || j === 0 || j === numY - 1) s = 0.0;
         sData[i * n + j] = s;
-        // Top wall (j === numY-2): set u = lidVel
-        if (j === numY - 2) uData[i * n + j] = lidVel;
+        // Set lid velocity at the top wall cells (j=numY-1) AND the row just below
+        // The wall cells (s=0) won't be modified by pressure/advection
+        // The extrapolate step copies interior→boundary, so we also set j=numY-1
+        if (j === numY - 1) uData[i * n + j] = lidVel;
       }
     }
 
@@ -208,7 +210,7 @@ export function loadPreset(name, solver, interaction) {
   } else if (bt === 'cavity') {
     // Build a per-column array of lid velocity values to write at j=numY-2
     const lidVel = preset.lidVel || 0;
-    boundaryVelData = { type: 'lid', lidVel, numX, numY: n };
+    boundaryVelData = { type: 'lid', lidVel, numX, numY: n, lidJ: n - 1 };
   }
 
   return { show: preset.show, numIters: preset.numIters, paintMode: preset.paintMode || false, smokeInletData, boundaryVelData };
