@@ -46,8 +46,12 @@ async function init() {
     function frame() {
         const t0 = performance.now();
         if (!solver.paused) {
+            // Re-apply boundary conditions each frame
             if (ui.smokeInletData) {
                 solver.device.queue.writeBuffer(solver.smokeBuffer, 0, ui.smokeInletData);
+            }
+            if (ui.boundaryVelData) {
+                solver.writeVelocityU(ui.boundaryVelData.uData);
             }
             solver.step(ui.numIters);
         }

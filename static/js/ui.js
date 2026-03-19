@@ -19,9 +19,11 @@ export class UI {
         // Initial preset
         this.currentPreset = 'windTunnel';
         this.smokeInletData = null;
+        this.boundaryVelData = null;
         const config = loadPreset(this.currentPreset, solver, interaction);
         this.numIters = config.numIters;
         this.smokeInletData = config.smokeInletData ?? null;
+        this.boundaryVelData = config.boundaryVelData ?? null;
         this._applyShow(config.show);
 
         this._bindPresetButtons();
@@ -39,6 +41,7 @@ export class UI {
         const config = loadPreset(this.currentPreset, this.solver, this.interaction);
         this.numIters = config.numIters;
         this.smokeInletData = config.smokeInletData ?? null;
+        this.boundaryVelData = config.boundaryVelData ?? null;
         this._applyShow(config.show);
         this._syncSliders();
     }
@@ -124,6 +127,7 @@ export class UI {
         const config = loadPreset(presetKey, this.solver, this.interaction);
         this.numIters = config.numIters;
         this.smokeInletData = config.smokeInletData ?? null;
+        this.boundaryVelData = config.boundaryVelData ?? null;
         this._applyShow(config.show);
         this._updateVizCheckboxes(config.show);
         this._syncSliders();
@@ -273,6 +277,10 @@ export class UI {
         }
         interaction._uData.set(full);
         solver.writeVelocityU(full);
+        // Update boundary vel data so it persists across frames
+        if (this.boundaryVelData) {
+            this.boundaryVelData.uData = full.slice();
+        }
     }
 
     _bindKeyboard() {

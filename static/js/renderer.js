@@ -71,7 +71,8 @@ export class Renderer {
 
   draw() {
     const { device, solver } = this;
-    const srcBuffer = this.showPressure ? solver.pressureBuffer : solver.smokeBuffer;
+    // Choose which field to visualize
+    const srcBuffer = this.showSmoke ? solver.smokeBuffer : solver.pressureBuffer;
 
     if (!this.readbackPending) {
       this.readbackPending = true;
@@ -340,7 +341,7 @@ export class Renderer {
       if (data[i] > maxVal) maxVal = data[i];
     }
 
-    const colormapName = this.showPressure ? 'viridis' : 'magma';
+    const colormapName = this.showSmoke ? 'magma' : 'viridis';
     const colormapData = this.colormaps[colormapName];
 
     const pixels = this._imageData.data;

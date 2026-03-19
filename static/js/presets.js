@@ -4,7 +4,7 @@ export const PRESETS = {
     numIters: 40, dt: 1/60, gravity: 0, omega: 1.9, inVel: 2.0,
     obstacle: { shape: 'circle', x: 0.4, y: 0.5, radius: 0.15 },
     boundaryType: 'windTunnel',
-    show: { pressure: true, smoke: true, streamlines: false, velocities: false },
+    show: { pressure: false, smoke: true, streamlines: false, velocities: false },
   },
   karmanVortex: {
     name: 'Kármán Vortex',
@@ -197,5 +197,15 @@ export function loadPreset(name, solver, interaction) {
     smokeInletData = mData.slice(0, numY); // column 0: indices [0..numY-1]
   }
 
-  return { show: preset.show, numIters: preset.numIters, paintMode: preset.paintMode || false, smokeInletData };
+  // Build boundary velocity data that must be re-applied each frame
+  // (inflow for wind tunnels, lid velocity for cavity)
+  let boundaryVelData = null;
+  if (bt === 'windTunnel' || bt === 'backwardStep') {
+    // Re-apply inflow velocity at i=1 every frame
+    boundaryVelData = { type: 'inflow', uData: uData.slice() };
+  } else if (bt === 'cavity') {
+    boundaryVelData = { type: 'lid', uData: uData.slice() };
+  }
+
+  return { show: preset.show, numIters: preset.numIters, paintMode: preset.paintMode || false, smokeInletData, boundaryVelData };
 }

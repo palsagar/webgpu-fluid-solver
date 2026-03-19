@@ -5,25 +5,27 @@ export class AdaptiveController {
         this.interaction = interaction;
         this.ui = ui;
 
-        this.tiers = [64, 128, 256, 512, 1024];
-        this.currentTierIndex = 2;
+        this.tiers = [64, 128, 256, 512];
+        this.currentTierIndex = 2; // start at 256
         this.frameTimes = [];
         this.warmupFrames = 0;
         this.lastUpscaleTime = 0;
         this.manualOverride = false;
+        this.enabled = false; // disabled by default — user can enable manually
     }
 
     tick(frameTimeMs) {
-        if (this.manualOverride) return;
+        if (!this.enabled || this.manualOverride) return;
         this.warmupFrames++;
-        if (this.warmupFrames <= 30) return;
+        if (this.warmupFrames <= 120) return; // wait 2 seconds before measuring
         this.frameTimes.push(frameTimeMs);
-        if (this.frameTimes.length > 60) this.frameTimes.shift();
+        if (this.frameTimes.length > 120) this.frameTimes.shift();
+        if (this.frameTimes.length < 60) return; // need enough samples
         const avg = this.frameTimes.reduce((a, b) => a + b, 0) / this.frameTimes.length;
-        if (avg > 18 && this.currentTierIndex > 0) {
+        if (avg > 20 && this.currentTierIndex > 0) {
             this.downscale();
-        } else if (avg < 10 && this.currentTierIndex < this.tiers.length - 1) {
-            if (Date.now() - this.lastUpscaleTime > 2000) {
+        } else if (avg < 8 && this.currentTierIndex < this.tiers.length - 1) {
+            if (Date.now() - this.lastUpscaleTime > 5000) {
                 this.upscale();
             }
         }
