@@ -278,11 +278,11 @@ export class Renderer {
     const cX = x => x / domainWidth * cw;
     const cY = y => (1 - y / domainHeight) * ch;
 
-    const segLen = h * 0.2;
-    const numSegs = 15;
+    const numSegs = 25;
+    const stepScale = 0.01; // velocity-proportional step (like original solver)
 
-    ctx.strokeStyle = '#000000';
-    ctx.lineWidth = 1;
+    ctx.strokeStyle = 'rgba(255, 255, 255, 0.7)';
+    ctx.lineWidth = 1.5;
 
     for (let i = 1; i < numX - 1; i += 5) {
       for (let j = 1; j < numY - 1; j += 5) {
@@ -295,10 +295,10 @@ export class Renderer {
         for (let s = 0; s < numSegs; s++) {
           const u = this._sampleVel(x, y, uData, 0, h / 2);
           const v = this._sampleVel(x, y, vData, h / 2, 0);
-          const l = Math.sqrt(u * u + v * v);
-          if (l === 0) break;
-          x += (u / l) * segLen;
-          y += (v / l) * segLen;
+          if (u === 0 && v === 0) break;
+          // Velocity-proportional step (matches original solver approach)
+          x += u * stepScale;
+          y += v * stepScale;
           if (x < 0 || x > domainWidth || y < 0 || y > domainHeight) break;
           ctx.lineTo(cX(x), cY(y));
         }
@@ -319,39 +319,57 @@ export class Renderer {
     const cX = x => x / domainWidth * cw;
     const cY = y => (1 - y / domainHeight) * ch;
 
-    ctx.strokeStyle = 'rgba(68,68,68,0.6)';
-    ctx.fillStyle = 'rgba(68,68,68,0.6)';
-    ctx.lineWidth = 1;
+    // Compute max velocity for scaling
+    let maxMag = 0;
+    for (let i = 0; i < numX; i += 8) {
+      for (let j = 0; j < numY; j += 8) {
+        const u = uData[i * n + j], v = vData[i * n + j];
+        const m = Math.sqrt(u * u + v * v);
+        if (m > maxMag) maxMag = m;
+      }
+    }
+    if (maxMag === 0) return;
 
-    for (let i = 0; i < numX; i += 5) {
-      for (let j = 0; j < numY; j += 5) {
+    // Arrow length in pixels, scaled by velocity magnitude
+    const maxArrowPx = 12;
+    const spacing = 8; // every 8th cell
+
+    for (let i = spacing; i < numX - 1; i += spacing) {
+      for (let j = spacing; j < numY - 1; j += spacing) {
         const u = uData[i * n + j];
         const v = vData[i * n + j];
         const mag = Math.sqrt(u * u + v * v);
-        if (mag === 0) continue;
+        if (mag < maxMag * 0.01) continue;
 
-        const len = Math.min(mag * 0.02, h * 2);
-        const cx = (i + 0.5) * h;
-        const cy = (j + 0.5) * h;
-        const ux = u / mag, uy = v / mag;
+        const frac = mag / maxMag;
+        const arrowPx = maxArrowPx * frac;
 
-        const x0 = cX(cx);
-        const y0 = cY(cy);
-        const x1 = cX(cx + ux * len);
-        const y1 = cY(cy + uy * len);
+        const px = cX((i + 0.5) * h);
+        const py = cY((j + 0.5) * h);
+        const angle = Math.atan2(-v, u); // negative v because canvas Y is flipped
+
+        const ex = px + arrowPx * Math.cos(angle);
+        const ey = py + arrowPx * Math.sin(angle);
+
+        // Color by magnitude: dark blue → cyan
+        const r = Math.floor(30 * (1 - frac));
+        const g = Math.floor(80 + 175 * frac);
+        const b = Math.floor(120 + 135 * frac);
+        ctx.strokeStyle = `rgb(${r},${g},${b})`;
+        ctx.fillStyle = ctx.strokeStyle;
+        ctx.lineWidth = 1.5;
 
         ctx.beginPath();
-        ctx.moveTo(x0, y0);
-        ctx.lineTo(x1, y1);
+        ctx.moveTo(px, py);
+        ctx.lineTo(ex, ey);
         ctx.stroke();
 
         // Arrowhead
-        const headLen = Math.max(2, len * cw / domainWidth * 0.3);
-        const angle = Math.atan2(y1 - y0, x1 - x0);
+        const headLen = Math.max(3, arrowPx * 0.4);
         ctx.beginPath();
-        ctx.moveTo(x1, y1);
-        ctx.lineTo(x1 - headLen * Math.cos(angle - Math.PI / 6), y1 - headLen * Math.sin(angle - Math.PI / 6));
-        ctx.lineTo(x1 - headLen * Math.cos(angle + Math.PI / 6), y1 - headLen * Math.sin(angle + Math.PI / 6));
+        ctx.moveTo(ex, ey);
+        ctx.lineTo(ex - headLen * Math.cos(angle - 0.5), ey - headLen * Math.sin(angle - 0.5));
+        ctx.lineTo(ex - headLen * Math.cos(angle + 0.5), ey - headLen * Math.sin(angle + 0.5));
         ctx.closePath();
         ctx.fill();
       }
@@ -360,11 +378,20 @@ export class Renderer {
 
   _renderField(data) {
     const { numX, numY } = this;
-    let minVal = data[0];
-    let maxVal = data[0];
-    for (let i = 1; i < data.length; i++) {
-      if (data[i] < minVal) minVal = data[i];
-      if (data[i] > maxVal) maxVal = data[i];
+    let minVal, maxVal;
+
+    if (this.showSmoke) {
+      // Smoke has a fixed [0, 1] range — 0 = dye, 1 = clear
+      minVal = 0;
+      maxVal = 1;
+    } else {
+      // Pressure: auto-range from data
+      minVal = data[0];
+      maxVal = data[0];
+      for (let i = 1; i < data.length; i++) {
+        if (data[i] < minVal) minVal = data[i];
+        if (data[i] > maxVal) maxVal = data[i];
+      }
     }
 
     const colormapName = this.showSmoke ? 'magma' : 'viridis';
@@ -413,9 +440,15 @@ export class Renderer {
     const maxEl = document.getElementById('colorbar-max');
     const minEl = document.getElementById('colorbar-min');
     const unitEl = document.getElementById('colorbar-unit');
-    if (maxEl) maxEl.textContent = maxVal.toFixed(0);
-    if (minEl) minEl.textContent = minVal.toFixed(0);
-    if (unitEl) unitEl.textContent = this.showPressure ? 'N/m²' : '';
+    if (this.showSmoke) {
+      if (maxEl) maxEl.textContent = 'clear';
+      if (minEl) minEl.textContent = 'dye';
+      if (unitEl) unitEl.textContent = '';
+    } else {
+      if (maxEl) maxEl.textContent = maxVal.toFixed(0);
+      if (minEl) minEl.textContent = minVal.toFixed(0);
+      if (unitEl) unitEl.textContent = 'N/m²';
+    }
   }
 
   resize(numX, numY, h) {

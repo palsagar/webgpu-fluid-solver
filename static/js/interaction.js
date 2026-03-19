@@ -116,8 +116,11 @@ export class Interaction {
         }
 
         this.solver.writeSolidMask(sData);
+        // Write velocity to BOTH ping-pong buffers so the active one always gets it
         this.solver.writeVelocityU(uData);
         this.solver.writeVelocityV(vData);
+        this.solver.device.queue.writeBuffer(this.solver.uNew, 0, uData);
+        this.solver.device.queue.writeBuffer(this.solver.vNew, 0, vData);
 
         // Notify renderer that solid mask changed
         if (this._renderer) this._renderer.invalidateSolid();
