@@ -1,7 +1,7 @@
 import { FluidSolver } from './fluid-solver.js';
 import { Renderer } from './renderer.js';
 import { Interaction } from './interaction.js';
-import { loadPreset } from './presets.js';
+import { UI } from './ui.js';
 
 async function init() {
     if (!navigator.gpu) {
@@ -32,15 +32,11 @@ async function init() {
     const renderer = new Renderer(container, device, solver);
     const interaction = new Interaction(renderer.canvas, solver);
 
-    let currentPreset = 'windTunnel';
-    const config = loadPreset(currentPreset, solver, interaction);
-    renderer.showPressure = config.show.pressure;
-    renderer.showSmoke = config.show.smoke;
-    let numIters = config.numIters;
+    const ui = new UI(solver, renderer, interaction);
 
     function frame() {
         if (!solver.paused) {
-            solver.step(numIters);
+            solver.step(ui.numIters);
         }
         renderer.draw();
         requestAnimationFrame(frame);
