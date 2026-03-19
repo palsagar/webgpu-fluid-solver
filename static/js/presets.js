@@ -139,6 +139,7 @@ export function loadPreset(name, solver, interaction) {
 
   interaction.boundaryMask = sData.slice();
   interaction._uData.set(uData);
+  interaction.paintMode = preset.paintMode || false;
 
   // Rasterize obstacle(s)
   if (preset.obstacle) {
@@ -157,5 +158,11 @@ export function loadPreset(name, solver, interaction) {
     }
   }
 
-  return { show: preset.show, numIters: preset.numIters, paintMode: preset.paintMode || false };
+  // Build smoke inlet data for wind tunnel presets (first column, numY floats)
+  let smokeInletData = null;
+  if (bt === 'windTunnel') {
+    smokeInletData = mData.slice(0, numY); // column 0: indices [0..numY-1]
+  }
+
+  return { show: preset.show, numIters: preset.numIters, paintMode: preset.paintMode || false, smokeInletData };
 }

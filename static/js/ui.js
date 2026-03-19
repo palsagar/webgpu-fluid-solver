@@ -18,8 +18,10 @@ export class UI {
 
         // Initial preset
         this.currentPreset = 'windTunnel';
+        this.smokeInletData = null;
         const config = loadPreset(this.currentPreset, solver, interaction);
         this.numIters = config.numIters;
+        this.smokeInletData = config.smokeInletData ?? null;
         this._applyShow(config.show);
 
         this._bindPresetButtons();
@@ -36,6 +38,7 @@ export class UI {
     reapplyCurrentPreset() {
         const config = loadPreset(this.currentPreset, this.solver, this.interaction);
         this.numIters = config.numIters;
+        this.smokeInletData = config.smokeInletData ?? null;
         this._applyShow(config.show);
         this._syncSliders();
     }
@@ -120,6 +123,7 @@ export class UI {
         this.currentPreset = presetKey;
         const config = loadPreset(presetKey, this.solver, this.interaction);
         this.numIters = config.numIters;
+        this.smokeInletData = config.smokeInletData ?? null;
         this._applyShow(config.show);
         this._updateVizCheckboxes(config.show);
         this._syncSliders();

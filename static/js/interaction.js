@@ -11,6 +11,8 @@ export class Interaction {
         this.prevX = 0;
         this.prevY = 0;
         this.boundaryMask = null;
+        this.paintMode = false;
+        this._paintFrame = 0;
 
         const size = solver.numX * solver.numY;
         this._sData = new Float32Array(size);
@@ -58,6 +60,7 @@ export class Interaction {
         const chord = r * 4;            // airfoil chord length
         const wedgeLen = r * 3;         // wedge length
         const tanHA = Math.tan(15 * Math.PI / 180); // wedge half-angle
+        const obstacleCells = [];
 
         for (let i = 0; i < numX; i++) {
             for (let j = 0; j < numY; j++) {
@@ -107,6 +110,7 @@ export class Interaction {
                     if (i + 1 < numX) {
                         uData[(i + 1) * n + j] = vx;
                     }
+                    if (this.paintMode) obstacleCells.push(idx);
                 }
             }
         }
@@ -114,6 +118,16 @@ export class Interaction {
         this.solver.writeSolidMask(sData);
         this.solver.writeVelocityU(uData);
         this.solver.writeVelocityV(vData);
+
+        if (this.paintMode && obstacleCells.length > 0) {
+            const val = 0.5 + 0.5 * Math.sin(0.1 * this._paintFrame);
+            const buf = new Float32Array(1);
+            buf[0] = val;
+            for (const idx of obstacleCells) {
+                this.solver.device.queue.writeBuffer(this.solver.smokeBuffer, idx * 4, buf);
+            }
+            this._paintFrame++;
+        }
     }
 
     _startDrag(clientX, clientY) {

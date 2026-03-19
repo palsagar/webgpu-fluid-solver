@@ -45,7 +45,12 @@ async function init() {
 
     function frame() {
         const t0 = performance.now();
-        if (!solver.paused) solver.step(ui.numIters);
+        if (!solver.paused) {
+            if (ui.smokeInletData) {
+                solver.device.queue.writeBuffer(solver.smokeBuffer, 0, ui.smokeInletData);
+            }
+            solver.step(ui.numIters);
+        }
         renderer.draw();
         const frameTime = performance.now() - t0;
         adaptive.tick(frameTime);
