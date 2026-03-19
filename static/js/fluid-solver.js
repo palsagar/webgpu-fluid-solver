@@ -332,7 +332,11 @@ export class FluidSolver {
   writeSmoke(data)     { this.device.queue.writeBuffer(this.m, 0, data); }
 
   get pressureBuffer()  { return this.p; }
-  get smokeBuffer()     { return this.m; }
-  get velocityBuffers() { return { u: this.u, v: this.v }; }
+  get smokeBuffer()     { return this._advectSmokeFlip ? this.mNew : this.m; }
+  get velocityBuffers() {
+    return this._advectVelFlip
+      ? { u: this.uNew, v: this.vNew }
+      : { u: this.u, v: this.v };
+  }
   get solidBuffer()     { return this.s; }
 }
