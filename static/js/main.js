@@ -46,15 +46,17 @@ async function init() {
     function frame() {
         const t0 = performance.now();
         if (!solver.paused) {
-            // Re-apply boundary conditions each frame
+            // Re-apply smoke inlet BEFORE step (so advection picks it up)
             if (ui.smokeInletData) {
                 solver.device.queue.writeBuffer(solver.smokeBuffer, 0, ui.smokeInletData);
             }
+            solver.step(ui.numIters);
+            // Re-apply boundary velocities AFTER step (so advection can't overwrite them)
             if (ui.boundaryVelData) {
                 const bv = ui.boundaryVelData;
                 const n = solver.numY;
                 if (bv.type === 'inflow') {
-                    // Write column i=1 to both u and uNew (ping-pong)
+                    // Write column i=1 to both u and uNew
                     solver.device.queue.writeBuffer(
                         solver.u, 1 * n * 4, bv.uData, 1 * n, n
                     );
@@ -62,8 +64,7 @@ async function init() {
                         solver.uNew, 1 * n * 4, bv.uData, 1 * n, n
                     );
                 } else if (bv.type === 'lid') {
-                    // Write lid velocity at j=numY-2 to BOTH u and uNew
-                    // (ping-pong means either could be the active input)
+                    // Write lid velocity at j=numY-2 to both u and uNew
                     if (!bv._lidBuf) {
                         bv._lidBuf = new Float32Array(1);
                         bv._lidBuf[0] = bv.lidVel;
@@ -75,7 +76,6 @@ async function init() {
                     }
                 }
             }
-            solver.step(ui.numIters);
         }
         renderer.draw();
         const frameTime = performance.now() - t0;
