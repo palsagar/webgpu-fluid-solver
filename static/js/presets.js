@@ -143,6 +143,13 @@ export function loadPreset(name, solver, interaction) {
   solver.device.queue.writeBuffer(solver.vNew, 0, new Float32Array(numX * numY));
   solver.device.queue.writeBuffer(solver.mNew, 0, mData);
 
+  // Resize interaction arrays if grid size changed
+  const iSize = numX * numY;
+  if (!interaction._sData || interaction._sData.length !== iSize) {
+    interaction._sData = new Float32Array(iSize);
+    interaction._uData = new Float32Array(iSize);
+    interaction._vData = new Float32Array(iSize);
+  }
   interaction.boundaryMask = sData.slice();
   interaction._uData.set(uData);
   interaction.paintMode = preset.paintMode || false;

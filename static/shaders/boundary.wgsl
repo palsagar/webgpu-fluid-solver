@@ -15,6 +15,7 @@ struct Params {
 
 @compute @workgroup_size(64)
 fn extrapolate_horizontal(@builtin(global_invocation_id) id: vec3u) {
+    _ = v[0]; // Reference all bindings for auto-layout
     let i = id.x;
     let n = params.numY;
     if (i >= params.numX) { return; }
@@ -24,6 +25,7 @@ fn extrapolate_horizontal(@builtin(global_invocation_id) id: vec3u) {
 
 @compute @workgroup_size(64)
 fn extrapolate_vertical(@builtin(global_invocation_id) id: vec3u) {
+    _ = u[0]; // Reference all bindings for auto-layout
     let j = id.x;
     let n = params.numY;
     if (j >= n) { return; }
