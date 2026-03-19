@@ -8,9 +8,15 @@ export class Renderer {
 
     this.showPressure = false;
     this.showSmoke = true;
+    this.showStreamlines = false;
+    this.showVelocities = false;
 
     this.readbackPending = false;
     this.fieldData = null;
+
+    this._velReadbackPending = false;
+    this.uData = null;
+    this.vData = null;
 
     this.activeColormap = 'viridis';
     this.colormaps = {};
@@ -82,6 +88,152 @@ export class Renderer {
     if (this.fieldData) {
       this._renderField(this.fieldData);
     }
+
+    this._frameCount = (this._frameCount || 0) + 1;
+    if (this._frameCount % 5 === 0 && (this.showStreamlines || this.showVelocities)) {
+      this.readbackVelocity();
+    }
+
+    if (this.showStreamlines && this.uData) {
+      this._drawStreamlines(this._ctx);
+    }
+    if (this.showVelocities && this.uData) {
+      this._drawVelocityArrows(this._ctx);
+    }
+  }
+
+  readbackVelocity() {
+    if (this._velReadbackPending) return;
+    this._velReadbackPending = true;
+
+    const { device, solver, numX, numY } = this;
+    const size = numX * numY * 4;
+    const { u: uBuf, v: vBuf } = solver.velocityBuffers;
+
+    const stagingU = device.createBuffer({ size, usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST });
+    const stagingV = device.createBuffer({ size, usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST });
+
+    const encoder = device.createCommandEncoder();
+    encoder.copyBufferToBuffer(uBuf, 0, stagingU, 0, size);
+    encoder.copyBufferToBuffer(vBuf, 0, stagingV, 0, size);
+    device.queue.submit([encoder.finish()]);
+
+    Promise.all([stagingU.mapAsync(GPUMapMode.READ), stagingV.mapAsync(GPUMapMode.READ)]).then(() => {
+      this.uData = new Float32Array(stagingU.getMappedRange().slice(0));
+      this.vData = new Float32Array(stagingV.getMappedRange().slice(0));
+      stagingU.unmap();
+      stagingV.unmap();
+      stagingU.destroy();
+      stagingV.destroy();
+      this._velReadbackPending = false;
+    });
+  }
+
+  _sampleVel(x, y, field, dx, dy) {
+    const { numX, numY, h } = this;
+    const h1 = 1.0 / h;
+    x = Math.max(Math.min(x, numX * h), h);
+    y = Math.max(Math.min(y, numY * h), h);
+    const x0 = Math.min(Math.floor((x - dx) * h1), numX - 1);
+    const tx = ((x - dx) - x0 * h) * h1;
+    const x1 = Math.min(x0 + 1, numX - 1);
+    const y0 = Math.min(Math.floor((y - dy) * h1), numY - 1);
+    const ty = ((y - dy) - y0 * h) * h1;
+    const y1 = Math.min(y0 + 1, numY - 1);
+    const sx = 1.0 - tx, sy = 1.0 - ty;
+    const n = numY;
+    return sx*sy*field[x0*n+y0] + tx*sy*field[x1*n+y0] + tx*ty*field[x1*n+y1] + sx*ty*field[x0*n+y1];
+  }
+
+  _drawStreamlines(ctx) {
+    if (!this.uData) return;
+
+    const { numX, numY, h, uData, vData } = this;
+    const domainWidth = numX * h;
+    const domainHeight = numY * h;
+    const cw = this._canvas.width;
+    const ch = this._canvas.height;
+    const cX = x => x / domainWidth * cw;
+    const cY = y => (1 - y / domainHeight) * ch;
+
+    const segLen = h * 0.2;
+    const numSegs = 15;
+
+    ctx.strokeStyle = '#000000';
+    ctx.lineWidth = 1;
+
+    for (let i = 1; i < numX - 1; i += 5) {
+      for (let j = 1; j < numY - 1; j += 5) {
+        let x = (i + 0.5) * h;
+        let y = (j + 0.5) * h;
+
+        ctx.beginPath();
+        ctx.moveTo(cX(x), cY(y));
+
+        for (let s = 0; s < numSegs; s++) {
+          const u = this._sampleVel(x, y, uData, 0, h / 2);
+          const v = this._sampleVel(x, y, vData, h / 2, 0);
+          const l = Math.sqrt(u * u + v * v);
+          if (l === 0) break;
+          x += (u / l) * segLen;
+          y += (v / l) * segLen;
+          if (x < 0 || x > domainWidth || y < 0 || y > domainHeight) break;
+          ctx.lineTo(cX(x), cY(y));
+        }
+        ctx.stroke();
+      }
+    }
+  }
+
+  _drawVelocityArrows(ctx) {
+    if (!this.uData) return;
+
+    const { numX, numY, h, uData, vData } = this;
+    const n = numY;
+    const domainWidth = numX * h;
+    const domainHeight = numY * h;
+    const cw = this._canvas.width;
+    const ch = this._canvas.height;
+    const cX = x => x / domainWidth * cw;
+    const cY = y => (1 - y / domainHeight) * ch;
+
+    ctx.strokeStyle = 'rgba(68,68,68,0.6)';
+    ctx.fillStyle = 'rgba(68,68,68,0.6)';
+    ctx.lineWidth = 1;
+
+    for (let i = 0; i < numX; i += 5) {
+      for (let j = 0; j < numY; j += 5) {
+        const u = uData[i * n + j];
+        const v = vData[i * n + j];
+        const mag = Math.sqrt(u * u + v * v);
+        if (mag === 0) continue;
+
+        const len = Math.min(mag * 0.02, h * 2);
+        const cx = (i + 0.5) * h;
+        const cy = (j + 0.5) * h;
+        const ux = u / mag, uy = v / mag;
+
+        const x0 = cX(cx);
+        const y0 = cY(cy);
+        const x1 = cX(cx + ux * len);
+        const y1 = cY(cy + uy * len);
+
+        ctx.beginPath();
+        ctx.moveTo(x0, y0);
+        ctx.lineTo(x1, y1);
+        ctx.stroke();
+
+        // Arrowhead
+        const headLen = Math.max(2, len * cw / domainWidth * 0.3);
+        const angle = Math.atan2(y1 - y0, x1 - x0);
+        ctx.beginPath();
+        ctx.moveTo(x1, y1);
+        ctx.lineTo(x1 - headLen * Math.cos(angle - Math.PI / 6), y1 - headLen * Math.sin(angle - Math.PI / 6));
+        ctx.lineTo(x1 - headLen * Math.cos(angle + Math.PI / 6), y1 - headLen * Math.sin(angle + Math.PI / 6));
+        ctx.closePath();
+        ctx.fill();
+      }
+    }
   }
 
   _renderField(data) {
@@ -143,5 +295,7 @@ export class Renderer {
     this._imageData = this._ctx.createImageData(numX, numY);
     this._stagingBuffer = this._createStagingBuffer(numX, numY);
     this.fieldData = null;
+    this.uData = null;
+    this.vData = null;
   }
 }
