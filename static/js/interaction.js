@@ -119,6 +119,9 @@ export class Interaction {
         this.solver.writeVelocityU(uData);
         this.solver.writeVelocityV(vData);
 
+        // Notify renderer that solid mask changed
+        if (this._renderer) this._renderer.invalidateSolid();
+
         if (this.paintMode && obstacleCells.length > 0) {
             const val = 0.5 + 0.5 * Math.sin(0.1 * this._paintFrame);
             const buf = new Float32Array(1);

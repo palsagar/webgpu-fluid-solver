@@ -15,6 +15,8 @@ export class Renderer {
 
     this.readbackPending = false;
     this.fieldData = null;
+    this.solidData = null;
+    this._solidReadbackDone = false;
 
     this._velReadbackPending = false;
     this.uData = null;
@@ -88,6 +90,11 @@ export class Renderer {
       }).catch(() => { this.readbackPending = false; });
     }
 
+    // Read solid mask once (refreshed on invalidateSolid())
+    if (!this._solidReadbackDone) {
+      this.readbackSolid();
+    }
+
     if (this.fieldData) {
       this._renderField(this.fieldData);
     }
@@ -110,6 +117,10 @@ export class Renderer {
 
   setInteraction(interaction) {
     this.interaction = interaction;
+  }
+
+  invalidateSolid() {
+    this._solidReadbackDone = false;
   }
 
   drawObstacle(ctx, interaction) {
@@ -192,6 +203,21 @@ export class Renderer {
     div.textContent = (direction > 0 ? '↑ ' : '↓ ') + tier + '×' + tier;
     this._canvas.parentElement.appendChild(div);
     setTimeout(() => div.remove(), 1500);
+  }
+
+  readbackSolid() {
+    const { device, solver, numX, numY } = this;
+    const size = numX * numY * 4;
+    const staging = device.createBuffer({ size, usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST });
+    const encoder = device.createCommandEncoder();
+    encoder.copyBufferToBuffer(solver.solidBuffer, 0, staging, 0, size);
+    device.queue.submit([encoder.finish()]);
+    staging.mapAsync(GPUMapMode.READ).then(() => {
+      this.solidData = new Float32Array(staging.getMappedRange().slice(0));
+      staging.unmap();
+      staging.destroy();
+      this._solidReadbackDone = true;
+    }).catch(() => { staging.destroy(); });
   }
 
   readbackVelocity() {
@@ -346,12 +372,24 @@ export class Renderer {
 
     const pixels = this._imageData.data;
 
+    const solid = this.solidData;
+
     // data is indexed [i * numY + j], display row j from bottom to top
     for (let j = 0; j < numY; j++) {
       for (let i = 0; i < numX; i++) {
-        const value = data[i * numY + j];
+        const idx = i * numY + j;
         const pixelIdx = ((numY - 1 - j) * numX + i) * 4;
 
+        // Solid cells rendered as dark gray
+        if (solid && solid[idx] === 0.0) {
+          pixels[pixelIdx]     = 40;
+          pixels[pixelIdx + 1] = 40;
+          pixels[pixelIdx + 2] = 48;
+          pixels[pixelIdx + 3] = 255;
+          continue;
+        }
+
+        const value = data[idx];
         if (colormapData) {
           const t = Math.max(0, Math.min(1, (value - minVal) / (maxVal - minVal + 1e-10)));
           const lutIdx = Math.floor(t * 255) * 4;
@@ -360,7 +398,6 @@ export class Renderer {
           pixels[pixelIdx + 2] = colormapData[lutIdx + 2];
           pixels[pixelIdx + 3] = 255;
         } else {
-          // fallback grayscale before colormaps load
           const gray = Math.floor(Math.max(0, Math.min(1, (value - minVal) / (maxVal - minVal + 1e-10))) * 255);
           pixels[pixelIdx]     = gray;
           pixels[pixelIdx + 1] = gray;
@@ -391,6 +428,8 @@ export class Renderer {
     this._imageData = this._ctx.createImageData(numX, numY);
     this._stagingBuffer = this._createStagingBuffer(numX, numY);
     this.fieldData = null;
+    this.solidData = null;
+    this._solidReadbackDone = false;
     this.uData = null;
     this.vData = null;
   }

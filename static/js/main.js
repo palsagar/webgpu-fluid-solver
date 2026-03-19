@@ -34,6 +34,7 @@ async function init() {
     const interaction = new Interaction(renderer.canvas, solver);
 
     renderer.setInteraction(interaction);
+    interaction._renderer = renderer;
 
     const ui = new UI(solver, renderer, interaction);
     const adaptive = new AdaptiveController(solver, renderer, interaction, ui);

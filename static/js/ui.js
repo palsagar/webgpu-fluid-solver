@@ -42,6 +42,7 @@ export class UI {
         this.numIters = config.numIters;
         this.smokeInletData = config.smokeInletData ?? null;
         this.boundaryVelData = config.boundaryVelData ?? null;
+        this.renderer.invalidateSolid();
         this._applyShow(config.show);
         this._syncSliders();
     }
@@ -128,6 +129,7 @@ export class UI {
         this.numIters = config.numIters;
         this.smokeInletData = config.smokeInletData ?? null;
         this.boundaryVelData = config.boundaryVelData ?? null;
+        this.renderer.invalidateSolid();
         this._applyShow(config.show);
         this._updateVizCheckboxes(config.show);
         this._syncSliders();
