@@ -1,0 +1,338 @@
+export class FluidSolver {
+  constructor(device, numX, numY, h) {
+    this.device = device;
+    this.numX = numX;
+    this.numY = numY;
+    this.h = h;
+    this.paused = false;
+
+    this.params = { numX, numY, h, dt: 1 / 60, gravity: 0, omega: 1.9, density: 1000, color: 0 };
+
+    this._createBuffers(numX, numY);
+  }
+
+  _createBuffers(numX, numY) {
+    const device = this.device;
+    const size = numX * numY;
+    const storageUsage = GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST;
+
+    this.u    = device.createBuffer({ size: size * 4, usage: storageUsage });
+    this.v    = device.createBuffer({ size: size * 4, usage: storageUsage });
+    this.p    = device.createBuffer({ size: size * 4, usage: storageUsage });
+    this.s    = device.createBuffer({ size: size * 4, usage: storageUsage });
+    this.m    = device.createBuffer({ size: size * 4, usage: storageUsage });
+    this.uNew = device.createBuffer({ size: size * 4, usage: storageUsage });
+    this.vNew = device.createBuffer({ size: size * 4, usage: storageUsage });
+    this.mNew = device.createBuffer({ size: size * 4, usage: storageUsage });
+
+    const uniformUsage = GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST;
+    this.uniformBuf      = device.createBuffer({ size: 32, usage: uniformUsage });
+    this.uniformBufRed   = device.createBuffer({ size: 32, usage: uniformUsage });
+    this.uniformBufBlack = device.createBuffer({ size: 32, usage: uniformUsage });
+  }
+
+  writeParams(colorOverride) {
+    const p = this.params;
+    const color = colorOverride !== undefined ? colorOverride : p.color;
+    const ab = new ArrayBuffer(32);
+    const dv = new DataView(ab);
+    dv.setUint32(0,  p.numX,   true);
+    dv.setUint32(4,  p.numY,   true);
+    dv.setFloat32(8,  p.h,     true);
+    dv.setFloat32(12, p.dt,    true);
+    dv.setFloat32(16, p.gravity, true);
+    dv.setFloat32(20, p.omega,  true);
+    dv.setFloat32(24, p.density, true);
+    dv.setUint32(28, color,    true);
+    this.device.queue.writeBuffer(this.uniformBuf, 0, ab);
+  }
+
+  _writeParamsTo(buf, colorOverride) {
+    const p = this.params;
+    const color = colorOverride !== undefined ? colorOverride : p.color;
+    const ab = new ArrayBuffer(32);
+    const dv = new DataView(ab);
+    dv.setUint32(0,  p.numX,   true);
+    dv.setUint32(4,  p.numY,   true);
+    dv.setFloat32(8,  p.h,     true);
+    dv.setFloat32(12, p.dt,    true);
+    dv.setFloat32(16, p.gravity, true);
+    dv.setFloat32(20, p.omega,  true);
+    dv.setFloat32(24, p.density, true);
+    dv.setUint32(28, color,    true);
+    this.device.queue.writeBuffer(buf, 0, ab);
+  }
+
+  destroy() {
+    this.u.destroy();
+    this.v.destroy();
+    this.p.destroy();
+    this.s.destroy();
+    this.m.destroy();
+    this.uNew.destroy();
+    this.vNew.destroy();
+    this.mNew.destroy();
+    this.uniformBuf.destroy();
+    this.uniformBufRed.destroy();
+    this.uniformBufBlack.destroy();
+  }
+
+  static async create(device, numX, numY, h) {
+    const solver = new FluidSolver(device, numX, numY, h);
+
+    const [integrateWgsl, pressureWgsl, boundaryWgsl, advectWgsl] = await Promise.all([
+      fetch('/shaders/integrate.wgsl').then(r => r.text()),
+      fetch('/shaders/pressure.wgsl').then(r => r.text()),
+      fetch('/shaders/boundary.wgsl').then(r => r.text()),
+      fetch('/shaders/advect.wgsl').then(r => r.text()),
+    ]);
+
+    const integrateMod = device.createShaderModule({ code: integrateWgsl });
+    const pressureMod  = device.createShaderModule({ code: pressureWgsl });
+    const boundaryMod  = device.createShaderModule({ code: boundaryWgsl });
+    const advectMod    = device.createShaderModule({ code: advectWgsl });
+
+    solver.integratePipeline   = device.createComputePipeline({ layout: 'auto', compute: { module: integrateMod, entryPoint: 'main' } });
+    solver.pressurePipeline    = device.createComputePipeline({ layout: 'auto', compute: { module: pressureMod,  entryPoint: 'main' } });
+    solver.boundaryHPipeline   = device.createComputePipeline({ layout: 'auto', compute: { module: boundaryMod,  entryPoint: 'extrapolate_horizontal' } });
+    solver.boundaryVPipeline   = device.createComputePipeline({ layout: 'auto', compute: { module: boundaryMod,  entryPoint: 'extrapolate_vertical' } });
+    solver.advectVelPipeline   = device.createComputePipeline({ layout: 'auto', compute: { module: advectMod,    entryPoint: 'advect_velocity' } });
+    solver.advectSmokePipeline = device.createComputePipeline({ layout: 'auto', compute: { module: advectMod,    entryPoint: 'advect_smoke' } });
+
+    solver._createBindGroups();
+
+    // Write initial uniform data
+    solver._writeParamsTo(solver.uniformBuf, 0);
+    solver._writeParamsTo(solver.uniformBufRed, 0);
+    solver._writeParamsTo(solver.uniformBufBlack, 1);
+
+    return solver;
+  }
+
+  _createBindGroups() {
+    const device = this.device;
+    const layout0 = (pipeline) => pipeline.getBindGroupLayout(0);
+
+    const entry = (binding, buffer) => ({ binding, resource: { buffer } });
+
+    // Integrate: [uniformBuf, u, v, s]
+    this.integrateBindGroup = device.createBindGroup({
+      layout: layout0(this.integratePipeline),
+      entries: [
+        entry(0, this.uniformBuf),
+        entry(1, this.u),
+        entry(2, this.v),
+        entry(3, this.s),
+      ],
+    });
+
+    // Pressure red: [uniformBufRed, u, v, s, p]
+    this.pressureRedBindGroup = device.createBindGroup({
+      layout: layout0(this.pressurePipeline),
+      entries: [
+        entry(0, this.uniformBufRed),
+        entry(1, this.u),
+        entry(2, this.v),
+        entry(3, this.s),
+        entry(4, this.p),
+      ],
+    });
+
+    // Pressure black: [uniformBufBlack, u, v, s, p]
+    this.pressureBlackBindGroup = device.createBindGroup({
+      layout: layout0(this.pressurePipeline),
+      entries: [
+        entry(0, this.uniformBufBlack),
+        entry(1, this.u),
+        entry(2, this.v),
+        entry(3, this.s),
+        entry(4, this.p),
+      ],
+    });
+
+    // Boundary: [uniformBuf, u, v]
+    this.boundaryBindGroup = device.createBindGroup({
+      layout: layout0(this.boundaryHPipeline),
+      entries: [
+        entry(0, this.uniformBuf),
+        entry(1, this.u),
+        entry(2, this.v),
+      ],
+    });
+
+    // Advect velocity A: [uniformBuf, u, v, s, uNew, vNew]
+    this.advectVelBindGroupA = device.createBindGroup({
+      layout: layout0(this.advectVelPipeline),
+      entries: [
+        entry(0, this.uniformBuf),
+        entry(1, this.u),
+        entry(2, this.v),
+        entry(3, this.s),
+        entry(4, this.uNew),
+        entry(5, this.vNew),
+      ],
+    });
+
+    // Advect velocity B: [uniformBuf, uNew, vNew, s, u, v]
+    this.advectVelBindGroupB = device.createBindGroup({
+      layout: layout0(this.advectVelPipeline),
+      entries: [
+        entry(0, this.uniformBuf),
+        entry(1, this.uNew),
+        entry(2, this.vNew),
+        entry(3, this.s),
+        entry(4, this.u),
+        entry(5, this.v),
+      ],
+    });
+
+    // Advect smoke A: [uniformBuf, u, v, s, m, mNew]
+    this.advectSmokeBindGroupA = device.createBindGroup({
+      layout: layout0(this.advectSmokePipeline),
+      entries: [
+        entry(0, this.uniformBuf),
+        entry(1, this.u),
+        entry(2, this.v),
+        entry(3, this.s),
+        entry(4, this.m),
+        entry(5, this.mNew),
+      ],
+    });
+
+    // Advect smoke B: [uniformBuf, u, v, s, mNew, m]
+    this.advectSmokeBindGroupB = device.createBindGroup({
+      layout: layout0(this.advectSmokePipeline),
+      entries: [
+        entry(0, this.uniformBuf),
+        entry(1, this.u),
+        entry(2, this.v),
+        entry(3, this.s),
+        entry(4, this.mNew),
+        entry(5, this.m),
+      ],
+    });
+
+    // Start with A
+    this._advectVelBindGroup   = this.advectVelBindGroupA;
+    this._advectSmokeBindGroup = this.advectSmokeBindGroupA;
+    this._advectVelFlip   = false;
+    this._advectSmokeFlip = false;
+  }
+
+  step(numIters) {
+    const { device, numX, numY } = this;
+
+    // Write params to all uniform buffers
+    this.writeParams();
+    this._writeParamsTo(this.uniformBufRed, 0);
+    this._writeParamsTo(this.uniformBufBlack, 1);
+
+    const encoder = device.createCommandEncoder();
+
+    const dx = Math.ceil(numX / 8);
+    const dy = Math.ceil(numY / 8);
+
+    // Integrate
+    {
+      const pass = encoder.beginComputePass();
+      pass.setPipeline(this.integratePipeline);
+      pass.setBindGroup(0, this.integrateBindGroup);
+      pass.dispatchWorkgroups(dx, dy, 1);
+      pass.end();
+    }
+
+    // Pressure solve (red-black Gauss-Seidel)
+    for (let i = 0; i < numIters; i++) {
+      {
+        const pass = encoder.beginComputePass();
+        pass.setPipeline(this.pressurePipeline);
+        pass.setBindGroup(0, this.pressureRedBindGroup);
+        pass.dispatchWorkgroups(dx, dy, 1);
+        pass.end();
+      }
+      {
+        const pass = encoder.beginComputePass();
+        pass.setPipeline(this.pressurePipeline);
+        pass.setBindGroup(0, this.pressureBlackBindGroup);
+        pass.dispatchWorkgroups(dx, dy, 1);
+        pass.end();
+      }
+    }
+
+    // Boundary
+    {
+      const pass = encoder.beginComputePass();
+      pass.setPipeline(this.boundaryHPipeline);
+      pass.setBindGroup(0, this.boundaryBindGroup);
+      pass.dispatchWorkgroups(Math.ceil(numX / 64), 1, 1);
+      pass.end();
+    }
+    {
+      const pass = encoder.beginComputePass();
+      pass.setPipeline(this.boundaryVPipeline);
+      pass.setBindGroup(0, this.boundaryBindGroup);
+      pass.dispatchWorkgroups(Math.ceil(numY / 64), 1, 1);
+      pass.end();
+    }
+
+    // Advect velocity
+    {
+      const pass = encoder.beginComputePass();
+      pass.setPipeline(this.advectVelPipeline);
+      pass.setBindGroup(0, this._advectVelBindGroup);
+      pass.dispatchWorkgroups(dx, dy, 1);
+      pass.end();
+    }
+
+    // Advect smoke
+    {
+      const pass = encoder.beginComputePass();
+      pass.setPipeline(this.advectSmokePipeline);
+      pass.setBindGroup(0, this._advectSmokeBindGroup);
+      pass.dispatchWorkgroups(dx, dy, 1);
+      pass.end();
+    }
+
+    device.queue.submit([encoder.finish()]);
+
+    // Swap ping-pong bind groups
+    this._advectVelFlip = !this._advectVelFlip;
+    this._advectVelBindGroup = this._advectVelFlip
+      ? this.advectVelBindGroupB
+      : this.advectVelBindGroupA;
+
+    this._advectSmokeFlip = !this._advectSmokeFlip;
+    this._advectSmokeBindGroup = this._advectSmokeFlip
+      ? this.advectSmokeBindGroupB
+      : this.advectSmokeBindGroupA;
+  }
+
+  resize(numX, numY, h) {
+    this.destroy();
+    this.numX = numX;
+    this.numY = numY;
+    this.h = h;
+    this.params.numX = numX;
+    this.params.numY = numY;
+    this.params.h = h;
+    this._createBuffers(numX, numY);
+    this._createBindGroups();
+  }
+
+  setParams(overrides) {
+    Object.assign(this.params, overrides);
+    this.writeParams();
+    this._writeParamsTo(this.uniformBufRed, 0);
+    this._writeParamsTo(this.uniformBufBlack, 1);
+  }
+
+  writeSolidMask(data) { this.device.queue.writeBuffer(this.s, 0, data); }
+  writeVelocityU(data) { this.device.queue.writeBuffer(this.u, 0, data); }
+  writeVelocityV(data) { this.device.queue.writeBuffer(this.v, 0, data); }
+  writeSmoke(data)     { this.device.queue.writeBuffer(this.m, 0, data); }
+
+  get pressureBuffer()  { return this.p; }
+  get smokeBuffer()     { return this.m; }
+  get velocityBuffers() { return { u: this.u, v: this.v }; }
+  get solidBuffer()     { return this.s; }
+}
