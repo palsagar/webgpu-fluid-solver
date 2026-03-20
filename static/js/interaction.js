@@ -20,10 +20,12 @@ export class Interaction {
         this._uData = new Float32Array(size);
         this._vData = new Float32Array(size);
 
-        canvas.addEventListener('mousedown', e => this._onPointerDown(e.clientX, e.clientY, e.shiftKey));
+        this.mode = 'obstacle'; // 'obstacle' or 'particles'
+
+        canvas.addEventListener('mousedown', e => this._onPointerDown(e.clientX, e.clientY));
         canvas.addEventListener('mousemove', e => this._drag(e.clientX, e.clientY));
         canvas.addEventListener('mouseup',   () => this._endDrag());
-        canvas.addEventListener('touchstart', e => { e.preventDefault(); const t = e.touches[0]; this._startDrag(t.clientX, t.clientY); }, { passive: false });
+        canvas.addEventListener('touchstart', e => { e.preventDefault(); const t = e.touches[0]; this._onPointerDown(t.clientX, t.clientY); }, { passive: false });
         canvas.addEventListener('touchmove',  e => { e.preventDefault(); const t = e.touches[0]; this._drag(t.clientX, t.clientY); }, { passive: false });
         canvas.addEventListener('touchend',   () => this._endDrag());
     }
@@ -183,9 +185,8 @@ export class Interaction {
         }
     }
 
-    _onPointerDown(clientX, clientY, shiftKey) {
-        if (shiftKey && this._particleSystem) {
-            // Shift+click: emit particles instead of dragging
+    _onPointerDown(clientX, clientY) {
+        if (this.mode === 'particles' && this._particleSystem) {
             const { x, y } = this.screenToSim(clientX, clientY);
             this._particleSystem.emit(x, y);
             const hint = document.getElementById('canvas-hint');

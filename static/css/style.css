@@ -196,7 +196,7 @@ body {
   accent-color: #1f6feb;
 }
 
-.shape-btn {
+.shape-btn, .mode-btn {
   padding: 4px 10px;
   background: #21262d;
   border: 1px solid #30363d;
@@ -206,7 +206,7 @@ body {
   cursor: pointer;
 }
 
-.shape-btn.active {
+.shape-btn.active, .mode-btn.active {
   background: #1f6feb;
   border-color: #1f6feb;
   color: white;

@@ -26,6 +26,7 @@ export class UI {
         this._bindPresetButtons();
         this._bindVizToggles();
         this._bindShapePicker();
+        this._bindModeSwitcher();
         this._bindPlayback();
         this._bindAdvancedPanel();
         this._bindKeyboard();
@@ -185,6 +186,23 @@ export class UI {
                 if (key === 'velocities')  this.renderer.showVelocities  = cb.checked;
                 if (key === 'particles')   this.renderer.showParticles   = cb.checked;
             });
+        });
+    }
+
+    _bindModeSwitcher() {
+        const btnObstacle = document.getElementById('btn-mode-obstacle');
+        const btnParticles = document.getElementById('btn-mode-particles');
+        if (!btnObstacle || !btnParticles) return;
+
+        btnObstacle.addEventListener('click', () => {
+            this.interaction.mode = 'obstacle';
+            btnObstacle.classList.add('active');
+            btnParticles.classList.remove('active');
+        });
+        btnParticles.addEventListener('click', () => {
+            this.interaction.mode = 'particles';
+            btnParticles.classList.add('active');
+            btnObstacle.classList.remove('active');
         });
     }
 
