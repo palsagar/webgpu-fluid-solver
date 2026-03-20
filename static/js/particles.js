@@ -68,11 +68,13 @@ export class ParticleSystem {
         const toX = x => x / domainW * cw;
         const toY = y => (1 - y / domainH) * ch;
 
-        ctx.lineWidth = 2;
+        ctx.lineWidth = 1.2;
         for (const p of this.particles) {
             if (p.trail.length < 2) continue;
-            const alpha = Math.max(0.1, 1 - p.age / this.maxAge) * 0.9;
-            ctx.strokeStyle = `rgba(0, 255, 100, ${alpha.toFixed(2)})`;
+            const life = 1 - p.age / this.maxAge;
+            const alpha = Math.max(0, life) * 0.7;
+            // Ice blue — contrasts with warm magma palette on both light and dark regions
+            ctx.strokeStyle = `rgba(100, 200, 255, ${alpha.toFixed(2)})`;
             ctx.beginPath();
             ctx.moveTo(toX(p.trail[0][0]), toY(p.trail[0][1]));
             for (let i = 1; i < p.trail.length; i++) {
@@ -81,13 +83,13 @@ export class ParticleSystem {
             ctx.stroke();
         }
 
-        // Draw emitter markers — bright pulsing dot
-        ctx.fillStyle = 'rgba(0, 255, 100, 0.8)';
-        ctx.strokeStyle = 'rgba(255, 255, 255, 0.9)';
-        ctx.lineWidth = 2;
+        // Draw emitter markers — small ring with soft glow
+        ctx.strokeStyle = 'rgba(100, 200, 255, 0.8)';
+        ctx.fillStyle = 'rgba(100, 200, 255, 0.2)';
+        ctx.lineWidth = 1.5;
         for (const em of this.emitters) {
             ctx.beginPath();
-            ctx.arc(toX(em.x), toY(em.y), 6, 0, 2 * Math.PI);
+            ctx.arc(toX(em.x), toY(em.y), 4, 0, 2 * Math.PI);
             ctx.fill();
             ctx.stroke();
         }
