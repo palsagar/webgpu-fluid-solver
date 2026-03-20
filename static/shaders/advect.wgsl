@@ -3,7 +3,6 @@ struct Params {
     numY: u32,
     h: f32,
     dt: f32,
-    gravity: f32,
     omega: f32,
     density: f32,
     color: u32,

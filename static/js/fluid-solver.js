@@ -6,7 +6,7 @@ export class FluidSolver {
     this.h = h;
     this.paused = false;
 
-    this.params = { numX, numY, h, dt: 1 / 60, gravity: 0, omega: 1.9, density: 1000, color: 0 };
+    this.params = { numX, numY, h, dt: 1 / 60, omega: 1.9, density: 1000, color: 0 };
 
     this._createBuffers(numX, numY);
   }
@@ -40,10 +40,9 @@ export class FluidSolver {
     dv.setUint32(4,  p.numY,   true);
     dv.setFloat32(8,  p.h,     true);
     dv.setFloat32(12, p.dt,    true);
-    dv.setFloat32(16, p.gravity, true);
-    dv.setFloat32(20, p.omega,  true);
-    dv.setFloat32(24, p.density, true);
-    dv.setUint32(28, color,    true);
+    dv.setFloat32(16, p.omega,  true);
+    dv.setFloat32(20, p.density, true);
+    dv.setUint32(24, color,    true);
     this.device.queue.writeBuffer(this.uniformBuf, 0, ab);
   }
 
@@ -56,10 +55,9 @@ export class FluidSolver {
     dv.setUint32(4,  p.numY,   true);
     dv.setFloat32(8,  p.h,     true);
     dv.setFloat32(12, p.dt,    true);
-    dv.setFloat32(16, p.gravity, true);
-    dv.setFloat32(20, p.omega,  true);
-    dv.setFloat32(24, p.density, true);
-    dv.setUint32(28, color,    true);
+    dv.setFloat32(16, p.omega,  true);
+    dv.setFloat32(20, p.density, true);
+    dv.setUint32(24, color,    true);
     this.device.queue.writeBuffer(buf, 0, ab);
   }
 
@@ -80,14 +78,12 @@ export class FluidSolver {
   static async create(device, numX, numY, h) {
     const solver = new FluidSolver(device, numX, numY, h);
 
-    const [integrateWgsl, pressureWgsl, boundaryWgsl, advectWgsl] = await Promise.all([
-      fetch('/shaders/integrate.wgsl').then(r => r.text()),
+    const [pressureWgsl, boundaryWgsl, advectWgsl] = await Promise.all([
       fetch('/shaders/pressure.wgsl').then(r => r.text()),
       fetch('/shaders/boundary.wgsl').then(r => r.text()),
       fetch('/shaders/advect.wgsl').then(r => r.text()),
     ]);
 
-    const integrateMod = device.createShaderModule({ code: integrateWgsl });
     const pressureMod  = device.createShaderModule({ code: pressureWgsl });
     const boundaryMod  = device.createShaderModule({ code: boundaryWgsl });
     const advectMod    = device.createShaderModule({ code: advectWgsl });
@@ -102,12 +98,6 @@ export class FluidSolver {
       binding,
       visibility: GPUShaderStage.COMPUTE,
       buffer: { type },
-    });
-
-    // Layout for integrate/boundary: uniform(0) + storage(1,2) + read-only-storage(3)
-    // Boundary shaders only use a subset but we include all so one bind group works
-    solver._integrateBGL = device.createBindGroupLayout({
-      entries: [bglEntry(0, UNIFORM), bglEntry(1, STORAGE), bglEntry(2, STORAGE), bglEntry(3, RO_STORAGE)],
     });
 
     // Layout for pressure: uniform(0) + storage(1,2) + read-only-storage(3) + storage(4)
@@ -127,7 +117,6 @@ export class FluidSolver {
 
     const makePipelineLayout = (bgl) => device.createPipelineLayout({ bindGroupLayouts: [bgl] });
 
-    solver.integratePipeline   = device.createComputePipeline({ layout: makePipelineLayout(solver._integrateBGL), compute: { module: integrateMod, entryPoint: 'main' } });
     solver.pressurePipeline    = device.createComputePipeline({ layout: makePipelineLayout(solver._pressureBGL),  compute: { module: pressureMod,  entryPoint: 'main' } });
     solver.boundaryHPipeline   = device.createComputePipeline({ layout: makePipelineLayout(solver._boundaryBGL),  compute: { module: boundaryMod,  entryPoint: 'extrapolate_horizontal' } });
     solver.boundaryVPipeline   = device.createComputePipeline({ layout: makePipelineLayout(solver._boundaryBGL),  compute: { module: boundaryMod,  entryPoint: 'extrapolate_vertical' } });
@@ -147,12 +136,6 @@ export class FluidSolver {
   _createBindGroups() {
     const device = this.device;
     const entry = (binding, buffer) => ({ binding, resource: { buffer } });
-
-    // Integrate: [uniformBuf, u, v, s]
-    this.integrateBindGroup = device.createBindGroup({
-      layout: this._integrateBGL,
-      entries: [entry(0, this.uniformBuf), entry(1, this.u), entry(2, this.v), entry(3, this.s)],
-    });
 
     // Pressure red/black: [uniformBufRed/Black, u, v, s, p]
     this.pressureRedBindGroup = device.createBindGroup({
@@ -209,15 +192,6 @@ export class FluidSolver {
 
     const dx = Math.ceil(numX / 8);
     const dy = Math.ceil(numY / 8);
-
-    // Integrate
-    {
-      const pass = encoder.beginComputePass();
-      pass.setPipeline(this.integratePipeline);
-      pass.setBindGroup(0, this.integrateBindGroup);
-      pass.dispatchWorkgroups(dx, dy, 1);
-      pass.end();
-    }
 
     // Pressure solve (red-black Gauss-Seidel)
     for (let i = 0; i < numIters; i++) {
