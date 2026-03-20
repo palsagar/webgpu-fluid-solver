@@ -400,16 +400,23 @@ export class Renderer {
       minVal = 0;
       maxVal = 1;
     } else {
-      // Pressure: auto-range from data
+      // Pressure: center range around the mean for diverging colormap
       minVal = data[0];
       maxVal = data[0];
+      let sum = 0;
       for (let i = 1; i < data.length; i++) {
         if (data[i] < minVal) minVal = data[i];
         if (data[i] > maxVal) maxVal = data[i];
+        sum += data[i];
       }
+      sum += data[0];
+      const mean = sum / data.length;
+      const range = Math.max(Math.abs(maxVal - mean), Math.abs(minVal - mean));
+      minVal = mean - range;
+      maxVal = mean + range;
     }
 
-    const colormapName = this.showSmoke ? 'magma' : 'viridis';
+    const colormapName = this.showSmoke ? 'magma' : 'coolwarm';
     const colormapData = this.colormaps[colormapName];
 
     const pixels = this._imageData.data;
@@ -424,9 +431,9 @@ export class Renderer {
 
         // Solid cells rendered as dark gray
         if (solid && solid[idx] === 0.0) {
-          pixels[pixelIdx]     = 40;
-          pixels[pixelIdx + 1] = 40;
-          pixels[pixelIdx + 2] = 48;
+          pixels[pixelIdx]     = 50;
+          pixels[pixelIdx + 1] = 50;
+          pixels[pixelIdx + 2] = 60;
           pixels[pixelIdx + 3] = 255;
           continue;
         }
@@ -451,18 +458,22 @@ export class Renderer {
 
     this._ctx.putImageData(this._imageData, 0, 0);
 
-    // Update colorbar labels
+    // Update colorbar labels and gradient
     const maxEl = document.getElementById('colorbar-max');
     const minEl = document.getElementById('colorbar-min');
     const unitEl = document.getElementById('colorbar-unit');
+    const gradient = document.getElementById('colorbar-gradient');
     if (this.showSmoke) {
       if (maxEl) maxEl.textContent = 'clear';
       if (minEl) minEl.textContent = 'dye';
       if (unitEl) unitEl.textContent = '';
+      if (gradient) gradient.style.background = 'linear-gradient(to bottom, #fcfdbf, #fc8961, #b73779, #51127c, #000004)';
     } else {
-      if (maxEl) maxEl.textContent = maxVal.toFixed(0);
-      if (minEl) minEl.textContent = minVal.toFixed(0);
+      const fmt = v => (Math.abs(v) > 1000 || Math.abs(v) < -1000) ? v.toExponential(1) : v.toFixed(0);
+      if (maxEl) maxEl.textContent = fmt(maxVal);
+      if (minEl) minEl.textContent = fmt(minVal);
       if (unitEl) unitEl.textContent = 'N/m²';
+      if (gradient) gradient.style.background = 'linear-gradient(to bottom, #b40426, #f7f7f7, #3b4cc0)';
     }
   }
 
