@@ -14,7 +14,7 @@ export class UI {
         this.interaction = interaction;
 
         // Initial preset
-        this.currentPreset = 'windTunnel';
+        this.currentPreset = 'karmanVortex';
         this.smokeInletData = null;
         this.boundaryVelData = null;
         const config = loadPreset(this.currentPreset, solver, interaction);
