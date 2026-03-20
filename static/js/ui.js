@@ -119,21 +119,15 @@ export class UI {
     _updateFlowInfo() {
         const el = document.getElementById('flow-info');
         if (!el) return;
-        const descriptions = {
-            windTunnel:    'Wind tunnel',
-            karmanVortex:  'Kármán vortex street',
-            backwardStep:  'Backward-facing step',
-        };
-        const regimes = {
-            windTunnel:    'Attached/separated flow',
-            karmanVortex:  'Vortex shedding',
-            backwardStep:  'Recirculation zone',
+        const info = {
+            windTunnel:    'Uniform flow past a bluff body — wake separation and drag',
+            karmanVortex:  'Periodic vortex shedding behind a small cylinder',
+            backwardStep:  'Sudden expansion — recirculation and flow reattachment',
         };
         const reEl = document.getElementById('val-re');
         const re = reEl ? reEl.textContent : '--';
-        const desc = descriptions[this.currentPreset] || this.currentPreset;
-        const regime = regimes[this.currentPreset] || '';
-        el.textContent = `${desc} · Re ≈ ${re}${regime ? ' · ' + regime : ''}`;
+        const desc = info[this.currentPreset] || '';
+        el.textContent = desc + (re !== '--' ? `  · Re ≈ ${re}` : '');
     }
 
     _bindPresetButtons() {
