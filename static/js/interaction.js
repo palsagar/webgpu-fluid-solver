@@ -64,12 +64,13 @@ export class Interaction {
         const newJMax = Math.min(numY - 2, Math.ceil((centerY + maxExtent) / h + 1));
 
         // Step 1: Restore the previous obstacle bounding box to boundary mask values
-        // and clear any stale velocity imprint left by the old obstacle position.
+        // and clear stale velocity/pressure imprint left by the old obstacle position.
         if (this._prevBBox) {
             const { iMin, iMax, jMin, jMax } = this._prevBBox;
             for (let i = iMin; i <= iMax; i++) {
                 for (let j = jMin; j <= jMax; j++) {
                     const idx = i * n + j;
+                    if (this.boundaryMask && this.boundaryMask[idx] === 0) continue;
                     sData[idx] = this.boundaryMask ? this.boundaryMask[idx] : 1.0;
                     uData[idx] = 0.0;
                     vData[idx] = 0.0;
@@ -77,6 +78,13 @@ export class Interaction {
                         uData[(i + 1) * n + j] = 0.0;
                     }
                 }
+                // Zero pressure for this column slice (contiguous in memory)
+                const colStart = i * n + jMin;
+                const colLen = jMax - jMin + 1;
+                this.solver.device.queue.writeBuffer(
+                    this.solver.p, colStart * 4,
+                    new Float32Array(colLen)
+                );
             }
         } else {
             // First call: initialise from boundaryMask (or all-fluid)
