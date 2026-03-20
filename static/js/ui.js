@@ -78,8 +78,6 @@ export class UI {
 
         setSlider('slider-dt',    'val-dt',    p.dt,      4);
         setSlider('slider-omega', 'val-omega', p.omega,   2);
-        setSlider('slider-gravity', 'val-gravity', p.gravity, 2);
-
         const itersEl = document.getElementById('slider-iters');
         const itersValEl = document.getElementById('val-iters');
         if (itersEl) itersEl.value = this.numIters;
@@ -241,7 +239,7 @@ export class UI {
         bind('slider-dt',      'val-dt',      4, v => this.solver.setParams({ dt:      parseFloat(v) }));
         bind('slider-omega',   'val-omega',   2, v => this.solver.setParams({ omega:   parseFloat(v) }));
         bind('slider-iters',   'val-iters',   0, v => { this.numIters = parseInt(v); });
-        bind('slider-gravity', 'val-gravity', 2, v => this.solver.setParams({ gravity: parseFloat(v) }));
+
 
         const invelEl  = document.getElementById('slider-invel');
         const invelVal = document.getElementById('val-invel');

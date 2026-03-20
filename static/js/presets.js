@@ -1,21 +1,21 @@
 export const PRESETS = {
   windTunnel: {
     name: 'Wind Tunnel',
-    numIters: 40, dt: 1/60, gravity: 0, omega: 1.9, inVel: 2.0,
+    numIters: 40, dt: 1/60, omega: 1.9, inVel: 2.0,
     obstacle: { shape: 'circle', x: 0.4, y: 0.5, radius: 0.15 },
     boundaryType: 'windTunnel',
     show: { pressure: false, smoke: true, streamlines: false, velocities: false },
   },
   karmanVortex: {
     name: 'Kármán Vortex',
-    numIters: 80, dt: 1/120, gravity: 0, omega: 1.9, inVel: 1.0,
+    numIters: 80, dt: 1/120, omega: 1.9, inVel: 1.0,
     obstacle: { shape: 'circle', x: 0.3, y: 0.5, radius: 0.06 },
     boundaryType: 'windTunnel',
     show: { pressure: false, smoke: true, streamlines: false, velocities: false },
   },
   backwardStep: {
     name: 'Backward Step',
-    numIters: 60, dt: 1/60, gravity: 0, omega: 1.9, inVel: 1.5,
+    numIters: 60, dt: 1/60, omega: 1.9, inVel: 1.5,
     obstacle: null,
     boundaryType: 'backwardStep',
     stepGeometry: { x0: 0, x1: 0.3, y0: 0, y1: 0.5 },
@@ -28,7 +28,7 @@ export function loadPreset(name, solver, interaction) {
   const { numX, numY, h } = solver;
   const n = numY;
 
-  solver.setParams({ dt: preset.dt, gravity: preset.gravity, omega: preset.omega, density: 1000 });
+  solver.setParams({ dt: preset.dt, omega: preset.omega, density: 1000 });
 
   // Reset fields
   const zeros = new Float32Array(numX * numY);
