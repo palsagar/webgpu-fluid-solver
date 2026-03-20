@@ -124,8 +124,10 @@ export function loadPreset(name, solver, interaction) {
         if (i === 1 && cy >= sg.y1) uData[i * n + j] = inVel;
       }
     }
-    // Smoke inlet at inflow cells
-    for (let j = 0; j < numY; j++) {
+    // Smoke inlet: central band of inflow cells (not all, for visual clarity)
+    const inflowMinJ = Math.floor(numY * 0.45);
+    const inflowMaxJ = Math.floor(numY * 0.55);
+    for (let j = inflowMinJ; j < inflowMaxJ; j++) {
       if (uData[1 * n + j] > 0) mData[j] = 0.0;
     }
 

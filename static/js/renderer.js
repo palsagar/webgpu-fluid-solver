@@ -21,6 +21,10 @@ export class Renderer {
     this._velReadbackPending = false;
     this.uData = null;
     this.vData = null;
+    this._velDataGen = 0;
+    this._velDataVersion = -1;
+    this._cachedStreamlines = null;
+    this._cachedArrows = null;
 
     this.activeColormap = 'viridis';
     this.colormaps = {};
@@ -100,15 +104,23 @@ export class Renderer {
     }
 
     this._frameCount = (this._frameCount || 0) + 1;
-    if (this._frameCount % 5 === 0 && (this.showStreamlines || this.showVelocities)) {
+    if (this._frameCount % 10 === 0 && (this.showStreamlines || this.showVelocities)) {
       this.readbackVelocity();
     }
 
-    if (this.showStreamlines && this.uData) {
-      this._drawStreamlines(this._ctx);
+    // Recompute overlays only when new velocity data arrives
+    if (this.uData && this._velDataVersion !== this._velDataGen) {
+      this._velDataVersion = this._velDataGen;
+      if (this.showStreamlines) this._cachedStreamlines = this._computeStreamlines();
+      if (this.showVelocities) this._cachedArrows = this._computeArrows();
     }
-    if (this.showVelocities && this.uData) {
-      this._drawVelocityArrows(this._ctx);
+
+    // Draw cached overlays every frame (cheap)
+    if (this.showStreamlines && this._cachedStreamlines) {
+      this._drawCachedStreamlines(this._ctx, this._cachedStreamlines);
+    }
+    if (this.showVelocities && this._cachedArrows) {
+      this._drawCachedArrows(this._ctx, this._cachedArrows);
     }
     if (this.interaction && this.interaction.showObstacle) {
       this.drawObstacle(this._ctx, this.interaction);
@@ -244,6 +256,7 @@ export class Renderer {
       stagingU.destroy();
       stagingV.destroy();
       this._velReadbackPending = false;
+      this._velDataGen++;
     }).catch(() => {
       try { stagingU.destroy(); } catch (_) {}
       try { stagingV.destroy(); } catch (_) {}
@@ -267,59 +280,60 @@ export class Renderer {
     return sx*sy*field[x0*n+y0] + tx*sy*field[x1*n+y0] + tx*ty*field[x1*n+y1] + sx*ty*field[x0*n+y1];
   }
 
-  _drawStreamlines(ctx) {
-    if (!this.uData) return;
-
+  _computeStreamlines() {
+    if (!this.uData) return null;
     const { numX, numY, h, uData, vData } = this;
     const domainWidth = numX * h;
     const domainHeight = numY * h;
     const cw = this._canvas.width;
     const ch = this._canvas.height;
-    const cX = x => x / domainWidth * cw;
-    const cY = y => (1 - y / domainHeight) * ch;
-
     const numSegs = 25;
-    const stepScale = 0.01; // velocity-proportional step (like original solver)
-
-    ctx.strokeStyle = 'rgba(255, 255, 255, 0.7)';
-    ctx.lineWidth = 1.5;
+    const stepScale = 0.01;
+    const paths = [];
 
     for (let i = 1; i < numX - 1; i += 5) {
       for (let j = 1; j < numY - 1; j += 5) {
         let x = (i + 0.5) * h;
         let y = (j + 0.5) * h;
-
-        ctx.beginPath();
-        ctx.moveTo(cX(x), cY(y));
+        const pts = [x / domainWidth * cw, (1 - y / domainHeight) * ch];
 
         for (let s = 0; s < numSegs; s++) {
           const u = this._sampleVel(x, y, uData, 0, h / 2);
           const v = this._sampleVel(x, y, vData, h / 2, 0);
           if (u === 0 && v === 0) break;
-          // Velocity-proportional step (matches original solver approach)
           x += u * stepScale;
           y += v * stepScale;
           if (x < 0 || x > domainWidth || y < 0 || y > domainHeight) break;
-          ctx.lineTo(cX(x), cY(y));
+          pts.push(x / domainWidth * cw, (1 - y / domainHeight) * ch);
         }
-        ctx.stroke();
+        if (pts.length > 2) paths.push(pts);
       }
+    }
+    return paths;
+  }
+
+  _drawCachedStreamlines(ctx, paths) {
+    ctx.strokeStyle = 'rgba(255, 255, 255, 0.7)';
+    ctx.lineWidth = 1.5;
+    for (const pts of paths) {
+      ctx.beginPath();
+      ctx.moveTo(pts[0], pts[1]);
+      for (let k = 2; k < pts.length; k += 2) {
+        ctx.lineTo(pts[k], pts[k + 1]);
+      }
+      ctx.stroke();
     }
   }
 
-  _drawVelocityArrows(ctx) {
-    if (!this.uData) return;
-
+  _computeArrows() {
+    if (!this.uData) return null;
     const { numX, numY, h, uData, vData } = this;
     const n = numY;
     const domainWidth = numX * h;
     const domainHeight = numY * h;
     const cw = this._canvas.width;
     const ch = this._canvas.height;
-    const cX = x => x / domainWidth * cw;
-    const cY = y => (1 - y / domainHeight) * ch;
 
-    // Compute max velocity for scaling
     let maxMag = 0;
     for (let i = 0; i < numX; i += 8) {
       for (let j = 0; j < numY; j += 8) {
@@ -328,11 +342,11 @@ export class Renderer {
         if (m > maxMag) maxMag = m;
       }
     }
-    if (maxMag === 0) return;
+    if (maxMag === 0) return null;
 
-    // Arrow length in pixels, scaled by velocity magnitude
     const maxArrowPx = 12;
-    const spacing = 8; // every 8th cell
+    const spacing = 8;
+    const arrows = [];
 
     for (let i = spacing; i < numX - 1; i += spacing) {
       for (let j = spacing; j < numY - 1; j += spacing) {
@@ -343,36 +357,37 @@ export class Renderer {
 
         const frac = mag / maxMag;
         const arrowPx = maxArrowPx * frac;
-
-        const px = cX((i + 0.5) * h);
-        const py = cY((j + 0.5) * h);
-        const angle = Math.atan2(-v, u); // negative v because canvas Y is flipped
-
+        const px = (i + 0.5) * h / domainWidth * cw;
+        const py = (1 - (j + 0.5) * h / domainHeight) * ch;
+        const angle = Math.atan2(-v, u);
         const ex = px + arrowPx * Math.cos(angle);
         const ey = py + arrowPx * Math.sin(angle);
-
-        // Color by magnitude: dark blue → cyan
         const r = Math.floor(30 * (1 - frac));
         const g = Math.floor(80 + 175 * frac);
         const b = Math.floor(120 + 135 * frac);
-        ctx.strokeStyle = `rgb(${r},${g},${b})`;
-        ctx.fillStyle = ctx.strokeStyle;
-        ctx.lineWidth = 1.5;
-
-        ctx.beginPath();
-        ctx.moveTo(px, py);
-        ctx.lineTo(ex, ey);
-        ctx.stroke();
-
-        // Arrowhead
         const headLen = Math.max(3, arrowPx * 0.4);
-        ctx.beginPath();
-        ctx.moveTo(ex, ey);
-        ctx.lineTo(ex - headLen * Math.cos(angle - 0.5), ey - headLen * Math.sin(angle - 0.5));
-        ctx.lineTo(ex - headLen * Math.cos(angle + 0.5), ey - headLen * Math.sin(angle + 0.5));
-        ctx.closePath();
-        ctx.fill();
+        arrows.push({ px, py, ex, ey, r, g, b, angle, headLen });
       }
+    }
+    return arrows;
+  }
+
+  _drawCachedArrows(ctx, arrows) {
+    ctx.lineWidth = 1.5;
+    for (const a of arrows) {
+      const col = `rgb(${a.r},${a.g},${a.b})`;
+      ctx.strokeStyle = col;
+      ctx.fillStyle = col;
+      ctx.beginPath();
+      ctx.moveTo(a.px, a.py);
+      ctx.lineTo(a.ex, a.ey);
+      ctx.stroke();
+      ctx.beginPath();
+      ctx.moveTo(a.ex, a.ey);
+      ctx.lineTo(a.ex - a.headLen * Math.cos(a.angle - 0.5), a.ey - a.headLen * Math.sin(a.angle - 0.5));
+      ctx.lineTo(a.ex - a.headLen * Math.cos(a.angle + 0.5), a.ey - a.headLen * Math.sin(a.angle + 0.5));
+      ctx.closePath();
+      ctx.fill();
     }
   }
 
@@ -465,5 +480,9 @@ export class Renderer {
     this._solidReadbackDone = false;
     this.uData = null;
     this.vData = null;
+    this._velDataGen = 0;
+    this._velDataVersion = -1;
+    this._cachedStreamlines = null;
+    this._cachedArrows = null;
   }
 }
