@@ -24,8 +24,18 @@ Drag obstacles through the flow. Watch vortices form. Explore pressure fields, s
 
 ## Quick Start
 
+**With Docker** (no Python installation required):
+
 ```bash
-# Clone and run
+git clone https://github.com/palsagar/webgpu-fluid-solver.git
+cd webgpu-fluid-solver
+docker build -t flowlab .
+docker run -p 8000:8000 flowlab
+```
+
+**With Python**:
+
+```bash
 git clone https://github.com/palsagar/webgpu-fluid-solver.git
 cd webgpu-fluid-solver
 uv run uvicorn server:app --port 8000

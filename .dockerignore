@@ -1,0 +1,7 @@
+.git
+docs
+.superpowers
+todo.md
+uv.lock
+__pycache__
+*.pyc
