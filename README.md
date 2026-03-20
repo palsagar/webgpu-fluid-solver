@@ -20,8 +20,7 @@ Real-time 2D Eulerian fluid dynamics simulator running entirely on the GPU via W
 # Clone and run
 git clone https://github.com/palsagar/webgpu-fluid-solver.git
 cd webgpu-fluid-solver
-pip install fastapi uvicorn
-uvicorn server:app --reload --port 8000
+uv run uvicorn server:app --port 8000
 ```
 
 Open `http://localhost:8000` in Chrome 113+ (WebGPU required).
