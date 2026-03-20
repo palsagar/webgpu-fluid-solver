@@ -68,11 +68,11 @@ export class ParticleSystem {
         const toX = x => x / domainW * cw;
         const toY = y => (1 - y / domainH) * ch;
 
-        ctx.lineWidth = 1.5;
+        ctx.lineWidth = 2;
         for (const p of this.particles) {
             if (p.trail.length < 2) continue;
-            const alpha = Math.max(0, 1 - p.age / this.maxAge) * 0.9;
-            ctx.strokeStyle = `rgba(0, 255, 200, ${alpha.toFixed(2)})`;
+            const alpha = Math.max(0.1, 1 - p.age / this.maxAge) * 0.9;
+            ctx.strokeStyle = `rgba(0, 255, 100, ${alpha.toFixed(2)})`;
             ctx.beginPath();
             ctx.moveTo(toX(p.trail[0][0]), toY(p.trail[0][1]));
             for (let i = 1; i < p.trail.length; i++) {
@@ -81,12 +81,15 @@ export class ParticleSystem {
             ctx.stroke();
         }
 
-        // Draw emitter markers
-        ctx.fillStyle = 'rgba(100, 200, 255, 0.6)';
+        // Draw emitter markers — bright pulsing dot
+        ctx.fillStyle = 'rgba(0, 255, 100, 0.8)';
+        ctx.strokeStyle = 'rgba(255, 255, 255, 0.9)';
+        ctx.lineWidth = 2;
         for (const em of this.emitters) {
             ctx.beginPath();
-            ctx.arc(toX(em.x), toY(em.y), 4, 0, 2 * Math.PI);
+            ctx.arc(toX(em.x), toY(em.y), 6, 0, 2 * Math.PI);
             ctx.fill();
+            ctx.stroke();
         }
     }
 
