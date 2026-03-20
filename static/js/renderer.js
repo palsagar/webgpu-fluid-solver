@@ -124,13 +124,15 @@ export class Renderer {
     if (this.showVelocities && this._cachedArrows) {
       this._drawCachedArrows(this._ctx, this._cachedArrows);
     }
-    // Particle advection and rendering (always active when particles exist)
+    // Particle advection and rendering — freeze when solver is paused
     if (this.particleSystem) {
-      const dt = this.solver.params.dt;
-      this.particleSystem.step(
-        this.uData, this.vData, dt,
-        this.h, this.numX, this.numY, this.solidData
-      );
+      if (!this.solver.paused) {
+        const dt = this.solver.params.dt;
+        this.particleSystem.step(
+          this.uData, this.vData, dt,
+          this.h, this.numX, this.numY, this.solidData
+        );
+      }
       this.particleSystem.draw(this._ctx, this.numX, this.numY, this.h);
     }
     if (this.interaction && this.interaction.showObstacle) {
