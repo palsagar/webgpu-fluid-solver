@@ -64,18 +64,25 @@ export class Interaction {
         const newJMax = Math.min(numY - 2, Math.ceil((centerY + maxExtent) / h + 1));
 
         // Step 1: Restore the previous obstacle bounding box to boundary mask values
-        // and clear stale velocity/pressure imprint left by the old obstacle position.
+        // and clear stale velocity/pressure/smoke imprint left by the old obstacle position.
         if (this._prevBBox) {
             const { iMin, iMax, jMin, jMax } = this._prevBBox;
+            const clearSmoke = new Float32Array([1.0]);
             for (let i = iMin; i <= iMax; i++) {
                 for (let j = jMin; j <= jMax; j++) {
                     const idx = i * n + j;
                     if (this.boundaryMask && this.boundaryMask[idx] === 0) continue;
+                    const wasObstacle = sData[idx] === 0.0;
                     sData[idx] = this.boundaryMask ? this.boundaryMask[idx] : 1.0;
                     uData[idx] = 0.0;
                     vData[idx] = 0.0;
                     if (i + 1 < numX) {
                         uData[(i + 1) * n + j] = 0.0;
+                    }
+                    // Clear smoke in former obstacle cells to prevent stale dye imprints
+                    if (wasObstacle) {
+                        this.solver.device.queue.writeBuffer(this.solver.m, idx * 4, clearSmoke);
+                        this.solver.device.queue.writeBuffer(this.solver.mNew, idx * 4, clearSmoke);
                     }
                 }
                 // Zero pressure for this column slice (contiguous in memory)

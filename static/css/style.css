@@ -305,6 +305,29 @@ input[type="range"]::-moz-range-thumb {
   margin-top: 2px;
 }
 
+.resolution-picker {
+  display: flex;
+  gap: 6px;
+}
+
+.res-btn {
+  flex: 1;
+  padding: 4px 0;
+  background: #21262d;
+  border: 1px solid #30363d;
+  border-radius: 4px;
+  font-size: 12px;
+  font-family: monospace;
+  color: #c9d1d9;
+  cursor: pointer;
+}
+
+.res-btn.active {
+  background: #1f6feb;
+  border-color: #1f6feb;
+  color: white;
+}
+
 .tier-indicator {
     position: absolute;
     top: 50%;

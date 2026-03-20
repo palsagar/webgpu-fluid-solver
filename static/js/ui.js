@@ -91,12 +91,12 @@ export class UI {
         if (invelEl) invelEl.value = inVel;
         if (invelValEl) invelValEl.textContent = inVel.toFixed(2);
 
-        // Sync resolution slider to current tier
+        // Sync resolution buttons to current tier
         if (this.adaptive) {
-            const resEl = document.getElementById('slider-resolution');
-            const resVal = document.getElementById('val-resolution');
-            if (resEl) resEl.value = this.adaptive.currentTierIndex;
-            if (resVal) resVal.textContent = this.adaptive.tiers[this.adaptive.currentTierIndex];
+            const tierIdx = this.adaptive.currentTierIndex;
+            document.querySelectorAll('[data-tier]').forEach(b => {
+                b.classList.toggle('active', parseInt(b.dataset.tier) === tierIdx);
+            });
         }
 
         this._updateRe(inVel);
@@ -172,6 +172,14 @@ export class UI {
                 this.interaction.activeShape = btn.dataset.shape;
                 document.querySelectorAll('[data-shape]').forEach(b => b.classList.remove('active'));
                 btn.classList.add('active');
+                // Re-rasterize at current position so the old shape is cleared immediately
+                if (this.interaction.showObstacle) {
+                    this.interaction.rasterizeObstacle(
+                        this.interaction.obstacleX,
+                        this.interaction.obstacleY,
+                        0, 0
+                    );
+                }
             });
         });
     }
@@ -246,20 +254,18 @@ export class UI {
             });
         }
 
-        const resEl  = document.getElementById('slider-resolution');
-        const resVal = document.getElementById('val-resolution');
-        if (resEl) {
-            resEl.addEventListener('input', () => {
-                const idx = parseInt(resEl.value);
+        document.querySelectorAll('[data-tier]').forEach(btn => {
+            btn.addEventListener('click', () => {
+                const idx = parseInt(btn.dataset.tier);
                 if (this.adaptive) {
                     this.adaptive.manualOverride = true;
                     this.adaptive.currentTierIndex = idx;
-                    const tier = this.adaptive.tiers[idx];
-                    if (resVal) resVal.textContent = tier;
                     this.adaptive.applyTier();
+                    document.querySelectorAll('[data-tier]').forEach(b => b.classList.remove('active'));
+                    btn.classList.add('active');
                 }
             });
-        }
+        });
 
         document.getElementById('btn-defaults')?.addEventListener('click', () => {
             if (this.adaptive) this.adaptive.manualOverride = false;

@@ -112,10 +112,13 @@
         <div class="slider-row">
           <div class="slider-header">
             <span class="slider-name">Grid resolution</span>
-            <span class="slider-value" id="val-resolution">256</span>
           </div>
-          <input type="range" id="slider-resolution" min="0" max="3" step="1" value="2" list="tier-list">
-          <datalist id="tier-list"><option value="0" label="64"><option value="1" label="128"><option value="2" label="256"><option value="3" label="512"></datalist>
+          <div id="resolution-picker" class="resolution-picker">
+            <button class="res-btn" data-tier="0">64</button>
+            <button class="res-btn" data-tier="1">128</button>
+            <button class="res-btn active" data-tier="2">256</button>
+            <button class="res-btn" data-tier="3">512</button>
+          </div>
         </div>
 
         <button id="btn-defaults" class="btn">Reset to Defaults</button>
