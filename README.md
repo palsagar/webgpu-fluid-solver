@@ -86,6 +86,10 @@ WebGPU support required: Chrome 113+, Edge 113+, or Firefox Nightly with `dom.we
 
 For detailed technical documentation, see the **[Documentation Hub](docs/README.md)** — covering system architecture, numerical methods, and the GPU compute pipeline.
 
-## Credits
+## Background
 
-Based on an original CPU fluid solver by Sagar Pal (2024). Rewritten for WebGPU with compute shaders.
+The numerical methods behind this solver — staggered MAC grids, red-black Gauss-Seidel pressure projection, semi-Lagrangian advection — were originally implemented by [Sagar Pal](https://github.com/palsagar) in Fortran 90 for structured-grid incompressible flow research, and later rewritten in C++11 with CUDA to leverage GPU parallelism for higher-resolution simulations.
+
+This project represents the third generation of that work: a port of the entire parallel computational pipeline onto WebGPU, moving the solver from dedicated HPC hardware into the client's browser. The key insight was that WebGPU's compute shader model maps naturally onto the same data-parallel patterns — workgroup dispatches over a uniform grid, storage buffer ping-pong for advection, red-black coloring for the pressure solve — that made the CUDA implementation effective. What changes is not the mathematics but the deployment model: instead of batch runs on a cluster, the simulation runs interactively at hundreds of frames per second on commodity hardware, with the user as an active participant — dragging obstacles, injecting tracer particles, and observing flow phenomena like vortex shedding and recirculation in real time.
+
+The WebGPU port was built with the assistance of [Claude](https://claude.ai) (Anthropic).
