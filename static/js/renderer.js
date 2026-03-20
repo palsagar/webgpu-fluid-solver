@@ -12,6 +12,8 @@ export class Renderer {
     this.showVelocities = false;
     this.showObstacle = true;
     this.interaction = null;
+    this.particleSystem = null;
+    this.showParticles = true;
 
     this.readbackPending = false;
     this.fieldData = null;
@@ -104,7 +106,7 @@ export class Renderer {
     }
 
     this._frameCount = (this._frameCount || 0) + 1;
-    if (this._frameCount % 10 === 0 && (this.showStreamlines || this.showVelocities)) {
+    if (this._frameCount % 10 === 0 && (this.showStreamlines || this.showVelocities || this.showParticles)) {
       this.readbackVelocity();
     }
 
@@ -122,6 +124,15 @@ export class Renderer {
     if (this.showVelocities && this._cachedArrows) {
       this._drawCachedArrows(this._ctx, this._cachedArrows);
     }
+    // Particle advection and rendering
+    if (this.showParticles && this.particleSystem) {
+      const dt = this.solver.params.dt;
+      this.particleSystem.step(
+        this.uData, this.vData, dt,
+        this.h, this.numX, this.numY, this.solidData
+      );
+      this.particleSystem.draw(this._ctx, this.numX, this.numY, this.h);
+    }
     if (this.interaction && this.interaction.showObstacle) {
       this.drawObstacle(this._ctx, this.interaction);
     }
@@ -133,6 +144,7 @@ export class Renderer {
 
   invalidateSolid() {
     this._solidReadbackDone = false;
+    if (this.particleSystem) this.particleSystem.clear();
   }
 
   drawObstacle(ctx, interaction) {
@@ -495,5 +507,6 @@ export class Renderer {
     this._velDataVersion = -1;
     this._cachedStreamlines = null;
     this._cachedArrows = null;
+    if (this.particleSystem) this.particleSystem.clear();
   }
 }
