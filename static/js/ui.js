@@ -107,10 +107,32 @@ export class UI {
         const D = 2 * this.interaction.obstacleRadius;
         if (inVel === 0 || D === 0) {
             el.textContent = '--';
+            this._updateFlowInfo();
             return;
         }
         const Re = inVel * D / h;
         el.textContent = Re.toFixed(0);
+        this._updateFlowInfo();
+    }
+
+    _updateFlowInfo() {
+        const el = document.getElementById('flow-info');
+        if (!el) return;
+        const descriptions = {
+            windTunnel:    'Wind tunnel',
+            karmanVortex:  'Kármán vortex street',
+            backwardStep:  'Backward-facing step',
+        };
+        const regimes = {
+            windTunnel:    'Attached/separated flow',
+            karmanVortex:  'Vortex shedding',
+            backwardStep:  'Recirculation zone',
+        };
+        const reEl = document.getElementById('val-re');
+        const re = reEl ? reEl.textContent : '--';
+        const desc = descriptions[this.currentPreset] || this.currentPreset;
+        const regime = regimes[this.currentPreset] || '';
+        el.textContent = `${desc} · Re ≈ ${re}${regime ? ' · ' + regime : ''}`;
     }
 
     _bindPresetButtons() {

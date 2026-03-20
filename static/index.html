@@ -44,6 +44,7 @@
     </div>
 
     <div id="perf-hud">-- ms/frame</div>
+    <div id="flow-info"></div>
 
     <div id="advanced-panel">
       <div class="panel-header">
@@ -92,7 +93,7 @@
 
         <div class="slider-row">
           <div class="slider-header">
-            <span class="slider-name">Re</span>
+            <span class="slider-name">Re <span class="hint" title="Reynolds number Re ≈ U·D/h. No explicit viscosity — numerical diffusion from advection acts as implicit viscosity proportional to grid spacing. Higher resolution → less diffusion → higher effective Re.">(?)</span></span>
             <span class="slider-value" id="val-re">--</span>
           </div>
         </div>
