@@ -68,11 +68,11 @@ export class ParticleSystem {
         const toX = x => x / domainW * cw;
         const toY = y => (1 - y / domainH) * ch;
 
-        ctx.lineWidth = 1;
+        ctx.lineWidth = 1.5;
         for (const p of this.particles) {
             if (p.trail.length < 2) continue;
-            const alpha = Math.max(0, 1 - p.age / this.maxAge) * 0.8;
-            ctx.strokeStyle = `rgba(255, 255, 255, ${alpha.toFixed(2)})`;
+            const alpha = Math.max(0, 1 - p.age / this.maxAge) * 0.9;
+            ctx.strokeStyle = `rgba(0, 255, 200, ${alpha.toFixed(2)})`;
             ctx.beginPath();
             ctx.moveTo(toX(p.trail[0][0]), toY(p.trail[0][1]));
             for (let i = 1; i < p.trail.length; i++) {
