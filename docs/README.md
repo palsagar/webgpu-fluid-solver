@@ -15,7 +15,7 @@ graph TD
     subgraph Browser["Browser Client"]
         UI[UI Controls & Presets]
         Orch[JS Orchestrator — main.js]
-        Sim[FluidSim — simulation.js]
+        Sim[FluidSolver — fluid-solver.js]
         Ren[Renderer — 2D Canvas]
         UI --> Orch
         Orch --> Sim

@@ -161,7 +161,7 @@ Solid cells have `s[i,j] = 0`. All four compute shaders handle them:
 
 Fixed velocity is imposed at column i=1, re-applied from JavaScript after each `solver.step()` call. Inflow values survive advection because the left wall (i=0) is solid -- the advection condition `s[(i-1)*n + j] != 0` fails at i=1, so the velocity is not overwritten. Re-application after the solver step prevents drift from the pressure solve.
 
-See [Ping-Pong Buffers](gpu-pipeline.md#ping-pong-buffers) for why inflow velocities must be written to both GPU buffers.
+See [Ping-Pong Buffers](gpu-pipeline.md#4-ping-pong-buffers) for why inflow velocities must be written to both GPU buffers.
 
 ### Open Outflow
 

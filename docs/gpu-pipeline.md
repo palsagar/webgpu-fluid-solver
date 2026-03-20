@@ -120,7 +120,7 @@ After each `step()`, the solver toggles `_advectVelFlip` and `_advectSmokeFlip`,
 
 **Critical rule:** when writing boundary conditions or inflow velocities from JavaScript (e.g., `writeBuffer` calls in preset setup), **write to both buffers** in each pair — the solver may read from either one depending on the current flip state.
 
-See [Boundary Conditions](numerical-methods.md#boundary-conditions) for the numerical rationale.
+See [Boundary Conditions](numerical-methods.md#5-boundary-conditions) for the numerical rationale.
 
 ---
 

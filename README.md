@@ -74,6 +74,10 @@ WebGPU support required: Chrome 113+, Edge 113+, or Firefox Nightly with `dom.we
 | `M` | Step one frame |
 | `1-3` | Load preset |
 
+## Documentation
+
+For detailed technical documentation, see the **[Documentation Hub](docs/README.md)** — covering system architecture, numerical methods, and the GPU compute pipeline.
+
 ## Credits
 
 Based on an original CPU fluid solver by Sagar Pal (2024). Rewritten for WebGPU with compute shaders.
