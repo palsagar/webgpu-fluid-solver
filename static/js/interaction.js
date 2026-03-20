@@ -46,13 +46,6 @@ export class Interaction {
         const uData = this._uData;
         const vData = this._vData;
 
-        // Start from boundaryMask if available, else all fluid
-        if (this.boundaryMask) {
-            sData.set(this.boundaryMask);
-        } else {
-            sData.fill(1.0);
-        }
-
         const r = this.obstacleRadius;
         const shape = this.activeShape;
 
@@ -60,10 +53,45 @@ export class Interaction {
         const chord = r * 4;            // airfoil chord length
         const wedgeLen = r * 3;         // wedge length
         const tanHA = Math.tan(15 * Math.PI / 180); // wedge half-angle
+
+        // Largest possible extent of any shape from its center
+        const maxExtent = Math.max(r, chord * 0.5, wedgeLen * 0.5);
+
+        // Compute bounding box for the new obstacle position
+        const newIMin = Math.max(1, Math.floor((centerX - maxExtent) / h - 1));
+        const newIMax = Math.min(numX - 2, Math.ceil((centerX + maxExtent) / h + 1));
+        const newJMin = Math.max(1, Math.floor((centerY - maxExtent) / h - 1));
+        const newJMax = Math.min(numY - 2, Math.ceil((centerY + maxExtent) / h + 1));
+
+        // Step 1: Restore the previous obstacle bounding box to boundary mask values
+        // and clear any stale velocity imprint left by the old obstacle position.
+        if (this._prevBBox) {
+            const { iMin, iMax, jMin, jMax } = this._prevBBox;
+            for (let i = iMin; i <= iMax; i++) {
+                for (let j = jMin; j <= jMax; j++) {
+                    const idx = i * n + j;
+                    sData[idx] = this.boundaryMask ? this.boundaryMask[idx] : 1.0;
+                    uData[idx] = 0.0;
+                    vData[idx] = 0.0;
+                    if (i + 1 < numX) {
+                        uData[(i + 1) * n + j] = 0.0;
+                    }
+                }
+            }
+        } else {
+            // First call: initialise from boundaryMask (or all-fluid)
+            if (this.boundaryMask) {
+                sData.set(this.boundaryMask);
+            } else {
+                sData.fill(1.0);
+            }
+        }
+
+        // Step 2: Rasterize new obstacle within its bounding box
         const obstacleCells = [];
 
-        for (let i = 0; i < numX; i++) {
-            for (let j = 0; j < numY; j++) {
+        for (let i = newIMin; i <= newIMax; i++) {
+            for (let j = newJMin; j <= newJMax; j++) {
                 const idx = i * n + j;
 
                 // Skip permanent boundary cells
@@ -114,6 +142,9 @@ export class Interaction {
                 }
             }
         }
+
+        // Step 3: Save the new bounding box for the next call
+        this._prevBBox = { iMin: newIMin, iMax: newIMax, jMin: newJMin, jMax: newJMax };
 
         this.solver.writeSolidMask(sData);
         // Write velocity to BOTH ping-pong buffers so the active one always gets it
