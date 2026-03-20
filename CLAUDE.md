@@ -2,7 +2,7 @@
 
 ## Project
 
-WebGPU Eulerian fluid solver — real-time 2D incompressible flow simulation running entirely on the GPU via WebGPU compute shaders, rendered with a 2D canvas, served by FastAPI.
+FlowLab — real-time 2D incompressible flow simulation running entirely on the GPU via WebGPU compute shaders, rendered with a 2D canvas, served by FastAPI.
 
 ## Quick Start
 

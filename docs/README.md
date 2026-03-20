@@ -1,6 +1,6 @@
-# WebGPU Eulerian Fluid Solver
+# 🌀 FlowLab — Technical Documentation
 
-Real-time 2D incompressible flow simulation running entirely on the GPU via WebGPU compute shaders. The solver uses an Eulerian (grid-based) approach with a MAC staggered grid, iterative pressure projection, and semi-Lagrangian advection. A 2D canvas renders the output using colormap visualization, streamlines, and velocity arrows. A minimal FastAPI backend serves the static files.
+Real-time 2D incompressible flow simulation running entirely on the GPU via WebGPU compute shaders. The solver uses an Eulerian (grid-based) approach with a MAC staggered grid, iterative pressure projection, and semi-Lagrangian advection. A 2D canvas renders the output with colormap visualization, streamlines, and velocity arrows.
 
 ## System Overview
 

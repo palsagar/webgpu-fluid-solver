@@ -1,8 +1,16 @@
-# WebGPU Fluid Solver
+<div align="center">
 
-Real-time 2D Eulerian fluid dynamics simulator running entirely on the GPU via WebGPU compute shaders. Drag obstacles through the flow and watch vortices form in real time.
+# 🌀 FlowLab
 
-![Wind Tunnel](https://img.shields.io/badge/WebGPU-Compute_Shaders-blue) ![FastAPI](https://img.shields.io/badge/Backend-FastAPI-green) ![License](https://img.shields.io/badge/License-MIT-yellow)
+**Real-time fluid dynamics in your browser, powered by WebGPU**
+
+Drag obstacles through the flow. Watch vortices form. Explore pressure fields, streamlines, and smoke visualization — all running at 800+ fps on the GPU.
+
+[![WebGPU](https://img.shields.io/badge/WebGPU-Compute_Shaders-blue)](https://www.w3.org/TR/webgpu/)
+[![FastAPI](https://img.shields.io/badge/Backend-FastAPI-green)](https://fastapi.tiangolo.com/)
+[![License](https://img.shields.io/badge/License-MIT-yellow)](#)
+
+</div>
 
 ## Features
 
@@ -10,7 +18,7 @@ Real-time 2D Eulerian fluid dynamics simulator running entirely on the GPU via W
 - **Interactive obstacles** — Drag circles, squares, airfoils, or wedges through the fluid with velocity coupling
 - **Multiple visualizations** — Smoke dye (magma colormap), pressure field (viridis), streamlines, velocity arrows
 - **Curated presets** — Wind tunnel, Karman vortex street, backward-facing step
-- **Advanced controls** — Adjust timestep, relaxation, iterations, inflow velocity, gravity, grid resolution
+- **Advanced controls** — Adjust timestep, relaxation, iterations, inflow velocity, grid resolution
 - **Adaptive resolution** — Auto-scales grid from 64 to 512 based on frame rate
 - **800+ fps** at 256x256 on modern GPUs
 
