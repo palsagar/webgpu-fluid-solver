@@ -57,30 +57,27 @@ body {
   flex: 1;
 }
 
-.gh-link {
-  display: flex;
+.gh-pill {
+  display: inline-flex;
   align-items: center;
-  gap: 5px;
-  color: #8b949e;
+  gap: 4px;
+  color: #c9d1d9;
   text-decoration: none;
-  font-size: 12px;
-  padding: 3px 8px;
-  border-radius: 4px;
-  transition: color 0.2s;
-}
-
-.gh-link:hover {
-  color: #e0e0e0;
-}
-
-.gh-icon {
-  width: 16px;
-  height: 16px;
-}
-
-.gh-stars {
-  font-family: monospace;
   font-size: 11px;
+  padding: 3px 10px;
+  border: 1px solid #30363d;
+  border-radius: 12px;
+  background: #21262d;
+  transition: border-color 0.2s, color 0.2s;
+}
+
+.gh-pill:hover {
+  border-color: #58a6ff;
+  color: #ffffff;
+}
+
+#gh-stars:not(:empty)::before {
+  content: "\2605 ";
 }
 
 #preset-bar {
