@@ -123,32 +123,33 @@
   <div class="toolbar">
     <div class="toolbar-group">
       <span class="toolbar-label">Visualize:</span>
-      <label>
+      <label title="Color-coded pressure field (coolwarm colormap)">
         <input type="checkbox" data-viz="pressure"> Pressure
       </label>
-      <label>
+      <label title="Dye tracer injected at the inlet (magma colormap)">
         <input type="checkbox" data-viz="smoke" checked> Smoke
       </label>
-      <label>
+      <label title="Instantaneous flow pathlines — lines tangent to the velocity field">
         <input type="checkbox" data-viz="streamlines"> Streamlines
       </label>
-      <label>
+      <label title="Velocity arrow field — length and color indicate speed">
         <input type="checkbox" data-viz="velocities"> Velocities
       </label>
     </div>
 
     <div class="toolbar-group">
       <span class="toolbar-label">Shape:</span>
-      <button class="shape-btn active" data-shape="circle">Circle</button>
-      <button class="shape-btn" data-shape="square">Square</button>
-      <button class="shape-btn" data-shape="airfoil">Airfoil</button>
-      <button class="shape-btn" data-shape="wedge">Wedge</button>
+      <button class="shape-btn active" data-shape="circle" title="Click to change obstacle shape">Circle</button>
+      <button class="shape-btn" data-shape="square" title="Click to change obstacle shape">Square</button>
+      <button class="shape-btn" data-shape="airfoil" title="Click to change obstacle shape">Airfoil</button>
+      <button class="shape-btn" data-shape="wedge" title="Click to change obstacle shape">Wedge</button>
     </div>
 
     <div class="toolbar-group">
       <button id="btn-play" class="btn btn-play">⏸ Pause</button>
       <button id="btn-step" class="btn">Step</button>
-      <button id="btn-reset" class="btn">Reset</button>
+      <button id="btn-reset" class="btn" title="Reset fields to current preset defaults">Reset</button>
+      <button id="btn-restart" class="btn" title="Full restart — reload the page">Restart</button>
       <button id="btn-advanced" class="btn btn-advanced">Advanced</button>
     </div>
   </div>

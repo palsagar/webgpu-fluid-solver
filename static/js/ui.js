@@ -224,6 +224,7 @@ export class UI {
         btnPlay?.addEventListener('click', togglePause);
         btnStep?.addEventListener('click', stepOnce);
         btnReset?.addEventListener('click', () => this.reapplyCurrentPreset());
+        document.getElementById('btn-restart')?.addEventListener('click', () => location.reload());
 
         this._togglePause = togglePause;
         this._stepOnce = stepOnce;
