@@ -53,6 +53,36 @@ body {
   font-size: 12px;
 }
 
+.title-spacer {
+  flex: 1;
+}
+
+.gh-link {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  color: #8b949e;
+  text-decoration: none;
+  font-size: 12px;
+  padding: 3px 8px;
+  border-radius: 4px;
+  transition: color 0.2s;
+}
+
+.gh-link:hover {
+  color: #e0e0e0;
+}
+
+.gh-icon {
+  width: 16px;
+  height: 16px;
+}
+
+.gh-stars {
+  font-family: monospace;
+  font-size: 11px;
+}
+
 #preset-bar {
   background: #161b22;
   border-bottom: 1px solid #30363d;
