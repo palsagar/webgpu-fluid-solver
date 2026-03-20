@@ -13,6 +13,10 @@ export class Interaction {
         this.boundaryMask = null;
         this.paintMode = false;
         this._paintFrame = 0;
+        this._startClientX = 0;
+        this._startClientY = 0;
+        this._didDrag = false;
+        this._particleSystem = null;
 
         const size = solver.numX * solver.numY;
         this._sData = new Float32Array(size);
@@ -183,15 +187,26 @@ export class Interaction {
     }
 
     _startDrag(clientX, clientY) {
+        this._startClientX = clientX;
+        this._startClientY = clientY;
+        this._didDrag = false;
         const { x, y } = this.screenToSim(clientX, clientY);
         this.prevX = x;
         this.prevY = y;
         this.dragging = true;
-        this.rasterizeObstacle(x, y, 0, 0);
     }
 
     _drag(clientX, clientY) {
         if (!this.dragging) return;
+        // Check 5px threshold before starting actual drag
+        if (!this._didDrag) {
+            const dx = clientX - this._startClientX;
+            const dy = clientY - this._startClientY;
+            if (dx * dx + dy * dy < 25) return;
+            this._didDrag = true;
+            // First rasterize at start position
+            this.rasterizeObstacle(this.prevX, this.prevY, 0, 0);
+        }
         const { x, y } = this.screenToSim(clientX, clientY);
         const dt = this.solver.params.dt;
         const vx = (x - this.prevX) / dt;
@@ -202,6 +217,14 @@ export class Interaction {
     }
 
     _endDrag() {
+        if (this.dragging && !this._didDrag && this._particleSystem) {
+            // No drag happened — treat as click, emit particles
+            const { x, y } = this.screenToSim(this._startClientX, this._startClientY);
+            this._particleSystem.emit(x, y);
+            // Dismiss canvas hint on first click
+            const hint = document.getElementById('canvas-hint');
+            if (hint) hint.remove();
+        }
         this.dragging = false;
     }
 }
