@@ -2,6 +2,7 @@ import { FluidSolver } from './fluid-solver.js';
 import { Renderer } from './renderer.js';
 import { Interaction } from './interaction.js';
 import { UI } from './ui.js';
+import { ParticleSystem } from './particles.js';
 import { AdaptiveController } from './adaptive.js';
 
 async function init() {
@@ -35,6 +36,10 @@ async function init() {
 
     renderer.setInteraction(interaction);
     interaction._renderer = renderer;
+
+    const particles = new ParticleSystem();
+    renderer.particleSystem = particles;
+    interaction._particleSystem = particles;
 
     const ui = new UI(solver, renderer, interaction);
     const adaptive = new AdaptiveController(solver, renderer, interaction, ui);
