@@ -176,12 +176,14 @@ export class UI {
             if (key === 'smoke')       cb.checked = this.renderer.showSmoke;
             if (key === 'streamlines') cb.checked = this.renderer.showStreamlines ?? false;
             if (key === 'velocities')  cb.checked = this.renderer.showVelocities  ?? false;
+            if (key === 'particles')   cb.checked = this.renderer.showParticles ?? true;
 
             cb.addEventListener('change', () => {
                 if (key === 'pressure')    this.renderer.showPressure    = cb.checked;
                 if (key === 'smoke')       this.renderer.showSmoke       = cb.checked;
                 if (key === 'streamlines') this.renderer.showStreamlines = cb.checked;
                 if (key === 'velocities')  this.renderer.showVelocities  = cb.checked;
+                if (key === 'particles')   this.renderer.showParticles   = cb.checked;
             });
         });
     }

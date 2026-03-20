@@ -146,6 +146,21 @@ body {
   font-size: 10px;
 }
 
+#canvas-hint {
+  position: absolute;
+  bottom: 40px;
+  left: 50%;
+  transform: translateX(-50%);
+  font-size: 14px;
+  color: white;
+  background: rgba(0, 0, 0, 0.7);
+  padding: 8px 16px;
+  border-radius: 8px;
+  pointer-events: none;
+  animation: fadeOut 3s 2s forwards;
+  z-index: 5;
+}
+
 .toolbar {
   background: #161b22;
   border-top: 1px solid #30363d;
