@@ -177,32 +177,23 @@ export class UI {
             if (key === 'smoke')       cb.checked = this.renderer.showSmoke;
             if (key === 'streamlines') cb.checked = this.renderer.showStreamlines ?? false;
             if (key === 'velocities')  cb.checked = this.renderer.showVelocities  ?? false;
-            if (key === 'particles')   cb.checked = this.renderer.showParticles ?? true;
 
             cb.addEventListener('change', () => {
                 if (key === 'pressure')    this.renderer.showPressure    = cb.checked;
                 if (key === 'smoke')       this.renderer.showSmoke       = cb.checked;
                 if (key === 'streamlines') this.renderer.showStreamlines = cb.checked;
                 if (key === 'velocities')  this.renderer.showVelocities  = cb.checked;
-                if (key === 'particles')   this.renderer.showParticles   = cb.checked;
             });
         });
     }
 
     _bindModeSwitcher() {
-        const btnObstacle = document.getElementById('btn-mode-obstacle');
-        const btnParticles = document.getElementById('btn-mode-particles');
-        if (!btnObstacle || !btnParticles) return;
-
-        btnObstacle.addEventListener('click', () => {
-            this.interaction.mode = 'obstacle';
-            btnObstacle.classList.add('active');
-            btnParticles.classList.remove('active');
-        });
-        btnParticles.addEventListener('click', () => {
-            this.interaction.mode = 'particles';
-            btnParticles.classList.add('active');
-            btnObstacle.classList.remove('active');
+        const btn = document.getElementById('btn-mode');
+        if (!btn) return;
+        btn.addEventListener('click', () => {
+            const isParticles = this.interaction.mode === 'particles';
+            this.interaction.mode = isParticles ? 'obstacle' : 'particles';
+            btn.classList.toggle('active', !isParticles);
         });
     }
 

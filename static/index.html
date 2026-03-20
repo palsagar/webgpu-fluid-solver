@@ -136,9 +136,6 @@
       <label title="Velocity arrow field — length and color indicate speed">
         <input type="checkbox" data-viz="velocities"> Velocities
       </label>
-      <label title="Toggle particle trail visibility. Use Particles mouse mode to release tracers.">
-        <input type="checkbox" data-viz="particles" checked> Particles
-      </label>
     </div>
 
     <div class="toolbar-group">
@@ -147,12 +144,8 @@
       <button class="shape-btn" data-shape="square" title="Click to change obstacle shape">Square</button>
       <button class="shape-btn" data-shape="airfoil" title="Click to change obstacle shape">Airfoil</button>
       <button class="shape-btn" data-shape="wedge" title="Click to change obstacle shape">Wedge</button>
-    </div>
-
-    <div class="toolbar-group">
-      <span class="toolbar-label">Mouse:</span>
-      <button id="btn-mode-obstacle" class="mode-btn active" title="Click/drag to move the obstacle">Obstacle</button>
-      <button id="btn-mode-particles" class="mode-btn" title="Click to release tracer particles">Particles</button>
+      <span class="toolbar-divider"></span>
+      <button id="btn-mode" class="mode-btn" title="Toggle: click canvas to place particle emitters instead of moving obstacle">Tracers</button>
     </div>
 
     <div class="toolbar-group">

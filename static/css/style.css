@@ -196,6 +196,12 @@ body {
   accent-color: #1f6feb;
 }
 
+.toolbar-divider {
+  width: 1px;
+  height: 18px;
+  background: #30363d;
+}
+
 .shape-btn, .mode-btn {
   padding: 4px 10px;
   background: #21262d;

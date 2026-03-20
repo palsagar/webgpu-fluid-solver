@@ -186,17 +186,20 @@ export class Interaction {
     }
 
     _onPointerDown(clientX, clientY) {
-        if (this.mode === 'particles' && this._particleSystem) {
-            const { x, y } = this.screenToSim(clientX, clientY);
-            this._particleSystem.emit(x, y);
-            const hint = document.getElementById('canvas-hint');
-            if (hint) hint.remove();
-            return;
+        if (this.mode === 'particles') {
+            if (this._particleSystem) {
+                const { x, y } = this.screenToSim(clientX, clientY);
+                this._particleSystem.addEmitter(x, y);
+                const hint = document.getElementById('canvas-hint');
+                if (hint) hint.remove();
+            }
+            return; // Never fall through to drag in particles mode
         }
         this._startDrag(clientX, clientY);
     }
 
     _startDrag(clientX, clientY) {
+        if (this.mode !== 'obstacle') return;
         const { x, y } = this.screenToSim(clientX, clientY);
         this.prevX = x;
         this.prevY = y;
@@ -205,7 +208,7 @@ export class Interaction {
     }
 
     _drag(clientX, clientY) {
-        if (!this.dragging) return;
+        if (!this.dragging || this.mode !== 'obstacle') return;
         const { x, y } = this.screenToSim(clientX, clientY);
         const dt = this.solver.params.dt;
         const vx = (x - this.prevX) / dt;

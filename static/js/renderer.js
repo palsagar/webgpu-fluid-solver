@@ -124,8 +124,8 @@ export class Renderer {
     if (this.showVelocities && this._cachedArrows) {
       this._drawCachedArrows(this._ctx, this._cachedArrows);
     }
-    // Particle advection and rendering
-    if (this.showParticles && this.particleSystem) {
+    // Particle advection and rendering (always active when particles exist)
+    if (this.particleSystem) {
       const dt = this.solver.params.dt;
       this.particleSystem.step(
         this.uData, this.vData, dt,
