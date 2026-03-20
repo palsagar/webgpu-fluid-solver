@@ -13,7 +13,7 @@ Open `http://localhost:8000` in Chrome (WebGPU required).
 
 ## Architecture
 
-- **Compute**: 4 WGSL shaders (integrate, pressure, boundary, advect) dispatched via raw WebGPU compute pipelines
+- **Compute**: 3 WGSL shaders (pressure, boundary, advect) dispatched via raw WebGPU compute pipelines
 - **Rendering**: 2D canvas with `putImageData` + canvas drawing for overlays (streamlines, arrows, obstacles)
 - **Backend**: Minimal FastAPI server (~10 lines) serving static files
 - **No build step**: Vanilla ES modules, Three.js import map removed (not used)

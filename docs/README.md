@@ -24,11 +24,9 @@ graph TD
 
     subgraph GPU["WebGPU Device"]
         B[Storage Buffers — u, v, p, s, m + ping-pong pairs]
-        C1[integrate.wgsl]
         C2[pressure.wgsl]
         C3[boundary.wgsl]
         C4[advect.wgsl]
-        C1 --> B
         C2 --> B
         C3 --> B
         C4 --> B

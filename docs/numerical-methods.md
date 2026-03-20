@@ -5,14 +5,14 @@
 The solver implements the incompressible Navier-Stokes equations in two dimensions:
 
 ```math
-\frac{\partial \mathbf{u}}{\partial t} + (\mathbf{u} \cdot \nabla)\mathbf{u} = -\frac{1}{\rho}\nabla p + \mathbf{g}
+\frac{\partial \mathbf{u}}{\partial t} + (\mathbf{u} \cdot \nabla)\mathbf{u} = -\frac{1}{\rho}\nabla p
 ```
 
 ```math
 \nabla \cdot \mathbf{u} = 0
 ```
 
-where **u** = (u, v) is the velocity field, p is pressure, rho is density, and **g** is gravitational acceleration (applied in the vertical direction only).
+where **u** = (u, v) is the velocity field, p is pressure, and rho is density.
 
 **Key simplification:** There is no explicit viscosity (nu) term. The semi-Lagrangian advection scheme introduces numerical diffusion that acts as an implicit viscosity proportional to h^2 / dt, where h is the cell size and dt is the time step. The effective Reynolds number therefore depends on grid resolution -- finer grids produce less numerical diffusion and higher effective Re.
 
@@ -47,21 +47,9 @@ j=0  u  p,m,s  u  p,m,s  u  p,m,s
 
 ## 3. Operator Splitting
 
-Each time step is split into four sequential sub-steps, each implemented as a separate WGSL compute shader. This operator-splitting approach decouples the physics into independently solvable stages.
+Each time step is split into three sequential sub-steps, each implemented as a separate WGSL compute shader. This operator-splitting approach decouples the physics into independently solvable stages.
 
-### Step 1: Force Integration (`integrate.wgsl`)
-
-Gravity is applied as a forward Euler update to the vertical velocity component:
-
-```math
-v_{i,j}^* = v_{i,j}^n + g \cdot \Delta t
-```
-
-The update is applied only where both adjacent cells are fluid (`s[i,j] != 0` and `s[i, j-1] != 0`), since v_{i,j} sits on the face between cells (i,j) and (i, j-1). Interior cells only -- the shader skips the boundary ring (`i < 1`, `i >= numX`, `j < 1`, `j >= numY - 1`).
-
-Horizontal velocity u is unchanged (no horizontal body forces).
-
-### Step 2: Pressure Projection (`pressure.wgsl`)
+### Step 1: Pressure Projection (`pressure.wgsl`)
 
 The pressure solve enforces the divergence-free constraint. The discrete divergence at cell (i,j) is:
 
@@ -98,7 +86,7 @@ Multiplying by the neighbor's solid flag ensures velocities on solid-wall faces 
 
 **Over-relaxation:** omega = 1.9 (set from JavaScript). Values in (1, 2) accelerate convergence of Gauss-Seidel; 1.9 is near-optimal for typical grid sizes.
 
-### Step 3: Boundary Extrapolation (`boundary.wgsl`)
+### Step 2: Boundary Extrapolation (`boundary.wgsl`)
 
 Two 1D passes copy interior velocities to domain boundaries, enforcing free-slip conditions:
 
@@ -112,7 +100,7 @@ Two 1D passes copy interior velocities to domain boundaries, enforcing free-slip
 
 This extrapolation copies the nearest interior velocity to the boundary, which enforces zero normal derivative (free-slip / zero-shear). Note: this is also why lid-driven cavity is infeasible -- any forced velocity at a wall boundary gets overwritten by this extrapolation step.
 
-### Step 4: Semi-Lagrangian Advection (`advect.wgsl`)
+### Step 3: Semi-Lagrangian Advection (`advect.wgsl`)
 
 Advection uses the unconditionally stable semi-Lagrangian method. For each grid point **x**, the departure point is found by backtracing along the velocity:
 
@@ -150,9 +138,8 @@ v_{\text{center}} &= (v_{i,j} + v_{i,j+1}) / 2
 
 ### Solid Walls
 
-Solid cells have `s[i,j] = 0`. All four compute shaders handle them:
+Solid cells have `s[i,j] = 0`. All three compute shaders handle them:
 
-- **Integrate:** Skips faces where either adjacent cell is solid.
 - **Pressure:** Skips solid cells entirely. The s-flag terms in velocity correction prevent modifying velocities on solid faces.
 - **Boundary:** Does not check solids (operates on domain edges only).
 - **Advection:** Skips faces/cells where an adjacent cell is solid, preserving zero-flux conditions.
@@ -175,7 +162,7 @@ The boundary extrapolation step copies interior velocities to wall cells, overwr
 
 | Property | Value |
 |---|---|
-| Temporal order | First-order (Forward Euler integration + first-order backtrace) |
+| Temporal order | First-order (first-order backtrace) |
 | Spatial order | Second-order (bilinear interpolation at departure points) |
 | Stability | Unconditionally stable (semi-Lagrangian advection has no CFL restriction) |
 

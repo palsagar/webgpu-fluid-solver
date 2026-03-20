@@ -35,10 +35,9 @@ Three uniform buffers (`uniformBuf`, `uniformBufRed`, `uniformBufBlack`), each 3
 | 4 | `numY` | u32 | Grid height |
 | 8 | `h` | f32 | Cell spacing |
 | 12 | `dt` | f32 | Time step |
-| 16 | `gravity` | f32 | Gravitational acceleration |
-| 20 | `omega` | f32 | SOR relaxation factor |
-| 24 | `density` | f32 | Fluid density |
-| 28 | `color` | u32 | 0 = red, 1 = black (pressure solver only) |
+| 16 | `omega` | f32 | SOR relaxation factor |
+| 20 | `density` | f32 | Fluid density |
+| 24 | `color` | u32 | 0 = red, 1 = black (pressure solver only) |
 
 ---
 
@@ -48,20 +47,18 @@ Each simulation frame dispatches all compute passes into a single `commandEncode
 
 ```mermaid
 graph LR
-    A[Integrate<br/>1 dispatch, 8×8] --> B["Pressure Red → Black<br/>×numIters"]
-    B --> C[Boundary H<br/>1 dispatch, 64]
+    B["Pressure Red → Black<br/>×numIters"] --> C[Boundary H<br/>1 dispatch, 64]
     C --> D[Boundary V<br/>1 dispatch, 64]
     D --> E[Advect Velocity<br/>1 dispatch, 8×8]
     E --> F[Advect Smoke<br/>1 dispatch, 8×8]
 ```
 
-**Dispatch counts per frame:** 4 fixed dispatches (integrate, boundary H, boundary V, advect velocity, advect smoke = 5... but advect velocity + advect smoke are 2, boundary is 2, integrate is 1, so 5) plus 2 × `numIters` for pressure. At the default 40 iterations: **85 dispatches** in a single command buffer.
+**Dispatch counts per frame:** 4 fixed dispatches (boundary H, boundary V, advect velocity, advect smoke) plus 2 × `numIters` for pressure. Total: `4 + 2×numIters`. At the default 40 iterations: **84 dispatches** in a single command buffer.
 
 **Workgroup sizing:**
 
 | Shader | Workgroup size | Dispatch dimensions |
 |--------|---------------|---------------------|
-| integrate | `@workgroup_size(8, 8)` | `ceil(numX/8) × ceil(numY/8) × 1` |
 | pressure | `@workgroup_size(8, 8)` | `ceil(numX/8) × ceil(numY/8) × 1` |
 | boundary H | `@workgroup_size(64)` | `ceil(numX/64) × 1 × 1` |
 | boundary V | `@workgroup_size(64)` | `ceil(numY/64) × 1 × 1` |
@@ -72,13 +69,12 @@ graph LR
 
 ## 3. Bind Group Strategy
 
-The solver creates 4 explicit `GPUBindGroupLayout` objects and 8 bind groups. Explicit layouts are required because `layout: 'auto'` only includes bindings that are **statically used** by the shader entry point. For example, `boundary.wgsl`'s `extrapolate_horizontal` uses `u` but not `v` — an auto-layout would omit the `v` binding, and bind group creation would fail with a layout mismatch.
+The solver creates 3 explicit `GPUBindGroupLayout` objects and 7 bind groups. Explicit layouts are required because `layout: 'auto'` only includes bindings that are **statically used** by the shader entry point. For example, `boundary.wgsl`'s `extrapolate_horizontal` uses `u` but not `v` — an auto-layout would omit the `v` binding, and bind group creation would fail with a layout mismatch.
 
 ### Bind Group Layouts
 
 | Layout | Bindings |
 |--------|----------|
-| `_integrateBGL` | uniform(0), storage(1), storage(2), read-only-storage(3) |
 | `_pressureBGL` | uniform(0), storage(1), storage(2), read-only-storage(3), storage(4) |
 | `_boundaryBGL` | uniform(0), storage(1), storage(2) |
 | `_advectBGL` | uniform(0), read-only-storage(1,2,3), storage(4,5) |
@@ -87,7 +83,6 @@ The solver creates 4 explicit `GPUBindGroupLayout` objects and 8 bind groups. Ex
 
 | Bind Group | Layout | Binding 0 | Binding 1 | Binding 2 | Binding 3 | Binding 4 | Binding 5 |
 |------------|--------|-----------|-----------|-----------|-----------|-----------|-----------|
-| `integrateBindGroup` | integrate | uniformBuf | u | v | s | — | — |
 | `pressureRedBindGroup` | pressure | uniformBufRed | u | v | s | p | — |
 | `pressureBlackBindGroup` | pressure | uniformBufBlack | u | v | s | p | — |
 | `boundaryBindGroup` | boundary | uniformBuf | u | v | — | — | — |
@@ -126,9 +121,7 @@ See [Boundary Conditions](numerical-methods.md#5-boundary-conditions) for the nu
 
 ## 5. Solid Mask Through the Pipeline
 
-The `s` buffer (solid mask: 0.0 = solid, 1.0 = fluid) is rasterized on the CPU via `rasterizeObstacle()` in `interaction.js` and uploaded to the GPU with `device.queue.writeBuffer()`. It flows through all four compute stages differently:
-
-**integrate.wgsl:** Skips cells where `s[idx] == 0` (the cell itself is solid) or `s[i*n + j-1] == 0` (the cell below is solid). Only applies gravity to velocity faces between two fluid cells.
+The `s` buffer (solid mask: 0.0 = solid, 1.0 = fluid) is rasterized on the CPU via `rasterizeObstacle()` in `interaction.js` and uploaded to the GPU with `device.queue.writeBuffer()`. It flows through all three compute stages differently:
 
 **pressure.wgsl:** Counts fluid neighbors via `sx0 + sx1 + sy0 + sy1` (the s-values of the 4 cardinal neighbors). Skips cells where `s[idx] == 0` (solid cell) or where `sTotal == 0` (all neighbors are solid). The divergence correction is divided by `sTotal`, naturally handling partial fluid neighborhoods near boundaries.
 
@@ -202,7 +195,7 @@ Drawn via Canvas 2D primitives (`arc`, `fillRect`/`strokeRect`, `beginPath`/`lin
 
 **Single outstanding readback.** The `readbackPending` flag ensures at most one `mapAsync` is in flight for the field buffer. A second readback is not issued until the first completes. This prevents staging buffer contention and GPU pipeline stalls.
 
-**Batched compute submission.** All dispatches for one simulation step (integrate, pressure iterations, boundary, advection) are recorded into a single `GPUCommandEncoder` and submitted with one `device.queue.submit()` call. No synchronization barriers between passes — WebGPU guarantees sequential execution within a submission.
+**Batched compute submission.** All dispatches for one simulation step (pressure iterations, boundary, advection) are recorded into a single `GPUCommandEncoder` and submitted with one `device.queue.submit()` call. No synchronization barriers between passes — WebGPU guarantees sequential execution within a submission.
 
 **Cached overlay geometry.** Streamline paths and velocity arrow geometry are computed once per velocity readback (every 10 frames) and stored in `_cachedStreamlines` / `_cachedArrows`. Every frame, the cached geometry is drawn with cheap Canvas 2D calls. This decouples overlay cost from the rendering frame rate.
 

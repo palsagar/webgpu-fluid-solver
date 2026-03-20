@@ -8,7 +8,7 @@ Overview of the WebGPU Eulerian fluid solver: how the pieces fit together, the f
 |-------|-----------|-------|
 | **Backend** | FastAPI + Uvicorn | ~10 lines of Python; serves static files only, plus a `/api/health` endpoint |
 | **Frontend** | Vanilla ES modules | No build step, no bundler, no framework |
-| **Compute** | WebGPU compute shaders (WGSL) | 4 shaders: integrate, pressure, boundary, advect |
+| **Compute** | WebGPU compute shaders (WGSL) | 3 shaders: pressure, boundary, advect |
 | **Rendering** | 2D canvas (`putImageData` + Canvas 2D API) | Field visualization via `putImageData`; overlays (streamlines, arrows, obstacles) via canvas drawing calls. Not Three.js. |
 | **Colormaps** | 256x1 PNG LUT textures | Scientific colormaps (magma, coolwarm, viridis) loaded from `static/colormaps/` |
 
@@ -49,7 +49,7 @@ sequenceDiagram
         Main->>Solver: writeBuffer (smoke inlet data)
         Note right of Solver: GPU: queue.writeBuffer
         Main->>Solver: solver.step(numIters)
-        Note right of Solver: GPU: dispatches integrate,<br/>pressure x N, boundary, advect
+        Note right of Solver: GPU: dispatches pressure x N,<br/>boundary, advect
         Main->>Solver: writeBuffer (re-apply inflow velocity)
         Note right of Solver: GPU: writes to both u and uNew<br/>at column i=1
     end
@@ -75,7 +75,7 @@ Defined in `static/js/presets.js`. The `PRESETS` object holds configuration and 
 
 ### `loadPreset(name, solver, interaction)`
 
-1. **Set solver params** -- `dt`, `gravity`, `omega`, `density` from the preset.
+1. **Set solver params** -- `dt`, `omega`, `density` from the preset.
 2. **Reset all fields** -- velocity (u, v), pressure, and smoke are zeroed / set to defaults (`m = 1.0` everywhere = clear).
 3. **Build solid mask and inflow** -- iterates the grid to set boundary cells (`s = 0` for walls) and inflow velocity at column `i = 1`, based on `boundaryType`.
 4. **Write to both ping-pong buffers** -- calls `solver.resetFlipState()`, then writes `u`, `uNew`, `v`, `vNew`, `m`, `mNew` so neither stale buffer survives.
@@ -91,7 +91,7 @@ Defined in `static/js/presets.js`. The `PRESETS` object holds configuration and 
 | **Karman Vortex** | 80 | 1/120 | 1.0 | 1.9 | Circle, r=0.06 at (0.3, 0.5) | `windTunnel` |
 | **Backward Step** | 60 | 1/60 | 1.5 | 1.9 | None | `backwardStep` (step block x<0.3, y<0.5) |
 
-All presets use `gravity = 0` and `density = 1000`. Smoke inlet is a narrow central band of dark dye (`m = 0`) at the left edge.
+All presets use `density = 1000`. Smoke inlet is a narrow central band of dark dye (`m = 0`) at the left edge.
 
 ## 5. Adaptive Resolution
 
