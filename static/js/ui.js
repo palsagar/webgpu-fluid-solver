@@ -4,10 +4,7 @@ import { loadPreset, PRESETS } from './presets.js';
 const PRESET_KEY_MAP = {
     'wind-tunnel':    'windTunnel',
     'karman-vortex':  'karmanVortex',
-    'lid-cavity':     'lidCavity',
     'backward-step':  'backwardStep',
-    'channel-flow':   'channelFlow',
-    'sandbox':        'sandbox',
 };
 
 export class UI {
@@ -93,6 +90,14 @@ export class UI {
         const invelValEl = document.getElementById('val-invel');
         if (invelEl) invelEl.value = inVel;
         if (invelValEl) invelValEl.textContent = inVel.toFixed(2);
+
+        // Sync resolution slider to current tier
+        if (this.adaptive) {
+            const resEl = document.getElementById('slider-resolution');
+            const resVal = document.getElementById('val-resolution');
+            if (resEl) resEl.value = this.adaptive.currentTierIndex;
+            if (resVal) resVal.textContent = this.adaptive.tiers[this.adaptive.currentTierIndex];
+        }
 
         this._updateRe(inVel);
     }
@@ -245,14 +250,12 @@ export class UI {
         const resVal = document.getElementById('val-resolution');
         if (resEl) {
             resEl.addEventListener('input', () => {
-                const tier = parseInt(resEl.value);
-                if (resVal) resVal.textContent = tier;
+                const idx = parseInt(resEl.value);
                 if (this.adaptive) {
                     this.adaptive.manualOverride = true;
-                    const tierIndex = this.adaptive.tiers.indexOf(tier) !== -1
-                        ? this.adaptive.tiers.indexOf(tier)
-                        : this.adaptive.tiers.findIndex(t => t >= tier);
-                    this.adaptive.currentTierIndex = Math.max(0, tierIndex);
+                    this.adaptive.currentTierIndex = idx;
+                    const tier = this.adaptive.tiers[idx];
+                    if (resVal) resVal.textContent = tier;
                     this.adaptive.applyTier();
                 }
             });

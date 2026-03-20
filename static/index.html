@@ -31,10 +31,7 @@
     <span class="preset-label">Preset:</span>
     <button class="preset-btn active" data-preset="wind-tunnel">Wind Tunnel</button>
     <button class="preset-btn" data-preset="karman-vortex">Kármán Vortex</button>
-    <button class="preset-btn" data-preset="lid-cavity">Lid Cavity</button>
     <button class="preset-btn" data-preset="backward-step">Backward Step</button>
-    <button class="preset-btn" data-preset="channel-flow">Channel Flow</button>
-    <button class="preset-btn" data-preset="sandbox">Sandbox</button>
   </div>
 
   <div id="canvas-container">
@@ -117,8 +114,8 @@
             <span class="slider-name">Grid resolution</span>
             <span class="slider-value" id="val-resolution">256</span>
           </div>
-          <input type="range" id="slider-resolution" min="64" max="1024" step="1" value="256">
-          <div class="slider-hint">Changes take effect on reset</div>
+          <input type="range" id="slider-resolution" min="0" max="3" step="1" value="2" list="tier-list">
+          <datalist id="tier-list"><option value="0" label="64"><option value="1" label="128"><option value="2" label="256"><option value="3" label="512"></datalist>
         </div>
 
         <button id="btn-defaults" class="btn">Reset to Defaults</button>

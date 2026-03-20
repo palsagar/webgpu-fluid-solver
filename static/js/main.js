@@ -52,31 +52,13 @@ async function init() {
                 solver.device.queue.writeBuffer(solver.smokeBuffer, 0, ui.smokeInletData);
             }
             solver.step(ui.numIters);
-            // Re-apply boundary velocities AFTER step (so advection can't overwrite them)
+            // Re-apply inflow velocity AFTER step (so advection can't overwrite it)
             if (ui.boundaryVelData) {
                 const bv = ui.boundaryVelData;
                 const n = solver.numY;
-                if (bv.type === 'inflow') {
-                    // Write column i=1 to both u and uNew
-                    solver.device.queue.writeBuffer(
-                        solver.u, 1 * n * 4, bv.uData, 1 * n, n
-                    );
-                    solver.device.queue.writeBuffer(
-                        solver.uNew, 1 * n * 4, bv.uData, 1 * n, n
-                    );
-                } else if (bv.type === 'lid') {
-                    // Write lid velocity at wall cells to both u and uNew
-                    if (!bv._lidBuf) {
-                        bv._lidBuf = new Float32Array(1);
-                        bv._lidBuf[0] = bv.lidVel;
-                    }
-                    const lidJ = bv.lidJ;
-                    for (let i = 1; i < bv.numX - 1; i++) {
-                        const offset = (i * n + lidJ) * 4;
-                        solver.device.queue.writeBuffer(solver.u, offset, bv._lidBuf);
-                        solver.device.queue.writeBuffer(solver.uNew, offset, bv._lidBuf);
-                    }
-                }
+                // Write inflow column i=1 to both ping-pong buffers
+                solver.device.queue.writeBuffer(solver.u, 1 * n * 4, bv.uData, 1 * n, n);
+                solver.device.queue.writeBuffer(solver.uNew, 1 * n * 4, bv.uData, 1 * n, n);
             }
         }
         renderer.draw();

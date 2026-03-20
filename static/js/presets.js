@@ -13,39 +13,12 @@ export const PRESETS = {
     boundaryType: 'windTunnel',
     show: { pressure: false, smoke: true, streamlines: false, velocities: false },
   },
-  lidCavity: {
-    name: 'Lid Cavity',
-    numIters: 60, dt: 1/60, gravity: 0, omega: 1.9, inVel: 0,
-    lidVel: 1.0,
-    obstacle: null,
-    boundaryType: 'cavity',
-    show: { pressure: true, smoke: false, streamlines: false, velocities: false },
-  },
   backwardStep: {
     name: 'Backward Step',
     numIters: 60, dt: 1/60, gravity: 0, omega: 1.9, inVel: 1.5,
     obstacle: null,
     boundaryType: 'backwardStep',
     stepGeometry: { x0: 0, x1: 0.3, y0: 0, y1: 0.5 },
-    show: { pressure: false, smoke: true, streamlines: false, velocities: false },
-  },
-  channelFlow: {
-    name: 'Channel Flow',
-    numIters: 40, dt: 1/60, gravity: 0, omega: 1.9, inVel: 1.5,
-    obstacles: [
-      { shape: 'circle', x: 0.25, y: 0.35, radius: 0.08 },
-      { shape: 'circle', x: 0.45, y: 0.65, radius: 0.08 },
-      { shape: 'circle', x: 0.65, y: 0.35, radius: 0.08 },
-    ],
-    boundaryType: 'windTunnel',
-    show: { pressure: false, smoke: true, streamlines: true, velocities: false },
-  },
-  sandbox: {
-    name: 'Sandbox',
-    numIters: 40, dt: 1/60, gravity: 0, omega: 1.0, inVel: 0,
-    obstacle: null,
-    boundaryType: 'box',
-    paintMode: true,
     show: { pressure: false, smoke: true, streamlines: false, velocities: false },
   },
 };
@@ -93,20 +66,6 @@ export function loadPreset(name, solver, interaction) {
       mData[j] = 0.0;
     }
 
-  } else if (bt === 'cavity') {
-    const lidVel = preset.lidVel || 0;
-    for (let i = 0; i < numX; i++) {
-      for (let j = 0; j < numY; j++) {
-        let s = 1.0;
-        if (i === 0 || i === numX - 1 || j === 0 || j === numY - 1) s = 0.0;
-        sData[i * n + j] = s;
-        // Set lid velocity at the top wall cells (j=numY-1) AND the row just below
-        // The wall cells (s=0) won't be modified by pressure/advection
-        // The extrapolate step copies interior→boundary, so we also set j=numY-1
-        if (j === numY - 1) uData[i * n + j] = lidVel;
-      }
-    }
-
   } else if (bt === 'backwardStep') {
     const sg = preset.stepGeometry;
     const inVel = preset.inVel;
@@ -131,14 +90,6 @@ export function loadPreset(name, solver, interaction) {
       if (uData[1 * n + j] > 0) mData[j] = 0.0;
     }
 
-  } else if (bt === 'box') {
-    for (let i = 0; i < numX; i++) {
-      for (let j = 0; j < numY; j++) {
-        let s = 1.0;
-        if (i === 0 || i === numX - 1 || j === 0 || j === numY - 1) s = 0.0;
-        sData[i * n + j] = s;
-      }
-    }
   }
 
   solver.resetFlipState();
@@ -160,7 +111,6 @@ export function loadPreset(name, solver, interaction) {
   }
   interaction.boundaryMask = sData.slice();
   interaction._uData.set(uData);
-  interaction.paintMode = preset.paintMode || false;
 
   // Rasterize obstacle(s), or hide obstacle overlay if none
   interaction.showObstacle = false;
@@ -171,53 +121,18 @@ export function loadPreset(name, solver, interaction) {
     const ox = preset.obstacle.x * domainWidth;
     const oy = preset.obstacle.y * domainHeight;
     interaction.rasterizeObstacle(ox, oy, 0, 0);
-  } else if (preset.obstacles) {
-    interaction.showObstacle = true;
-    // Rasterize all obstacles into a single solid mask to avoid overwriting
-    const sMulti = interaction._sData;
-    sMulti.set(interaction.boundaryMask);
-    for (const obs of preset.obstacles) {
-      const ox = obs.x * domainWidth;
-      const oy = obs.y * domainHeight;
-      const r = obs.radius;
-      for (let i = 0; i < numX; i++) {
-        for (let j = 0; j < numY; j++) {
-          const idx = i * n + j;
-          if (interaction.boundaryMask[idx] === 0) continue;
-          const cx = (i + 0.5) * h;
-          const cy = (j + 0.5) * h;
-          const dx = cx - ox, dy = cy - oy;
-          if (dx * dx + dy * dy < r * r) {
-            sMulti[idx] = 0.0;
-          }
-        }
-      }
-    }
-    solver.writeSolidMask(sMulti);
-    // Store last obstacle position for dragging
-    const last = preset.obstacles[preset.obstacles.length - 1];
-    interaction.obstacleX = last.x * domainWidth;
-    interaction.obstacleY = last.y * domainHeight;
-    interaction.obstacleRadius = last.radius;
-    interaction.activeShape = last.shape;
   }
 
-  // Build smoke inlet data for any preset with inflow (first column, numY floats)
+  // Smoke inlet data (first column)
   let smokeInletData = null;
-  if (preset.inVel > 0 && (bt === 'windTunnel' || bt === 'backwardStep')) {
-    smokeInletData = mData.slice(0, numY); // column 0 of the mData we just built
+  if (preset.inVel > 0) {
+    smokeInletData = mData.slice(0, numY);
   }
 
-  // Build boundary velocity data that must be re-applied each frame
-  let boundaryVelData = null;
-  if (bt === 'windTunnel' || bt === 'backwardStep') {
-    // Re-apply inflow velocity at i=1 every frame
-    boundaryVelData = { type: 'inflow', uData: uData.slice() };
-  } else if (bt === 'cavity') {
-    // Build a per-column array of lid velocity values to write at j=numY-2
-    const lidVel = preset.lidVel || 0;
-    boundaryVelData = { type: 'lid', lidVel, numX, numY: n, lidJ: n - 1 };
-  }
+  // Boundary velocity data (inflow at i=1, re-applied each frame)
+  const boundaryVelData = preset.inVel > 0
+    ? { type: 'inflow', uData: uData.slice() }
+    : null;
 
-  return { show: preset.show, numIters: preset.numIters, paintMode: preset.paintMode || false, smokeInletData, boundaryVelData };
+  return { show: preset.show, numIters: preset.numIters, smokeInletData, boundaryVelData };
 }
