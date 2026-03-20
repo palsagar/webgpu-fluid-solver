@@ -41,7 +41,7 @@ graph TD
 
 | Document | Description |
 |----------|-------------|
-| [System Architecture](architecture.md) | Tech stack, module graph, frame loop, presets |
+| [System Architecture](architecture.md) | Tech stack, module graph, frame loop, presets, particle tracer |
 | [Numerical Methods](numerical-methods.md) | Governing equations, MAC grid, pressure solver, advection |
 | [GPU Pipeline](gpu-pipeline.md) | Buffer layout, compute dispatch, bind groups, rendering |
 

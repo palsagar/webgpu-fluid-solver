@@ -14,7 +14,7 @@ Overview of the WebGPU Eulerian fluid solver: how the pieces fit together, the f
 
 ## 2. Module Dependency Graph
 
-Seven JS modules under `static/js/`. Arrows show `import` edges.
+Eight JS modules under `static/js/`. Arrows show `import` edges.
 
 ```mermaid
 graph TD
@@ -23,12 +23,13 @@ graph TD
     main --> Interaction["interaction.js"]
     main --> UI["ui.js"]
     main --> Adaptive["adaptive.js"]
+    main --> Particles["particles.js"]
     UI --> Presets["presets.js"]
 ```
 
-**Runtime wiring (not static imports):** `main.js` passes `solver`, `renderer`, `interaction`, and `ui` instances into `AdaptiveController` via its constructor. `UI` also receives a reference to `AdaptiveController` (`ui.adaptive = adaptive`). `Interaction` receives a back-reference to `Renderer` at runtime (`interaction._renderer = renderer`).
+**Runtime wiring (not static imports):** `main.js` passes `solver`, `renderer`, `interaction`, and `ui` instances into `AdaptiveController` via its constructor. `UI` also receives a reference to `AdaptiveController` (`ui.adaptive = adaptive`). `Interaction` receives a back-reference to `Renderer` at runtime (`interaction._renderer = renderer`). `ParticleSystem` receives a reference to `Renderer` for velocity sampling.
 
-`FluidSolver`, `Renderer`, `Interaction`, `Presets`, and `AdaptiveController` are leaf modules with no static imports of their own.
+`FluidSolver`, `Renderer`, `Interaction`, `Presets`, `ParticleSystem`, and `AdaptiveController` are leaf modules with no static imports of their own.
 
 ## 3. Frame Loop
 
@@ -174,3 +175,32 @@ During drag, velocity is computed as `(currentPos - prevPos) / dt` and passed to
 ### Smoke Clearing
 
 When an obstacle moves away from cells it previously occupied, those cells have their smoke reset to `m = 1.0` (clear), preventing stale dye imprints from lingering in the flow field.
+
+## 7. Particle Tracer
+
+Defined in `static/js/particles.js`. A Lagrangian particle system that visualizes flow by advecting massless tracer particles through the velocity field.
+
+### ParticleSystem Class
+
+The `ParticleSystem` class manages emitters and particles with four public methods:
+
+- **`addEmitter(x, y)`** — places a continuous emitter at simulation coordinates (x, y). Maximum 10 emitters.
+- **`step(dt)`** — spawns ~3 particles per emitter per frame, advects all particles using the renderer's velocity readback data (same bilinear interpolation as streamlines), and removes particles that exceed their lifetime.
+- **`draw(ctx, numX, numY, h)`** — renders particle trails on the 2D canvas.
+- **`clear()`** — removes all emitters and particles.
+
+### Mode Switching
+
+A "Particles" toggle button switches the canvas interaction mode. When active, clicks place particle emitters instead of dragging obstacles. The interaction module's existing mouse handling is reused with a mode flag.
+
+### Advection
+
+Particles are advected on the CPU using the same velocity readback data available to streamlines and velocity arrows. Bilinear interpolation samples the staggered MAC grid at each particle's position. This is the same semi-Lagrangian sampling described in [Numerical Methods](numerical-methods.md#step-3-semi-lagrangian-advection-advectwgsl), applied as a forward trace rather than a backtrace.
+
+### Trails and Limits
+
+Each particle stores its last 20 positions. Trails are drawn with fading opacity by age. The system enforces a hard cap of 5000 particles and 10 emitters to keep CPU cost bounded.
+
+### Lifecycle
+
+Particles and emitters are cleared on preset change (triggered via `invalidateSolid()`) and on grid resize, since the velocity field and coordinate system are invalidated.

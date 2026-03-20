@@ -164,7 +164,7 @@ All overlays are drawn on the same 2D canvas using the Canvas 2D API, on top of 
 
 ### Velocity Readback
 
-Separate from the field readback. Uses two temporary staging buffers (one for `u`, one for `v`), created and destroyed per readback. Throttled by `_velReadbackPending` flag and triggered every 10 frames (only when streamlines or velocity arrows are enabled).
+Separate from the field readback. Uses two temporary staging buffers (one for `u`, one for `v`), created and destroyed per readback. Throttled by `_velReadbackPending` flag and triggered every 10 frames. The readback gate condition fires when streamlines, velocity arrows, **or the particle system** are active — particles need velocity data even when the other overlays are off.
 
 ### Streamlines
 
@@ -184,6 +184,10 @@ Separate from the field readback. Uses two temporary staging buffers (one for `u
 - **Color coding:** RGB interpolated by speed fraction — low speed is dark blue-green `rgb(30, 80, 120)`, high speed is bright cyan-green `rgb(0, 255, 255)`
 - **Arrowhead:** Triangular, length = 40% of shaft (min 3px), angle offset ±0.5 radians
 - **Caching:** Results stored in `_cachedArrows`, redrawn from cache every frame
+
+### Particle Trails
+
+Rendered via Canvas 2D after velocity arrows but before the obstacle overlay. Particles are advected on the CPU using the same velocity readback data as streamlines and arrows (see [Architecture — Particle Tracer](architecture.md#7-particle-tracer)). Each particle's trail (last 20 positions) is drawn as a polyline with opacity fading by age.
 
 ### Obstacle Overlay
 
