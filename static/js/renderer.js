@@ -1,4 +1,15 @@
+/**
+ * Renderer for the 2D flow simulation.
+ * Uses a 2D canvas with putImageData for field visualization (pressure/smoke)
+ * and canvas drawing for overlays (streamlines, velocity arrows, particles, obstacles).
+ * GPU data is read back via staging buffers for CPU-side rendering.
+ */
 export class Renderer {
+  /**
+   * @param {HTMLElement} container - DOM element to attach the canvas to
+   * @param {GPUDevice} device - WebGPU device for buffer operations
+   * @param {Object} solver - Flow solver instance providing simulation buffers and parameters
+   */
   constructor(container, device, solver) {
     this.device = device;
     this.solver = solver;
@@ -49,6 +60,10 @@ export class Renderer {
     this._loadColormaps();
   }
 
+  /**
+   * Loads colormap PNG images (256x1 pixel strips) and converts them
+   * to Uint8Array lookup tables for fast per-pixel color mapping.
+   */
   async _loadColormaps() {
     const names = ['viridis', 'coolwarm', 'magma'];
     const offscreen = document.createElement('canvas');
@@ -70,6 +85,12 @@ export class Renderer {
     return this._canvas;
   }
 
+  /**
+   * Creates a GPU staging buffer for reading back simulation data to the CPU.
+   * @param {number} numX - Grid width
+   * @param {number} numY - Grid height
+   * @returns {GPUBuffer} Staging buffer with MAP_READ | COPY_DST usage
+   */
   _createStagingBuffer(numX, numY) {
     return this.device.createBuffer({
       size: numX * numY * 4,
@@ -77,11 +98,18 @@ export class Renderer {
     });
   }
 
+  /**
+   * Main per-frame render method. Orchestrates GPU readback, field rendering,
+   * overlay computation/drawing, and particle advection.
+   * Called every frame from the requestAnimationFrame loop.
+   */
   draw() {
     const { device, solver } = this;
     // Choose which field to visualize
     const srcBuffer = this.showSmoke ? solver.smokeBuffer : solver.pressureBuffer;
 
+    // Asynchronous GPU-to-CPU readback of the active field (smoke or pressure).
+    // Only one readback is in-flight at a time to avoid mapping conflicts.
     if (!this.readbackPending) {
       this.readbackPending = true;
       const encoder = device.createCommandEncoder();
@@ -105,6 +133,8 @@ export class Renderer {
       this._renderField(this.fieldData);
     }
 
+    // Velocity readback every 10 frames (not every frame) to reduce GPU stalls.
+    // Needed for streamlines, arrows, and particle advection.
     this._frameCount = (this._frameCount || 0) + 1;
     if (this._frameCount % 10 === 0 && (this.showStreamlines || this.showVelocities || this.showParticles)) {
       this.readbackVelocity();
@@ -144,17 +174,29 @@ export class Renderer {
     this.interaction = interaction;
   }
 
+  /**
+   * Marks the solid cell mask as stale, triggering a fresh GPU readback on the next frame.
+   * Call when obstacles move, presets change, or the grid is resized.
+   */
   invalidateSolid() {
     this._solidReadbackDone = false;
     if (this.particleSystem) this.particleSystem.clear();
   }
 
+  /**
+   * Draws the obstacle shape on the canvas overlay.
+   * Supports circle, square, NACA 0012 airfoil, and wedge geometries.
+   * Coordinates are converted from simulation space to canvas pixel space.
+   * @param {CanvasRenderingContext2D} ctx - Canvas 2D context
+   * @param {Object} interaction - Interaction state with obstacle position, radius, and shape
+   */
   drawObstacle(ctx, interaction) {
     const { numX, numY, h } = this;
     const domainWidth = numX * h;
     const domainHeight = numY * h;
     const cw = this._canvas.width;
     const ch = this._canvas.height;
+    // Coordinate transforms: simulation space -> canvas pixels (y-axis flipped)
     const cX = x => x / domainWidth * cw;
     const cY = y => (1 - y / domainHeight) * ch;
 
@@ -179,6 +221,7 @@ export class Renderer {
       ctx.fillRect(cX(cx) - hw, cY(cy) - hh, 2 * hw, 2 * hh);
       ctx.strokeRect(cX(cx) - hw, cY(cy) - hh, 2 * hw, 2 * hh);
     } else if (shape === 'airfoil') {
+      // NACA 0012 symmetric airfoil: thickness distribution as a function of chord position
       const chord = r * 4;
       const n = 20;
       const upperPts = [];
@@ -208,6 +251,7 @@ export class Renderer {
       ctx.fill();
       ctx.stroke();
     } else if (shape === 'wedge') {
+      // Symmetric wedge with 15-degree half-angle, apex facing upstream
       const wedgeLen = r * 3;
       const tanHA = Math.tan(15 * Math.PI / 180);
       const apexX = cx - wedgeLen * 0.5;
@@ -223,6 +267,11 @@ export class Renderer {
     }
   }
 
+  /**
+   * Displays a brief on-screen indicator when grid resolution changes.
+   * @param {number} tier - New grid resolution tier (e.g., 100, 200)
+   * @param {number} direction - Positive for upscale, negative for downscale
+   */
   showTierChange(tier, direction) {
     const div = document.createElement('div');
     div.className = 'tier-indicator';
@@ -231,6 +280,11 @@ export class Renderer {
     setTimeout(() => div.remove(), 1500);
   }
 
+  /**
+   * Reads the solid cell mask (s-field) from GPU to CPU via a temporary staging buffer.
+   * The mask is used to render solid cells as dark gray and to block particle advection.
+   * Uses a one-shot staging buffer that is destroyed after readback completes.
+   */
   readbackSolid() {
     const { device, solver, numX, numY } = this;
     const size = numX * numY * 4;
@@ -246,6 +300,11 @@ export class Renderer {
     }).catch(() => { staging.destroy(); });
   }
 
+  /**
+   * Reads u and v velocity fields from GPU to CPU via temporary staging buffers.
+   * Increments _velDataGen on completion to signal that overlay geometry
+   * (streamlines, arrows) should be recomputed. Only one readback in-flight at a time.
+   */
   readbackVelocity() {
     if (this._velReadbackPending) return;
     this._velReadbackPending = true;
@@ -278,6 +337,16 @@ export class Renderer {
     });
   }
 
+  /**
+   * Bilinearly interpolates a velocity component at an arbitrary simulation-space position.
+   * Handles the MAC (marker-and-cell) grid staggering via dx/dy offsets.
+   * @param {number} x - X position in simulation coordinates
+   * @param {number} y - Y position in simulation coordinates
+   * @param {Float32Array} field - Velocity component data (u or v)
+   * @param {number} dx - Stagger offset in x (0 for u, h/2 for v)
+   * @param {number} dy - Stagger offset in y (h/2 for u, 0 for v)
+   * @returns {number} Interpolated velocity value
+   */
   _sampleVel(x, y, field, dx, dy) {
     const { numX, numY, h } = this;
     const h1 = 1.0 / h;
@@ -294,6 +363,12 @@ export class Renderer {
     return sx*sy*field[x0*n+y0] + tx*sy*field[x1*n+y0] + tx*ty*field[x1*n+y1] + sx*ty*field[x0*n+y1];
   }
 
+  /**
+   * Computes streamline paths by integrating the velocity field from seed points.
+   * Seeds are placed on a regular grid (every 5 cells). Each streamline is traced
+   * forward using Euler integration with a fixed step scale.
+   * @returns {Array<number[]>|null} Array of flat [x0,y0,x1,y1,...] paths in canvas pixels, or null
+   */
   _computeStreamlines() {
     if (!this.uData) return null;
     const { numX, numY, h, uData, vData } = this;
@@ -326,6 +401,11 @@ export class Renderer {
     return paths;
   }
 
+  /**
+   * Draws pre-computed streamline paths onto the canvas.
+   * @param {CanvasRenderingContext2D} ctx - Canvas 2D context
+   * @param {Array<number[]>} paths - Flat coordinate arrays from _computeStreamlines
+   */
   _drawCachedStreamlines(ctx, paths) {
     ctx.strokeStyle = 'rgba(255, 255, 255, 0.7)';
     ctx.lineWidth = 1.5;
@@ -339,6 +419,12 @@ export class Renderer {
     }
   }
 
+  /**
+   * Computes velocity arrow geometry from the readback velocity field.
+   * Arrows are placed on a regular grid (every 8 cells), sized proportionally
+   * to velocity magnitude, and colored on a blue-to-green gradient.
+   * @returns {Array<Object>|null} Array of arrow descriptors {px,py,ex,ey,r,g,b,angle,headLen}, or null
+   */
   _computeArrows() {
     if (!this.uData) return null;
     const { numX, numY, h, uData, vData } = this;
@@ -348,6 +434,7 @@ export class Renderer {
     const cw = this._canvas.width;
     const ch = this._canvas.height;
 
+    // First pass: find max velocity magnitude for normalization
     let maxMag = 0;
     for (let i = 0; i < numX; i += 8) {
       for (let j = 0; j < numY; j += 8) {
@@ -386,6 +473,11 @@ export class Renderer {
     return arrows;
   }
 
+  /**
+   * Draws pre-computed velocity arrows with triangular arrowheads onto the canvas.
+   * @param {CanvasRenderingContext2D} ctx - Canvas 2D context
+   * @param {Array<Object>} arrows - Arrow descriptors from _computeArrows
+   */
   _drawCachedArrows(ctx, arrows) {
     ctx.lineWidth = 1.5;
     for (const a of arrows) {
@@ -405,6 +497,12 @@ export class Renderer {
     }
   }
 
+  /**
+   * Renders the scalar field (smoke or pressure) to the canvas via putImageData.
+   * Maps field values through a colormap LUT, renders solid cells as dark gray,
+   * and updates the colorbar UI labels and gradient.
+   * @param {Float32Array} data - Scalar field values indexed as [i * numY + j]
+   */
   _renderField(data) {
     const { numX, numY } = this;
     let minVal, maxVal;
@@ -452,6 +550,7 @@ export class Renderer {
           continue;
         }
 
+        // Normalize value to [0,1] and look up RGBA in the colormap LUT
         const value = data[idx];
         if (colormapData) {
           const t = Math.max(0, Math.min(1, (value - minVal) / (maxVal - minVal + 1e-10)));
@@ -491,6 +590,14 @@ export class Renderer {
     }
   }
 
+  /**
+   * Resizes the renderer to match a new grid resolution.
+   * Destroys and recreates the staging buffer, resets the canvas dimensions,
+   * and clears all cached readback data and overlay geometry.
+   * @param {number} numX - New grid width
+   * @param {number} numY - New grid height
+   * @param {number} h - New cell size
+   */
   resize(numX, numY, h) {
     this._stagingBuffer.destroy();
     this.numX = numX;

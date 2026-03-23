@@ -1,4 +1,12 @@
+/**
+ * Handles user interaction with the simulation canvas — obstacle dragging
+ * and particle emitter placement.
+ */
 export class Interaction {
+    /**
+     * @param {HTMLCanvasElement} canvas - The simulation canvas element.
+     * @param {Object} solver - The GPU fluid solver instance.
+     */
     constructor(canvas, solver) {
         this.canvas = canvas;
         this.solver = solver;
@@ -30,15 +38,38 @@ export class Interaction {
         canvas.addEventListener('touchend',   () => this._endDrag());
     }
 
+    /**
+     * Converts screen (client) coordinates to simulation-domain coordinates.
+     * The simulation domain has (0,0) at the bottom-left corner.
+     * @param {number} clientX - Mouse/touch X in client pixels.
+     * @param {number} clientY - Mouse/touch Y in client pixels.
+     * @returns {{ x: number, y: number }} Position in simulation units.
+     */
     screenToSim(clientX, clientY) {
         const rect = this.canvas.getBoundingClientRect();
         const mx = clientX - rect.left;
         const my = clientY - rect.top;
+        // X maps directly; Y is flipped (screen top = sim top)
         const x = mx / rect.width  * this.solver.numX * this.solver.h;
         const y = (1.0 - my / rect.height) * this.solver.numY * this.solver.h;
         return { x, y };
     }
 
+    /**
+     * Rasterizes the active obstacle shape onto the solver's grid at the given
+     * center position. Clears the previous obstacle footprint, writes the new
+     * solid mask, and sets obstacle velocity in both ping-pong buffers.
+     *
+     * Three-step process:
+     *   1. Restore cells from the previous bounding box to their boundary-mask state.
+     *   2. Mark new obstacle cells as solid (s=0) and assign obstacle velocity.
+     *   3. Save the new bounding box for the next call.
+     *
+     * @param {number} centerX - Obstacle center X in simulation units.
+     * @param {number} centerY - Obstacle center Y in simulation units.
+     * @param {number} [vx=0] - Obstacle velocity X (from drag motion).
+     * @param {number} [vy=0] - Obstacle velocity Y (from drag motion).
+     */
     rasterizeObstacle(centerX, centerY, vx = 0, vy = 0) {
         this.obstacleX = centerX;
         this.obstacleY = centerY;
@@ -52,15 +83,15 @@ export class Interaction {
         const r = this.obstacleRadius;
         const shape = this.activeShape;
 
-        // Shape-specific constants
+        // Shape-specific geometry constants used for inside-test and bounding box
         const chord = r * 4;            // airfoil chord length
         const wedgeLen = r * 3;         // wedge length
-        const tanHA = Math.tan(15 * Math.PI / 180); // wedge half-angle
+        const tanHA = Math.tan(15 * Math.PI / 180); // wedge half-angle (15 degrees)
 
-        // Largest possible extent of any shape from its center
+        // Conservative bounding extent covering all possible shapes
         const maxExtent = Math.max(r, chord * 0.5, wedgeLen * 0.5);
 
-        // Compute bounding box for the new obstacle position
+        // Grid-cell bounding box for the new obstacle, clamped to interior cells
         const newIMin = Math.max(1, Math.floor((centerX - maxExtent) / h - 1));
         const newIMax = Math.min(numX - 2, Math.ceil((centerX + maxExtent) / h + 1));
         const newJMin = Math.max(1, Math.floor((centerY - maxExtent) / h - 1));
@@ -115,11 +146,14 @@ export class Interaction {
                 // Skip permanent boundary cells
                 if (this.boundaryMask && this.boundaryMask[idx] === 0) continue;
 
+                // Cell center in simulation coordinates
                 const cx = (i + 0.5) * h;
                 const cy = (j + 0.5) * h;
+                // Offset from obstacle center
                 const dx = cx - centerX;
                 const dy = cy - centerY;
 
+                // Test whether this cell falls inside the active shape
                 let inside = false;
 
                 if (shape === 'circle') {
@@ -127,12 +161,13 @@ export class Interaction {
                 } else if (shape === 'square') {
                     inside = Math.abs(dx) < r && Math.abs(dy) < r;
                 } else if (shape === 'airfoil') {
-                    // NACA 0012, no angle of attack (lx = dx, ly = dy in local frame)
-                    // Local x runs from leading edge (centerX) forward (positive dx direction)
+                    // NACA 0012 symmetric airfoil at zero angle of attack.
+                    // lx is the chordwise coordinate (0 at leading edge, chord at trailing edge).
                     const lx = dx + chord * 0.5; // shift so leading edge is at lx=0
                     const ly = dy;
                     if (lx >= 0 && lx <= chord) {
-                        const xc = lx / chord;
+                        const xc = lx / chord; // normalized chordwise position [0,1]
+                        // NACA 0012 thickness distribution (half-thickness at xc)
                         const yt = 5 * 0.12 * chord * (
                             0.2969 * Math.sqrt(xc)
                             - 0.1260 * xc
@@ -150,9 +185,10 @@ export class Interaction {
                 }
 
                 if (inside) {
-                    sData[idx] = 0.0;
+                    sData[idx] = 0.0; // mark cell as solid
                     uData[idx] = vx;
                     vData[idx] = vy;
+                    // Also set u at the right face of this cell for staggered grid consistency
                     if (i + 1 < numX) {
                         uData[(i + 1) * n + j] = vx;
                     }
@@ -174,6 +210,7 @@ export class Interaction {
         // Notify renderer that solid mask changed
         if (this._renderer) this._renderer.invalidateSolid();
 
+        // Paint mode: write oscillating dye values to obstacle cells for visual feedback
         if (this.paintMode && obstacleCells.length > 0) {
             const val = 0.5 + 0.5 * Math.sin(0.1 * this._paintFrame);
             const buf = new Float32Array(1);
@@ -185,6 +222,12 @@ export class Interaction {
         }
     }
 
+    /**
+     * Handles pointer-down events. In particle mode, places a new emitter
+     * at the clicked location. In obstacle mode, begins obstacle dragging.
+     * @param {number} clientX - Client X coordinate.
+     * @param {number} clientY - Client Y coordinate.
+     */
     _onPointerDown(clientX, clientY) {
         if (this.mode === 'particles') {
             if (this._particleSystem) {
@@ -198,6 +241,11 @@ export class Interaction {
         this._startDrag(clientX, clientY);
     }
 
+    /**
+     * Initiates obstacle dragging at the given screen position.
+     * Records the starting simulation-space position and rasterizes
+     * the obstacle with zero velocity.
+     */
     _startDrag(clientX, clientY) {
         if (this.mode !== 'obstacle') return;
         const { x, y } = this.screenToSim(clientX, clientY);
@@ -207,10 +255,16 @@ export class Interaction {
         this.rasterizeObstacle(x, y, 0, 0);
     }
 
+    /**
+     * Continues an active drag. Computes obstacle velocity from the
+     * frame-to-frame displacement divided by the solver timestep,
+     * then re-rasterizes at the new position.
+     */
     _drag(clientX, clientY) {
         if (!this.dragging || this.mode !== 'obstacle') return;
         const { x, y } = this.screenToSim(clientX, clientY);
         const dt = this.solver.params.dt;
+        // Finite-difference velocity estimate for moving-wall boundary condition
         const vx = (x - this.prevX) / dt;
         const vy = (y - this.prevY) / dt;
         this.rasterizeObstacle(x, y, vx, vy);
@@ -218,6 +272,7 @@ export class Interaction {
         this.prevY = y;
     }
 
+    /** Ends the current drag interaction. */
     _endDrag() {
         this.dragging = false;
     }

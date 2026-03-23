@@ -7,7 +7,16 @@ const PRESET_KEY_MAP = {
     'backward-step':  'backwardStep',
 };
 
+/**
+ * UI controller — wires DOM controls (presets, sliders, toggles, keyboard shortcuts)
+ * to the solver, renderer, and interaction layer.
+ */
 export class UI {
+    /**
+     * @param {FluidSolver} solver - GPU-backed fluid solver instance
+     * @param {Renderer} renderer - Canvas renderer instance
+     * @param {Interaction} interaction - Mouse/touch interaction handler
+     */
     constructor(solver, renderer, interaction) {
         this.solver = solver;
         this.renderer = renderer;
@@ -35,6 +44,10 @@ export class UI {
         this._syncSliders();
     }
 
+    /**
+     * Re-loads the current preset from scratch — used after grid resize
+     * or when the user clicks "Restore Defaults".
+     */
     reapplyCurrentPreset() {
         const config = loadPreset(this.currentPreset, this.solver, this.interaction);
         this.numIters = config.numIters;
@@ -45,6 +58,10 @@ export class UI {
         this._syncSliders();
     }
 
+    /**
+     * Programmatically set visualization flags and update the corresponding checkboxes.
+     * @param {Object} show - Map of visualization layer names to booleans
+     */
     setVisualization(show) {
         this._applyShow(show);
         this._updateVizCheckboxes(show);
@@ -52,6 +69,10 @@ export class UI {
 
     // ── Private helpers ───────────────────────────────────────────────────────
 
+    /**
+     * Push visualization flags from a preset config into the renderer.
+     * @param {Object} show - { pressure, smoke, streamlines, velocities }
+     */
     _applyShow(show) {
         this.renderer.showPressure    = show.pressure    ?? false;
         this.renderer.showSmoke       = show.smoke       ?? false;
@@ -59,6 +80,7 @@ export class UI {
         this.renderer.showVelocities  = show.velocities  ?? false;
     }
 
+    /** Sync the DOM checkboxes to match the given visualization flags. */
     _updateVizCheckboxes(show) {
         document.querySelectorAll('[data-viz]').forEach(cb => {
             const key = cb.dataset.viz;
@@ -66,6 +88,7 @@ export class UI {
         });
     }
 
+    /** Sync all slider positions and displayed values to current solver/preset state. */
     _syncSliders() {
         const p = this.solver.params;
         const preset = PRESETS[this.currentPreset];
@@ -101,6 +124,11 @@ export class UI {
         this._updateRe(inVel);
     }
 
+    /**
+     * Compute and display the Reynolds number based on inflow velocity and obstacle diameter.
+     * Re = U * D / h, where D = 2 * obstacleRadius and h is the cell size.
+     * @param {number} inVel - Inflow velocity magnitude
+     */
     _updateRe(inVel) {
         const el = document.getElementById('val-re');
         if (!el) return;
@@ -116,6 +144,7 @@ export class UI {
         this._updateFlowInfo();
     }
 
+    /** Update the flow-info overlay text with preset-specific physics description and Re. */
     _updateFlowInfo() {
         const el = document.getElementById('flow-info');
         if (!el) return;
@@ -130,6 +159,7 @@ export class UI {
         el.textContent = desc + (re !== '--' ? `  · Re ≈ ${re}` : '');
     }
 
+    /** Attach click handlers to preset buttons, mapping kebab-case attributes to preset keys. */
     _bindPresetButtons() {
         document.querySelectorAll('[data-preset]').forEach(btn => {
             btn.addEventListener('click', () => {
@@ -143,6 +173,11 @@ export class UI {
         });
     }
 
+    /**
+     * Load a preset by key, apply its config to solver/renderer/interaction,
+     * and update all UI elements (checkboxes, sliders, shape buttons).
+     * @param {string} presetKey - Key into the PRESETS object (e.g. 'karmanVortex')
+     */
     _loadAndApplyPreset(presetKey) {
         this.currentPreset = presetKey;
         const config = loadPreset(presetKey, this.solver, this.interaction);
@@ -164,6 +199,7 @@ export class UI {
         }
     }
 
+    /** Initialize visualization checkboxes from renderer state and bind change handlers. */
     _bindVizToggles() {
         document.querySelectorAll('[data-viz]').forEach(cb => {
             const key = cb.dataset.viz;
@@ -181,6 +217,7 @@ export class UI {
         });
     }
 
+    /** Bind the mode toggle button to switch between obstacle-drag and particle-emit modes. */
     _bindModeSwitcher() {
         const btn = document.getElementById('btn-mode');
         if (!btn) return;
@@ -191,6 +228,7 @@ export class UI {
         });
     }
 
+    /** Bind obstacle shape buttons — clicking re-rasterizes the obstacle immediately. */
     _bindShapePicker() {
         document.querySelectorAll('[data-shape]').forEach(btn => {
             btn.addEventListener('click', () => {
@@ -209,6 +247,7 @@ export class UI {
         });
     }
 
+    /** Bind play/pause, single-step, reset, and restart buttons. */
     _bindPlayback() {
         const btnPlay  = document.getElementById('btn-play');
         const btnStep  = document.getElementById('btn-step');
@@ -235,6 +274,7 @@ export class UI {
         this._stepOnce = stepOnce;
     }
 
+    /** Bind open/close for the advanced settings panel and its child sliders. */
     _bindAdvancedPanel() {
         const panel = document.getElementById('advanced-panel');
 
@@ -253,6 +293,7 @@ export class UI {
         this._bindSliders();
     }
 
+    /** Wire up sliders for dt, omega, iterations, inflow velocity, and resolution tier buttons. */
     _bindSliders() {
         const bind = (id, valId, decimals, onChange) => {
             const el = document.getElementById(id);
@@ -299,6 +340,11 @@ export class UI {
         });
     }
 
+    /**
+     * Update the inflow velocity at column i=1 in both the GPU buffers and
+     * the persistent boundaryVelData so it survives across frames.
+     * @param {number} inVel - New inflow velocity value
+     */
     _setInflowVelocity(inVel) {
         const { solver, interaction } = this;
         const { numX, numY } = solver;
@@ -320,6 +366,10 @@ export class UI {
         }
     }
 
+    /**
+     * Bind keyboard shortcuts: 'p' = play/pause, 'm' = step once,
+     * '1'-'6' = switch preset by index. Ignores keypresses inside input fields.
+     */
     _bindKeyboard() {
         document.addEventListener('keydown', (e) => {
             if (e.target.tagName === 'INPUT') return;
