@@ -20,6 +20,23 @@ async function init() {
     }
     const device = await adapter.requestDevice();
 
+    // Populate welcome modal with adapter info
+    const adapterInfo = adapter.info;
+    const adapterName = adapterInfo.device || adapterInfo.description
+        || [adapterInfo.vendor, adapterInfo.architecture].filter(Boolean).join(' ') || 'Unknown GPU';
+    document.getElementById('gpu-adapter-name').textContent = adapterName;
+
+    // Dismiss welcome modal
+    const overlay = document.getElementById('welcome-overlay');
+    const dismissWelcome = () => {
+        overlay.classList.add('welcome-hidden');
+        overlay.addEventListener('transitionend', () => {
+            overlay.style.display = 'none';
+        }, { once: true });
+    };
+    document.getElementById('start-sim-btn').addEventListener('click', dismissWelcome);
+    document.querySelector('.welcome-close').addEventListener('click', dismissWelcome);
+
     device.lost.then((info) => {
         console.error('GPU device lost:', info.message);
         document.getElementById('device-lost-banner').style.display = 'block';

@@ -22,6 +22,51 @@
 
 <div id="app">
 
+  <!-- Welcome modal overlay -->
+  <div id="welcome-overlay">
+    <div id="welcome-modal">
+      <button class="welcome-close" aria-label="Close">&times;</button>
+
+      <div class="welcome-title-row">
+        <h1>FlowLab</h1>
+        <span class="welcome-badge">WebGPU</span>
+      </div>
+
+      <p class="welcome-desc">
+        Watch real fluid dynamics unfold in your browser.
+        <strong>FlowLab</strong> solves the <em>2D incompressible Navier-Stokes equations</em>
+        entirely on your GPU &mdash; <strong>pressure, advection, and boundary conditions</strong>
+        all run as WebGPU compute shaders for <em>real-time interactive</em> performance.
+        Drag obstacles through flowing fluid and watch <strong>vortex streets</strong>,
+        <em>recirculation zones</em>, and <strong>flow separation</strong> emerge naturally.
+      </p>
+
+      <div id="gpu-status-card">
+        <div class="gpu-status-badge">
+          <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
+            <path d="M13.78 4.22a.75.75 0 0 1 0 1.06l-7.25 7.25a.75.75 0 0 1-1.06 0L2.22 9.28a.751.751 0 0 1 .018-1.042.751.751 0 0 1 1.042-.018L6 10.94l6.72-6.72a.75.75 0 0 1 1.06 0Z"/>
+          </svg>
+          WebGPU is available
+        </div>
+        <p class="gpu-status-text">
+          You're running on the <strong>GPU renderer</strong> for maximum performance.
+          <br>Adapter: <strong id="gpu-adapter-name">detecting&hellip;</strong>
+        </p>
+        <div class="gpu-detail-card">
+          <div class="gpu-detail-title">GPU-Accelerated Solver &mdash; High Performance</div>
+          <p class="gpu-detail-text">
+            The <strong>pressure solver</strong>, <strong>velocity advection</strong>, and
+            <strong>boundary conditions</strong> all execute as compute shader dispatches on your
+            graphics card. This delivers <em>real-time frame rates</em> even at high grid
+            resolutions, with the CPU free for rendering overlays and particle tracing.
+          </p>
+        </div>
+      </div>
+
+      <button id="start-sim-btn">Start Simulation</button>
+    </div>
+  </div>
+
   <div id="title-bar">
     <span id="app-name">FlowLab</span>
     <span class="badge">WebGPU</span>
