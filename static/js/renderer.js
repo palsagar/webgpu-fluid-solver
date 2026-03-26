@@ -230,13 +230,14 @@ export class Renderer {
       ctx.fillRect(cX(cx) - hw, cY(cy) - hh, 2 * hw, 2 * hh);
       ctx.strokeRect(cX(cx) - hw, cY(cy) - hh, 2 * hw, 2 * hh);
     } else if (shape === 'airfoil') {
+      // NACA 0012 symmetric airfoil: thickness distribution as a function of chord position
       const chord = r * 4;
       const n = 20;
       const upperPts = [];
       const lowerPts = [];
       for (let k = 0; k <= n; k++) {
         const xc = k / n;
-        const lx = xc * chord - chord * 0.5;
+        const lx = xc * chord - chord * 0.5; // sim coords relative to center
         const yt = 5 * 0.12 * chord * (
           0.2969 * Math.sqrt(xc)
           - 0.1260 * xc
@@ -259,6 +260,7 @@ export class Renderer {
       ctx.fill();
       ctx.stroke();
     } else if (shape === 'wedge') {
+      // Symmetric wedge with 15-degree half-angle, apex facing upstream
       const wedgeLen = r * 3;
       const tanHA = Math.tan(15 * Math.PI / 180);
       const apexX = cx - wedgeLen * 0.5;

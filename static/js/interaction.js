@@ -174,10 +174,14 @@ export class Interaction {
                 } else if (shape === 'square') {
                     inside = Math.abs(ldx) < r && Math.abs(ldy) < r;
                 } else if (shape === 'airfoil') {
-                    const lx = ldx + chord * 0.5;
+                    // NACA 0012 symmetric airfoil.
+                    // lx is the chordwise coordinate in the obstacle's local frame
+                    // (0 at leading edge, chord at trailing edge).
+                    const lx = ldx + chord * 0.5; // shift so leading edge is at lx=0
                     const ly = ldy;
                     if (lx >= 0 && lx <= chord) {
-                        const xc = lx / chord;
+                        const xc = lx / chord; // normalized chordwise position [0,1]
+                        // NACA 0012 thickness distribution (half-thickness at xc)
                         const yt = 5 * 0.12 * chord * (
                             0.2969 * Math.sqrt(xc)
                             - 0.1260 * xc
@@ -188,6 +192,7 @@ export class Interaction {
                         inside = Math.abs(ly) < yt;
                     }
                 } else if (shape === 'wedge') {
+                    // Wedge points right in local frame; apex at center
                     const lx = ldx + wedgeLen * 0.5;
                     const ly = ldy;
                     inside = lx >= 0 && lx < wedgeLen && Math.abs(ly) < lx * tanHA;
@@ -247,7 +252,7 @@ export class Interaction {
                 const hint = document.getElementById('canvas-hint');
                 if (hint) hint.remove();
             }
-            return;
+            return; // Never fall through to drag in particles mode
         }
         if (shiftKey || this._shiftHeld) {
             this._rotate(clientX, clientY);
@@ -283,6 +288,7 @@ export class Interaction {
         if (!this.dragging) return;
         const { x, y } = this.screenToSim(clientX, clientY);
         const dt = this.solver.params.dt;
+        // Finite-difference velocity estimate for moving-wall boundary condition
         const vx = (x - this.prevX) / dt;
         const vy = (y - this.prevY) / dt;
         this.rasterizeObstacle(x, y, vx, vy);
