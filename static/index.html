@@ -25,7 +25,7 @@
   <!-- Welcome modal overlay -->
   <div id="welcome-overlay">
     <div id="welcome-modal">
-      <button class="welcome-close" aria-label="Close">&times;</button>
+      <button class="welcome-close" id="welcome-close-btn" aria-label="Close">&times;</button>
 
       <div class="welcome-title-row">
         <h1>FlowLab</h1>
@@ -64,6 +64,381 @@
       </div>
 
       <button id="start-sim-btn">Start Simulation</button>
+      <p class="welcome-guide-link">New here? <a id="open-guide-from-welcome" href="#">Read the Guide</a></p>
+    </div>
+  </div>
+
+  <!-- Guide modal overlay -->
+  <div id="guide-overlay">
+    <div id="guide-modal">
+      <button class="welcome-close" id="guide-close" aria-label="Close">&times;</button>
+      <div class="welcome-title-row">
+        <h1>FlowLab Guide</h1>
+        <span class="welcome-badge">WebGPU</span>
+      </div>
+
+      <!-- Section 1: Getting Started -->
+      <div class="guide-section">
+        <div class="guide-section-header">
+          <div>
+            <span class="guide-section-title">Getting Started</span>
+            <span class="guide-section-summary">Drag the obstacle and watch the flow react</span>
+          </div>
+          <span class="guide-chevron">&#9656;</span>
+        </div>
+        <div class="guide-section-body">
+          <div class="guide-section-content">
+            <p>Click and drag the obstacle to move it through the fluid. The simulation responds in real time — you'll see the flow separate and form wake patterns behind the body.</p>
+            <div class="guide-illustration">
+              <svg width="280" height="80" viewBox="0 0 280 80">
+                <!-- Flow lines -->
+                <path d="M10,20 Q80,20 120,15 Q160,10 200,20 Q240,30 270,20" fill="none" stroke="#8b949e" stroke-width="1.5"/>
+                <path d="M10,40 Q60,40 100,30 Q120,25 130,28" fill="none" stroke="#8b949e" stroke-width="1.5"/>
+                <path d="M170,28 Q180,25 200,40 Q240,50 270,40" fill="none" stroke="#8b949e" stroke-width="1.5"/>
+                <path d="M10,60 Q80,60 120,65 Q160,70 200,60 Q240,50 270,60" fill="none" stroke="#8b949e" stroke-width="1.5"/>
+                <!-- Obstacle -->
+                <circle cx="150" cy="40" r="16" fill="#58a6ff" opacity="0.9"/>
+                <!-- Drag arrow -->
+                <path d="M150,40 Q170,25 190,30" fill="none" stroke="#7ee787" stroke-width="2" stroke-linecap="round"/>
+                <polygon points="188,25 193,31 186,32" fill="#7ee787"/>
+              </svg>
+            </div>
+            <div class="guide-learn-more">
+              <div class="guide-learn-more-toggle">&#9656; Learn more about the solver</div>
+              <div class="guide-learn-more-body">
+                <p>FlowLab solves the 2D incompressible Navier-Stokes equations using a pressure-projection method. The pressure field is computed iteratively (SOR Jacobi), then used to correct velocities so they satisfy the divergence-free condition. The entire computation — pressure solve, velocity advection, and boundary enforcement — runs as WebGPU compute shader dispatches on your GPU.</p>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Section 2: Visualization Modes -->
+      <div class="guide-section">
+        <div class="guide-section-header">
+          <div>
+            <span class="guide-section-title">Visualization Modes</span>
+            <span class="guide-section-summary">Four ways to see the flow</span>
+          </div>
+          <span class="guide-chevron">&#9656;</span>
+        </div>
+        <div class="guide-section-body">
+          <div class="guide-section-content">
+            <div class="guide-viz-item">
+              <strong>Smoke</strong>
+              <span>Dye tracer injected at the inlet. Dark regions show dye, light regions are clear fluid. Uses the magma colormap.</span>
+            </div>
+            <div class="guide-viz-item">
+              <strong>Pressure</strong>
+              <span>Color-coded pressure field. Blue is low pressure, red is high. Uses the coolwarm colormap.</span>
+            </div>
+            <div class="guide-viz-item">
+              <strong>Streamlines</strong>
+              <span>Lines tangent to the velocity field at each instant. They show the instantaneous flow direction everywhere.</span>
+            </div>
+            <div class="guide-viz-item">
+              <strong>Velocity Arrows</strong>
+              <span>Arrow field where length and color indicate local speed. Shows both direction and magnitude.</span>
+            </div>
+            <div class="guide-illustration">
+              <svg width="280" height="40" viewBox="0 0 280 40">
+                <defs>
+                  <linearGradient id="grad-magma" x1="0" y1="0" x2="1" y2="0">
+                    <stop offset="0%" stop-color="#000004"/>
+                    <stop offset="50%" stop-color="#b73779"/>
+                    <stop offset="100%" stop-color="#fcffa4"/>
+                  </linearGradient>
+                  <linearGradient id="grad-coolwarm" x1="0" y1="0" x2="1" y2="0">
+                    <stop offset="0%" stop-color="#3b4cc0"/>
+                    <stop offset="50%" stop-color="#f7f7f7"/>
+                    <stop offset="100%" stop-color="#b40426"/>
+                  </linearGradient>
+                </defs>
+                <rect x="10" y="4" width="120" height="14" rx="3" fill="url(#grad-magma)"/>
+                <text x="70" y="34" text-anchor="middle" fill="#8b949e" font-size="11" font-family="-apple-system, sans-serif">magma</text>
+                <rect x="150" y="4" width="120" height="14" rx="3" fill="url(#grad-coolwarm)"/>
+                <text x="210" y="34" text-anchor="middle" fill="#8b949e" font-size="11" font-family="-apple-system, sans-serif">coolwarm</text>
+              </svg>
+            </div>
+            <div class="guide-learn-more">
+              <div class="guide-learn-more-toggle">&#9656; Learn more about Eulerian visualization</div>
+              <div class="guide-learn-more-body">
+                <p>All four modes show the flow from a fixed reference frame (Eulerian perspective). Smoke and pressure are scalar fields mapped to colormaps; streamlines and velocity arrows visualize the vector velocity field. You can toggle multiple modes simultaneously — try enabling both smoke and streamlines to see how dye transport relates to flow direction.</p>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Section 3: Obstacle Shapes & Rotation -->
+      <div class="guide-section">
+        <div class="guide-section-header">
+          <div>
+            <span class="guide-section-title">Obstacle Shapes &amp; Rotation</span>
+            <span class="guide-section-summary">Four shapes, each with different flow behavior</span>
+          </div>
+          <span class="guide-chevron">&#9656;</span>
+        </div>
+        <div class="guide-section-body">
+          <div class="guide-section-content">
+            <p>Select a shape from the toolbar. Hold <strong>Shift</strong> and move the mouse to rotate the obstacle to any angle.</p>
+            <div class="guide-shapes-row">
+              <div class="guide-shape-item">
+                <svg width="40" height="40" viewBox="0 0 40 40">
+                  <circle cx="20" cy="20" r="14" fill="#58a6ff"/>
+                </svg>
+                <div>Circle</div>
+              </div>
+              <div class="guide-shape-item">
+                <svg width="40" height="40" viewBox="0 0 40 40">
+                  <rect x="6" y="6" width="28" height="28" fill="#58a6ff"/>
+                </svg>
+                <div>Square</div>
+              </div>
+              <div class="guide-shape-item">
+                <svg width="40" height="40" viewBox="0 0 40 40">
+                  <path d="M4,20 Q10,10 20,8 Q30,6 36,12 Q38,16 38,20 Q38,24 36,28 Q30,34 20,32 Q10,30 4,20Z" fill="#58a6ff"/>
+                </svg>
+                <div>Airfoil</div>
+              </div>
+              <div class="guide-shape-item">
+                <svg width="40" height="40" viewBox="0 0 40 40">
+                  <polygon points="6,8 36,20 6,32" fill="#58a6ff"/>
+                </svg>
+                <div>Wedge</div>
+              </div>
+            </div>
+            <div class="guide-learn-more">
+              <div class="guide-learn-more-toggle">&#9656; Learn more about shapes &amp; aerodynamics</div>
+              <div class="guide-learn-more-body">
+                <p>A circle produces symmetric flow separation; a square has fixed separation points at its sharp corners, creating a wider wake. The airfoil (NACA 0012 profile) is streamlined to minimize drag — flow stays attached longer. The wedge deflects flow obliquely. Rotating any shape changes its effective angle of attack, dramatically altering the wake pattern.</p>
+              </div>
+            </div>
+            <div class="guide-learn-more">
+              <div class="guide-learn-more-toggle">&#9656; Learn more about how rotation works</div>
+              <div class="guide-learn-more-body">
+                <p>Hold Shift and move the mouse to set the angle — the obstacle rotates like a compass needle pointing toward your cursor. The angle persists when you release Shift. Drag without Shift to translate as usual. Loading a new preset resets rotation to zero.</p>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Section 4: Particle Tracing -->
+      <div class="guide-section">
+        <div class="guide-section-header">
+          <div>
+            <span class="guide-section-title">Particle Tracing</span>
+            <span class="guide-section-summary">Release tracer particles into the flow</span>
+          </div>
+          <span class="guide-chevron">&#9656;</span>
+        </div>
+        <div class="guide-section-body">
+          <div class="guide-section-content">
+            <p>Click the <strong>Particles</strong> button in the toolbar to switch to particle mode. Then click anywhere on the canvas to place an emitter — it continuously releases particles that follow the flow. Click again to add more emitters. Click <strong>Particles</strong> again to return to obstacle-drag mode.</p>
+            <div class="guide-illustration">
+              <svg width="240" height="60" viewBox="0 0 240 60">
+                <!-- Emitter -->
+                <circle cx="20" cy="30" r="5" fill="#64c8ff"/>
+                <!-- Trail particles in a wavy sinusoidal path -->
+                <circle cx="45" cy="25" r="3" fill="#64c8ff" opacity="0.8"/>
+                <circle cx="70" cy="20" r="3" fill="#64c8ff" opacity="0.7"/>
+                <circle cx="95" cy="25" r="3" fill="#64c8ff" opacity="0.6"/>
+                <circle cx="120" cy="35" r="3" fill="#64c8ff" opacity="0.5"/>
+                <circle cx="145" cy="40" r="3" fill="#64c8ff" opacity="0.4"/>
+                <circle cx="170" cy="35" r="3" fill="#64c8ff" opacity="0.3"/>
+                <circle cx="195" cy="25" r="3" fill="#64c8ff" opacity="0.2"/>
+                <circle cx="220" cy="20" r="3" fill="#64c8ff" opacity="0.1"/>
+              </svg>
+            </div>
+            <div class="guide-learn-more">
+              <div class="guide-learn-more-toggle">&#9656; Learn more about Lagrangian vs Eulerian</div>
+              <div class="guide-learn-more-body">
+                <p>Particles show the Lagrangian perspective — following individual fluid parcels as they move through space. Compare with streamlines, which show the Eulerian (fixed-frame) snapshot of flow direction. In steady flow, particle paths and streamlines coincide. In unsteady flow like vortex shedding, they diverge: streamlines show where flow <em>is going</em> right now, while particle trails show where fluid <em>has been</em>.</p>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Section 5: Presets & Flow Phenomena -->
+      <div class="guide-section">
+        <div class="guide-section-header">
+          <div>
+            <span class="guide-section-title">Presets &amp; Flow Phenomena</span>
+            <span class="guide-section-summary">Three classic configurations to explore</span>
+          </div>
+          <span class="guide-chevron">&#9656;</span>
+        </div>
+        <div class="guide-section-body">
+          <div class="guide-section-content">
+            <div class="guide-preset-block">
+              <h4>Wind Tunnel</h4>
+              <p>Uniform flow past a bluff body. Watch for flow separation in the wake and the pressure difference between the upstream and downstream faces of the obstacle.</p>
+              <div class="guide-illustration">
+                <svg width="280" height="80" viewBox="0 0 280 80">
+                  <!-- Parallel flow lines -->
+                  <line x1="10" y1="15" x2="90" y2="15" stroke="#8b949e" stroke-width="1.5"/>
+                  <line x1="10" y1="30" x2="90" y2="30" stroke="#8b949e" stroke-width="1.5"/>
+                  <line x1="10" y1="50" x2="90" y2="50" stroke="#8b949e" stroke-width="1.5"/>
+                  <line x1="10" y1="65" x2="90" y2="65" stroke="#8b949e" stroke-width="1.5"/>
+                  <!-- Deflected lines around obstacle -->
+                  <path d="M90,15 Q110,10 130,12 Q150,8 170,12 Q190,15 210,15 L270,15" fill="none" stroke="#8b949e" stroke-width="1.5"/>
+                  <path d="M90,30 Q105,26 115,25 Q125,28 135,32" fill="none" stroke="#8b949e" stroke-width="1.5"/>
+                  <path d="M175,32 Q185,28 200,30 Q230,34 270,30" fill="none" stroke="#8b949e" stroke-width="1.5"/>
+                  <path d="M90,50 Q105,54 115,55 Q125,52 135,48" fill="none" stroke="#8b949e" stroke-width="1.5"/>
+                  <path d="M175,48 Q185,52 200,50 Q230,46 270,50" fill="none" stroke="#8b949e" stroke-width="1.5"/>
+                  <path d="M90,65 Q110,70 130,68 Q150,72 170,68 Q190,65 210,65 L270,65" fill="none" stroke="#8b949e" stroke-width="1.5"/>
+                  <!-- Wake region (spread lines) -->
+                  <path d="M175,36 Q195,32 215,38 Q235,44 255,36" fill="none" stroke="#8b949e" stroke-width="1" opacity="0.5" stroke-dasharray="4,3"/>
+                  <path d="M175,44 Q195,48 215,42 Q235,36 255,44" fill="none" stroke="#8b949e" stroke-width="1" opacity="0.5" stroke-dasharray="4,3"/>
+                  <!-- Obstacle -->
+                  <circle cx="155" cy="40" r="16" fill="#58a6ff" opacity="0.9"/>
+                </svg>
+              </div>
+              <div class="guide-learn-more">
+                <div class="guide-learn-more-toggle">&#9656; Learn more about wake transition</div>
+                <div class="guide-learn-more-body">
+                  <p>At low Reynolds number the wake is steady and symmetric. As Re increases (raise inflow velocity or grid resolution), the wake becomes unsteady — you'll see vortex shedding begin. For a circular cylinder, this transition happens around Re &#8776; 47. Try it: start with low inflow velocity, then slowly increase it with the Advanced panel slider.</p>
+                </div>
+              </div>
+            </div>
+
+            <div class="guide-preset-block">
+              <h4>K&aacute;rm&aacute;n Vortex Street</h4>
+              <p>A small cylinder sheds alternating vortices in a beautiful periodic pattern — one of the most iconic phenomena in fluid dynamics.</p>
+              <div class="guide-illustration">
+                <svg width="280" height="80" viewBox="0 0 280 80">
+                  <!-- Small cylinder -->
+                  <circle cx="50" cy="40" r="10" fill="#58a6ff" opacity="0.9"/>
+                  <!-- Alternating vortices in zigzag pattern -->
+                  <circle cx="95" cy="28" r="12" fill="#da3633" opacity="0.6"/>
+                  <circle cx="120" cy="52" r="12" fill="#58a6ff" opacity="0.6"/>
+                  <circle cx="150" cy="28" r="12" fill="#da3633" opacity="0.6"/>
+                  <circle cx="175" cy="52" r="12" fill="#58a6ff" opacity="0.6"/>
+                  <circle cx="205" cy="28" r="12" fill="#da3633" opacity="0.6"/>
+                  <circle cx="230" cy="52" r="12" fill="#58a6ff" opacity="0.6"/>
+                  <circle cx="260" cy="28" r="10" fill="#da3633" opacity="0.4"/>
+                </svg>
+              </div>
+              <div class="guide-learn-more">
+                <div class="guide-learn-more-toggle">&#9656; Learn more about the Strouhal number</div>
+                <div class="guide-learn-more-body">
+                  <p>Named after Theodore von K&aacute;rm&aacute;n, this alternating vortex pattern explains why power lines hum in the wind and why certain bridges oscillate. The shedding frequency follows the Strouhal relationship: St = fD/U &#8776; 0.2 for circular cylinders, where f is frequency, D is diameter, and U is freestream velocity.</p>
+                </div>
+              </div>
+            </div>
+
+            <div class="guide-preset-block">
+              <h4>Backward-Facing Step</h4>
+              <p>A sudden expansion in the channel creates a recirculation zone behind the step. Watch the trapped vortex and the downstream reattachment point.</p>
+              <div class="guide-illustration">
+                <svg width="280" height="80" viewBox="0 0 280 80">
+                  <!-- Step geometry -->
+                  <rect x="10" y="45" width="70" height="35" fill="#30363d"/>
+                  <!-- Flow entering from top-left -->
+                  <path d="M10,10 L80,10" fill="none" stroke="#8b949e" stroke-width="1.5"/>
+                  <path d="M10,22 L80,22" fill="none" stroke="#8b949e" stroke-width="1.5"/>
+                  <path d="M10,34 L80,34" fill="none" stroke="#8b949e" stroke-width="1.5"/>
+                  <!-- Flow continuing past step -->
+                  <path d="M80,10 L270,10" fill="none" stroke="#8b949e" stroke-width="1.5"/>
+                  <path d="M80,22 Q120,22 160,25 Q200,28 270,22" fill="none" stroke="#8b949e" stroke-width="1.5"/>
+                  <path d="M80,34 Q120,38 160,45 Q200,52 240,50 L270,48" fill="none" stroke="#8b949e" stroke-width="1.5"/>
+                  <!-- Recirculation arrow -->
+                  <path d="M90,55 Q100,48 120,48 Q140,48 150,55 Q155,62 145,68 Q130,72 110,70 Q95,66 90,58" fill="none" stroke="#da3633" stroke-width="2" stroke-linecap="round"/>
+                  <polygon points="90,52 92,59 86,57" fill="#da3633"/>
+                  <!-- Reattachment dashed line -->
+                  <line x1="180" y1="45" x2="180" y2="80" stroke="#7ee787" stroke-width="1.5" stroke-dasharray="4,3"/>
+                  <text x="185" y="75" fill="#7ee787" font-size="9" font-family="-apple-system, sans-serif">reattach</text>
+                </svg>
+              </div>
+              <div class="guide-learn-more">
+                <div class="guide-learn-more-toggle">&#9656; Learn more about the benchmark problem</div>
+                <div class="guide-learn-more-body">
+                  <p>The backward-facing step is a classic benchmark in computational fluid dynamics. The flow separates at the step edge and reattaches downstream, trapping a recirculation bubble. The reattachment length (distance from step to where flow touches the wall again) grows with Reynolds number. Getting this length right is a standard test of solver accuracy.</p>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Section 6: Advanced Controls -->
+      <div class="guide-section">
+        <div class="guide-section-header">
+          <div>
+            <span class="guide-section-title">Advanced Controls</span>
+            <span class="guide-section-summary">Fine-tune the numerical solver</span>
+          </div>
+          <span class="guide-chevron">&#9656;</span>
+        </div>
+        <div class="guide-section-body">
+          <div class="guide-section-content">
+            <div class="guide-param-row">
+              <span class="guide-param-name">dt (timestep)</span>
+              <span class="guide-param-desc">Smaller is more accurate but slower. If the simulation blows up, lower this first.</span>
+            </div>
+            <div class="guide-param-row">
+              <span class="guide-param-name">&omega; (SOR relaxation)</span>
+              <span class="guide-param-desc">Controls pressure solver convergence speed. Values near 1.9 are optimal; above 1.98 can diverge.</span>
+            </div>
+            <div class="guide-param-row">
+              <span class="guide-param-name">Iterations</span>
+              <span class="guide-param-desc">Pressure solver iterations per frame. More iterations means better pressure accuracy but slower frames.</span>
+            </div>
+            <div class="guide-param-row">
+              <span class="guide-param-name">Inflow velocity</span>
+              <span class="guide-param-desc">Speed of the incoming flow. Higher velocity means higher Reynolds number and more complex wake behavior.</span>
+            </div>
+            <div class="guide-param-row">
+              <span class="guide-param-name">Grid resolution</span>
+              <span class="guide-param-desc">Number of cells across the domain. Higher resolution captures finer detail but demands more GPU work. Also raises the effective Reynolds number by reducing numerical diffusion.</span>
+            </div>
+            <div class="guide-learn-more">
+              <div class="guide-learn-more-toggle">&#9656; Learn more about numerical stability</div>
+              <div class="guide-learn-more-body">
+                <p>The solver uses a semi-Lagrangian advection scheme. For stability, the CFL condition (dt &times; U / h &lt; 1) should be satisfied — meaning fluid should not cross more than one cell per timestep. The default parameters are chosen to be stable for typical configurations. If the simulation explodes into noise, lower dt or reduce inflow velocity.</p>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Section 7: Keyboard Shortcuts -->
+      <div class="guide-section">
+        <div class="guide-section-header">
+          <div>
+            <span class="guide-section-title">Keyboard Shortcuts</span>
+            <span class="guide-section-summary">Quick keys for common actions</span>
+          </div>
+          <span class="guide-chevron">&#9656;</span>
+        </div>
+        <div class="guide-section-body">
+          <div class="guide-section-content">
+            <div class="guide-shortcut-row">
+              <span class="guide-shortcut-key">P</span>
+              <span class="guide-shortcut-desc">Play / Pause the simulation</span>
+            </div>
+            <div class="guide-shortcut-row">
+              <span class="guide-shortcut-key">M</span>
+              <span class="guide-shortcut-desc">Step one frame forward (while paused)</span>
+            </div>
+            <div class="guide-shortcut-row">
+              <span class="guide-shortcut-key">1</span>
+              <span class="guide-shortcut-desc">Load Wind Tunnel preset</span>
+            </div>
+            <div class="guide-shortcut-row">
+              <span class="guide-shortcut-key">2</span>
+              <span class="guide-shortcut-desc">Load K&aacute;rm&aacute;n Vortex preset</span>
+            </div>
+            <div class="guide-shortcut-row">
+              <span class="guide-shortcut-key">3</span>
+              <span class="guide-shortcut-desc">Load Backward Step preset</span>
+            </div>
+          </div>
+        </div>
+      </div>
+
     </div>
   </div>
 
@@ -71,6 +446,7 @@
     <span id="app-name">FlowLab</span>
     <span class="badge">WebGPU</span>
     <span class="title-spacer"></span>
+    <button id="btn-guide" class="guide-btn" title="Open Guide" aria-label="Open Guide">?</button>
     <a href="https://github.com/palsagar/webgpu-fluid-solver" target="_blank" rel="noopener" class="gh-pill" title="Star on GitHub — contributions welcome!">GitHub <span id="gh-stars"></span></a>
   </div>
 

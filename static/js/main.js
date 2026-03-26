@@ -40,7 +40,7 @@ async function init() {
         }, { once: true });
     };
     document.getElementById('start-sim-btn').addEventListener('click', dismissWelcome);
-    document.querySelector('.welcome-close').addEventListener('click', dismissWelcome);
+    document.getElementById('welcome-close-btn').addEventListener('click', dismissWelcome);
 
     device.lost.then((info) => {
         console.error('GPU device lost:', info.message);
@@ -66,6 +66,14 @@ async function init() {
     interaction._particleSystem = particles;
 
     const ui = new UI(solver, renderer, interaction);
+
+    // Welcome modal → Guide link
+    document.getElementById('open-guide-from-welcome')?.addEventListener('click', (e) => {
+        e.preventDefault();
+        dismissWelcome();
+        setTimeout(() => ui.openGuide?.(), 350);
+    });
+
     const adaptive = new AdaptiveController(solver, renderer, interaction, ui);
     ui.adaptive = adaptive;
 

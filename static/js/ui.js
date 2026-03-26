@@ -39,6 +39,7 @@ export class UI {
         this._bindPlayback();
         this._bindAdvancedPanel();
         this._bindKeyboard();
+        this._bindGuideModal();
 
         // Sync slider displays to current preset values
         this._syncSliders();
@@ -373,6 +374,7 @@ export class UI {
     _bindKeyboard() {
         document.addEventListener('keydown', (e) => {
             if (e.target.tagName === 'INPUT') return;
+            if (document.getElementById('guide-overlay')?.classList.contains('guide-visible')) return;
             switch (e.key) {
                 case 'p': this._togglePause?.(); break;
                 case 'm': this._stepOnce?.(); break;
@@ -391,5 +393,44 @@ export class UI {
                 }
             }
         });
+    }
+
+    /** Bind open/close for the guide modal and accordion section toggling. */
+    _bindGuideModal() {
+        const overlay = document.getElementById('guide-overlay');
+        if (!overlay) return;
+
+        const openGuide = () => overlay.classList.add('guide-visible');
+        const closeGuide = () => overlay.classList.remove('guide-visible');
+
+        document.getElementById('btn-guide')?.addEventListener('click', openGuide);
+        document.getElementById('guide-close')?.addEventListener('click', closeGuide);
+        overlay.addEventListener('click', (e) => {
+            if (e.target === overlay) closeGuide();
+        });
+
+        // Accordion: single-open behavior
+        overlay.querySelectorAll('.guide-section-header').forEach(header => {
+            header.addEventListener('click', () => {
+                const section = header.parentElement;
+                const wasOpen = section.classList.contains('guide-section-open');
+                overlay.querySelectorAll('.guide-section').forEach(s => s.classList.remove('guide-section-open'));
+                if (!wasOpen) section.classList.add('guide-section-open');
+            });
+        });
+
+        // Learn-more expanders: independent toggle
+        overlay.querySelectorAll('.guide-learn-more-toggle').forEach(toggle => {
+            toggle.addEventListener('click', () => {
+                const lm = toggle.parentElement;
+                lm.classList.toggle('learn-more-open');
+                toggle.textContent = lm.classList.contains('learn-more-open')
+                    ? toggle.textContent.replace('\u25B8', '\u25BE')
+                    : toggle.textContent.replace('\u25BE', '\u25B8');
+            });
+        });
+
+        // Expose for main.js to call from welcome modal link
+        this.openGuide = openGuide;
     }
 }
