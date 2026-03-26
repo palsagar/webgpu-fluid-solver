@@ -229,11 +229,13 @@ export class Interaction {
 
     /**
      * Handles pointer-down events. In particle mode, places a new emitter
-     * at the clicked location. In obstacle mode, begins obstacle dragging.
+     * at the clicked location. In obstacle mode, begins obstacle dragging
+     * or (if Shift) rotates the obstacle.
      * @param {number} clientX - Client X coordinate.
      * @param {number} clientY - Client Y coordinate.
+     * @param {boolean} shiftKey - Whether the Shift key is held.
      */
-    _onPointerDown(clientX, clientY) {
+    _onPointerDown(clientX, clientY, shiftKey) {
         if (this.mode === 'particles') {
             if (this._particleSystem) {
                 const { x, y } = this.screenToSim(clientX, clientY);
@@ -241,7 +243,11 @@ export class Interaction {
                 const hint = document.getElementById('canvas-hint');
                 if (hint) hint.remove();
             }
-            return; // Never fall through to drag in particles mode
+            return;
+        }
+        if (shiftKey || this._shiftHeld) {
+            this._rotate(clientX, clientY);
+            return;
         }
         this._startDrag(clientX, clientY);
     }
@@ -261,15 +267,18 @@ export class Interaction {
     }
 
     /**
-     * Continues an active drag. Computes obstacle velocity from the
-     * frame-to-frame displacement divided by the solver timestep,
-     * then re-rasterizes at the new position.
+     * Handles pointer movement. If Shift is held, rotates the obstacle.
+     * Otherwise continues an active drag (translate).
      */
-    _drag(clientX, clientY) {
-        if (!this.dragging || this.mode !== 'obstacle') return;
+    _onPointerMove(clientX, clientY, shiftKey) {
+        if (this.mode !== 'obstacle') return;
+        if (shiftKey || this._shiftHeld) {
+            this._rotate(clientX, clientY);
+            return;
+        }
+        if (!this.dragging) return;
         const { x, y } = this.screenToSim(clientX, clientY);
         const dt = this.solver.params.dt;
-        // Finite-difference velocity estimate for moving-wall boundary condition
         const vx = (x - this.prevX) / dt;
         const vy = (y - this.prevY) / dt;
         this.rasterizeObstacle(x, y, vx, vy);
@@ -280,5 +289,17 @@ export class Interaction {
     /** Ends the current drag interaction. */
     _endDrag() {
         this.dragging = false;
+    }
+
+    /**
+     * Sets the obstacle rotation angle from the mouse position.
+     * Angle is computed as atan2 from obstacle center to cursor (compass-needle).
+     * Re-rasterizes at the current position with zero velocity.
+     */
+    _rotate(clientX, clientY) {
+        if (this.mode !== 'obstacle') return;
+        const { x, y } = this.screenToSim(clientX, clientY);
+        this.obstacleAngle = Math.atan2(y - this.obstacleY, x - this.obstacleX);
+        this.rasterizeObstacle(this.obstacleX, this.obstacleY, 0, 0);
     }
 }
