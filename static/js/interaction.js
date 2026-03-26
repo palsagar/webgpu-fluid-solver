@@ -96,6 +96,10 @@ export class Interaction {
         // Conservative bounding extent covering all possible shapes
         const maxExtent = Math.max(r, chord * 0.5, wedgeLen * 0.5);
 
+        const angle = this.obstacleAngle;
+        const cosA = Math.cos(-angle);
+        const sinA = Math.sin(-angle);
+
         // Grid-cell bounding box for the new obstacle, clamped to interior cells
         const newIMin = Math.max(1, Math.floor((centerX - maxExtent) / h - 1));
         const newIMax = Math.min(numX - 2, Math.ceil((centerX + maxExtent) / h + 1));
@@ -158,21 +162,22 @@ export class Interaction {
                 const dx = cx - centerX;
                 const dy = cy - centerY;
 
+                // Inverse-rotate into obstacle's local frame
+                const ldx = dx * cosA - dy * sinA;
+                const ldy = dx * sinA + dy * cosA;
+
                 // Test whether this cell falls inside the active shape
                 let inside = false;
 
                 if (shape === 'circle') {
                     inside = dx * dx + dy * dy < r * r;
                 } else if (shape === 'square') {
-                    inside = Math.abs(dx) < r && Math.abs(dy) < r;
+                    inside = Math.abs(ldx) < r && Math.abs(ldy) < r;
                 } else if (shape === 'airfoil') {
-                    // NACA 0012 symmetric airfoil at zero angle of attack.
-                    // lx is the chordwise coordinate (0 at leading edge, chord at trailing edge).
-                    const lx = dx + chord * 0.5; // shift so leading edge is at lx=0
-                    const ly = dy;
+                    const lx = ldx + chord * 0.5;
+                    const ly = ldy;
                     if (lx >= 0 && lx <= chord) {
-                        const xc = lx / chord; // normalized chordwise position [0,1]
-                        // NACA 0012 thickness distribution (half-thickness at xc)
+                        const xc = lx / chord;
                         const yt = 5 * 0.12 * chord * (
                             0.2969 * Math.sqrt(xc)
                             - 0.1260 * xc
@@ -183,9 +188,8 @@ export class Interaction {
                         inside = Math.abs(ly) < yt;
                     }
                 } else if (shape === 'wedge') {
-                    // Wedge points right; apex at center
-                    const lx = dx + wedgeLen * 0.5;
-                    const ly = dy;
+                    const lx = ldx + wedgeLen * 0.5;
+                    const ly = ldy;
                     inside = lx >= 0 && lx < wedgeLen && Math.abs(ly) < lx * tanHA;
                 }
 
