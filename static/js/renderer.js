@@ -210,6 +210,15 @@ export class Renderer {
     ctx.strokeStyle = '#000000';
     ctx.lineWidth = 1;
 
+    const angle = interaction.obstacleAngle || 0;
+    const pcx = cX(cx);
+    const pcy = cY(cy);
+
+    ctx.save();
+    ctx.translate(pcx, pcy);
+    ctx.rotate(-angle);
+    ctx.translate(-pcx, -pcy);
+
     if (shape === 'circle') {
       ctx.beginPath();
       ctx.arc(cX(cx), cY(cy), r / domainWidth * cw, 0, 2 * Math.PI);
@@ -221,14 +230,13 @@ export class Renderer {
       ctx.fillRect(cX(cx) - hw, cY(cy) - hh, 2 * hw, 2 * hh);
       ctx.strokeRect(cX(cx) - hw, cY(cy) - hh, 2 * hw, 2 * hh);
     } else if (shape === 'airfoil') {
-      // NACA 0012 symmetric airfoil: thickness distribution as a function of chord position
       const chord = r * 4;
       const n = 20;
       const upperPts = [];
       const lowerPts = [];
       for (let k = 0; k <= n; k++) {
         const xc = k / n;
-        const lx = xc * chord - chord * 0.5; // sim coords relative to center
+        const lx = xc * chord - chord * 0.5;
         const yt = 5 * 0.12 * chord * (
           0.2969 * Math.sqrt(xc)
           - 0.1260 * xc
@@ -251,7 +259,6 @@ export class Renderer {
       ctx.fill();
       ctx.stroke();
     } else if (shape === 'wedge') {
-      // Symmetric wedge with 15-degree half-angle, apex facing upstream
       const wedgeLen = r * 3;
       const tanHA = Math.tan(15 * Math.PI / 180);
       const apexX = cx - wedgeLen * 0.5;
@@ -264,6 +271,23 @@ export class Renderer {
       ctx.closePath();
       ctx.fill();
       ctx.stroke();
+    }
+
+    ctx.restore();
+
+    if (interaction._shiftHeld) {
+      const lineLen = 1.5 * r;
+      const ex = cx + lineLen * Math.cos(angle);
+      const ey = cy + lineLen * Math.sin(angle);
+      ctx.save();
+      ctx.setLineDash([3, 3]);
+      ctx.strokeStyle = 'rgba(255, 255, 255, 0.7)';
+      ctx.lineWidth = 1.5;
+      ctx.beginPath();
+      ctx.moveTo(cX(cx), cY(cy));
+      ctx.lineTo(cX(ex), cY(ey));
+      ctx.stroke();
+      ctx.restore();
     }
   }
 
