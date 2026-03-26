@@ -146,6 +146,7 @@ export function loadPreset(name, solver, interaction) {
 
   // Rasterize obstacle(s), or hide obstacle overlay if none
   interaction._prevBBox = null; // Clear stale bbox from previous grid size
+  interaction.obstacleAngle = 0;
   interaction.showObstacle = false;
   if (preset.obstacle) {
     interaction.showObstacle = true;
