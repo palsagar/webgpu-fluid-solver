@@ -22,6 +22,8 @@ export class Interaction {
         this.paintMode = false;
         this._paintFrame = 0;
         this._particleSystem = null;
+        this.obstacleAngle = 0;
+        this._shiftHeld = false;
 
         const size = solver.numX * solver.numY;
         this._sData = new Float32Array(size);
@@ -30,12 +32,15 @@ export class Interaction {
 
         this.mode = 'obstacle'; // 'obstacle' or 'particles'
 
-        canvas.addEventListener('mousedown', e => this._onPointerDown(e.clientX, e.clientY));
-        canvas.addEventListener('mousemove', e => this._drag(e.clientX, e.clientY));
+        canvas.addEventListener('mousedown', e => this._onPointerDown(e.clientX, e.clientY, e.shiftKey));
+        canvas.addEventListener('mousemove', e => this._onPointerMove(e.clientX, e.clientY, e.shiftKey));
         canvas.addEventListener('mouseup',   () => this._endDrag());
         canvas.addEventListener('touchstart', e => { e.preventDefault(); const t = e.touches[0]; this._onPointerDown(t.clientX, t.clientY); }, { passive: false });
-        canvas.addEventListener('touchmove',  e => { e.preventDefault(); const t = e.touches[0]; this._drag(t.clientX, t.clientY); }, { passive: false });
+        canvas.addEventListener('touchmove',  e => { e.preventDefault(); const t = e.touches[0]; this._onPointerMove(t.clientX, t.clientY, false); }, { passive: false });
         canvas.addEventListener('touchend',   () => this._endDrag());
+
+        document.addEventListener('keydown', e => { if (e.key === 'Shift') this._shiftHeld = true; });
+        document.addEventListener('keyup', e => { if (e.key === 'Shift') this._shiftHeld = false; });
     }
 
     /**
