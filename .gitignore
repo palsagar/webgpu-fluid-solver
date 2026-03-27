@@ -1,4 +1,17 @@
+# Python
+__pycache__/
+.venv/
+
+# Old / unused
 fast_euler_solver_browser.html
+
+# Tool-generated
+.claude/
 .superpowers/
 .playwright-mcp/
-__pycache__/
+.understand-anything/
+docs/superpowers/
+
+# Test artifacts
+*.png
+todo.md
