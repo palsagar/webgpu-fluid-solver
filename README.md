@@ -8,9 +8,16 @@ Drag obstacles through the flow. Watch vortices form. Explore pressure fields, s
 
 [![WebGPU](https://img.shields.io/badge/WebGPU-Compute_Shaders-blue)](https://www.w3.org/TR/webgpu/)
 [![FastAPI](https://img.shields.io/badge/Backend-FastAPI-green)](https://fastapi.tiangolo.com/)
-[![License](https://img.shields.io/badge/License-MIT-yellow)](#)
+[![License](https://img.shields.io/badge/License-MIT-yellow)](LICENSE)
 
 </div>
+
+![Kármán vortex street — periodic vortex shedding behind a cylinder](static/screenshots/karman-smoke.png)
+
+<p align="center">
+  <img src="static/screenshots/windtunnel-streamlines.png" width="49%" alt="Wind tunnel — streamlines and smoke around a bluff body">
+  <img src="static/screenshots/karman-pressure.png" width="49%" alt="Pressure field — coolwarm colormap showing high and low pressure regions">
+</p>
 
 ## Features
 
@@ -95,6 +102,10 @@ WebGPU support required: Chrome 113+, Edge 113+, or Firefox Nightly with `dom.we
 ## Documentation
 
 For detailed technical documentation, see the **[Documentation Hub](docs/README.md)** — covering system architecture, numerical methods, and the GPU compute pipeline.
+
+## Contributing
+
+Feature requests, bug reports, and pull requests are welcome. Open an [issue](https://github.com/palsagar/webgpu-fluid-solver/issues) to suggest a new preset, visualization mode, or interaction feature, or submit a PR directly.
 
 ## Background
 
