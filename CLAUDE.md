@@ -57,6 +57,12 @@ ES modules are cached aggressively by browsers. The server includes `NoCacheMidd
 ### Resolution Control
 Use discrete buttons (not a range slider) for grid resolution tiers. A continuous slider fires `input` events during drag, each triggering expensive GPU buffer destruction/recreation. Discrete buttons fire once per click.
 
+### Screenshots
+`static/screenshots/` holds README images (karman-smoke, karman-pressure, windtunnel-streamlines). `.gitignore` blocks `*.png` globally but has `!static/screenshots/*.png` exception.
+
+### Author Link
+Title bar includes an "Author" link to sagar-pal.dev — same pattern as the Gray-Scott sibling project. Order: Author | GitHub pill | Guide(?).
+
 ## Git
 
 - Use `git -c commit.gpgsign=false` for all commits (GPG agent has timeout issues in this environment)

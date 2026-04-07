@@ -256,6 +256,17 @@ body {
   color: #ffffff;
 }
 
+.author-link {
+  color: #b1bac4;
+  text-decoration: none;
+  font-size: 12px;
+  transition: color 0.2s;
+}
+
+.author-link:hover {
+  color: #ffffff;
+}
+
 #gh-stars:not(:empty)::before {
   content: "\2605 ";
 }
