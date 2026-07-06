@@ -47,8 +47,9 @@ export class Renderer {
     this._canvas.style.cssText = 'position:absolute;inset:0;width:100%;height:100%;z-index:1;display:block;';
     container.appendChild(this._canvas);
 
-    this._canvas.width = this.numX;
-    this._canvas.height = this.numY;
+    const dpr = window.devicePixelRatio || 1;
+    this._canvas.width  = Math.max(1, Math.round(container.clientWidth * dpr));
+    this._canvas.height = Math.max(1, Math.round(container.clientHeight * dpr));
 
     this._ctx = this._canvas.getContext('2d');
 
@@ -70,6 +71,14 @@ export class Renderer {
 
   get canvas() {
     return this._canvas;
+  }
+
+  /**
+   * Ratio of overlay canvas pixels to grid cells — used to scale stroke
+   * widths so overlays keep their visual weight at display resolution.
+   */
+  get _overlayScale() {
+    return Math.max(1, this._canvas.height / this.numY);
   }
 
   /**
@@ -159,7 +168,7 @@ export class Renderer {
           this.h, this.numX, this.numY, this.solidData
         );
       }
-      this.particleSystem.draw(this._ctx, this.numX, this.numY, this.h);
+      this.particleSystem.draw(this._ctx, this.numX, this.numY, this.h, this._overlayScale);
     }
     if (this.interaction && this.interaction.showObstacle) {
       this.drawObstacle(this._ctx, this.interaction);
@@ -204,7 +213,7 @@ export class Renderer {
     const fillColor = this.showPressure ? '#000000' : '#DDDDDD';
     ctx.fillStyle = fillColor;
     ctx.strokeStyle = '#000000';
-    ctx.lineWidth = 1;
+    ctx.lineWidth = 1 * this._overlayScale;
 
     const angle = interaction.obstacleAngle || 0;
     const pcx = cX(cx);
@@ -278,9 +287,9 @@ export class Renderer {
       const ex = cx + lineLen * Math.cos(angle);
       const ey = cy + lineLen * Math.sin(angle);
       ctx.save();
-      ctx.setLineDash([3, 3]);
+      ctx.setLineDash([3 * this._overlayScale, 3 * this._overlayScale]);
       ctx.strokeStyle = 'rgba(255, 255, 255, 0.7)';
-      ctx.lineWidth = 1.5;
+      ctx.lineWidth = 1.5 * this._overlayScale;
       ctx.beginPath();
       ctx.moveTo(cX(cx), cY(cy));
       ctx.lineTo(cX(ex), cY(ey));
@@ -430,7 +439,7 @@ export class Renderer {
    */
   _drawCachedStreamlines(ctx, paths) {
     ctx.strokeStyle = 'rgba(255, 255, 255, 0.7)';
-    ctx.lineWidth = 1.5;
+    ctx.lineWidth = 1.5 * this._overlayScale;
     for (const pts of paths) {
       ctx.beginPath();
       ctx.moveTo(pts[0], pts[1]);
@@ -467,7 +476,7 @@ export class Renderer {
     }
     if (maxMag === 0) return null;
 
-    const maxArrowPx = 12;
+    const maxArrowPx = 12 * this._overlayScale;
     const spacing = 8;
     const arrows = [];
 
@@ -488,7 +497,7 @@ export class Renderer {
         const r = Math.floor(30 * (1 - frac));
         const g = Math.floor(80 + 175 * frac);
         const b = Math.floor(120 + 135 * frac);
-        const headLen = Math.max(3, arrowPx * 0.4);
+        const headLen = Math.max(3 * this._overlayScale, arrowPx * 0.4);
         arrows.push({ px, py, ex, ey, r, g, b, angle, headLen });
       }
     }
@@ -501,7 +510,7 @@ export class Renderer {
    * @param {Array<Object>} arrows - Arrow descriptors from _computeArrows
    */
   _drawCachedArrows(ctx, arrows) {
-    ctx.lineWidth = 1.5;
+    ctx.lineWidth = 1.5 * this._overlayScale;
     for (const a of arrows) {
       const col = `rgb(${a.r},${a.g},${a.b})`;
       ctx.strokeStyle = col;
@@ -574,8 +583,6 @@ export class Renderer {
     this.numX = numX;
     this.numY = numY;
     this.h = h;
-    this._canvas.width = numX;
-    this._canvas.height = numY;
     this._stagingBuffer = this._createStagingBuffer(numX, numY);
     this._pressureRange = null;
     this.fieldRenderer.resize();

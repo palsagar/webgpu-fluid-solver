@@ -102,8 +102,9 @@ export class ParticleSystem {
      * @param {number} numX - Grid width in cells.
      * @param {number} numY - Grid height in cells.
      * @param {number} h - Grid cell size.
+     * @param {number} [scale=1] - Display resolution scale factor for stroke widths.
      */
-    draw(ctx, numX, numY, h) {
+    draw(ctx, numX, numY, h, scale = 1) {
         const domainW = numX * h;
         const domainH = numY * h;
         const cw = ctx.canvas.width;
@@ -112,7 +113,7 @@ export class ParticleSystem {
         const toX = x => x / domainW * cw;
         const toY = y => (1 - y / domainH) * ch;
 
-        ctx.lineWidth = 1.2;
+        ctx.lineWidth = 1.2 * scale;
         for (const p of this.particles) {
             if (p.trail.length < 2) continue;
             // Alpha decreases linearly with age for a fade-out effect
@@ -131,10 +132,10 @@ export class ParticleSystem {
         // Draw emitter markers — small ring with soft glow
         ctx.strokeStyle = 'rgba(100, 200, 255, 0.8)';
         ctx.fillStyle = 'rgba(100, 200, 255, 0.2)';
-        ctx.lineWidth = 1.5;
+        ctx.lineWidth = 1.5 * scale;
         for (const em of this.emitters) {
             ctx.beginPath();
-            ctx.arc(toX(em.x), toY(em.y), 4, 0, 2 * Math.PI);
+            ctx.arc(toX(em.x), toY(em.y), 4 * scale, 0, 2 * Math.PI);
             ctx.fill();
             ctx.stroke();
         }
