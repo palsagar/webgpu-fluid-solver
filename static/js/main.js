@@ -55,7 +55,7 @@ async function init() {
     const h = 1.0 / numY;
 
     const solver = await FluidSolver.create(device, numX, numY, h);
-    const renderer = new Renderer(container, device, solver);
+    const renderer = await Renderer.create(container, device, solver);
     const interaction = new Interaction(renderer.canvas, solver);
 
     renderer.setInteraction(interaction);
@@ -76,6 +76,9 @@ async function init() {
 
     const adaptive = new AdaptiveController(solver, renderer, interaction, ui);
     ui.adaptive = adaptive;
+
+    // Test handle for browser-driven verification (Playwright)
+    window.__flowlab = { device, solver, renderer, interaction, ui, adaptive, particles };
 
     // Exponentially-smoothed frame time for the performance HUD
     let frameTimeSmoothed = 0;

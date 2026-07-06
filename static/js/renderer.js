@@ -1,3 +1,5 @@
+import { FieldRenderer } from './field-renderer.js';
+
 /**
  * Renderer for the 2D flow simulation.
  * Uses a 2D canvas with putImageData for field visualization (pressure/smoke)
@@ -27,7 +29,6 @@ export class Renderer {
     this.showParticles = true;
 
     this.readbackPending = false;
-    this.fieldData = null;
     this.solidData = null;
     this._solidReadbackDone = false;
 
@@ -39,46 +40,32 @@ export class Renderer {
     this._cachedStreamlines = null;
     this._cachedArrows = null;
 
-    this.activeColormap = 'viridis';
-    this.colormaps = {};
-
-    // Create 2D canvas
+    // Overlay canvas (top layer): transparent, holds streamlines/arrows/particles/obstacle.
+    // The Field View is drawn by FieldRenderer on a WebGPU canvas underneath.
     this._canvas = document.createElement('canvas');
-    this._canvas.style.width = '100%';
-    this._canvas.style.height = '100%';
-    this._canvas.style.display = 'block';
+    this._canvas.id = 'overlay-canvas';
+    this._canvas.style.cssText = 'position:absolute;inset:0;width:100%;height:100%;z-index:1;display:block;';
     container.appendChild(this._canvas);
 
     this._canvas.width = this.numX;
     this._canvas.height = this.numY;
 
     this._ctx = this._canvas.getContext('2d');
-    this._imageData = this._ctx.createImageData(this.numX, this.numY);
 
     this._stagingBuffer = this._createStagingBuffer(this.numX, this.numY);
-
-    this._loadColormaps();
+    this._pressureRange = null; // [min, max] from the throttled pressure readback
   }
 
   /**
-   * Loads colormap PNG images (256x1 pixel strips) and converts them
-   * to Uint8Array lookup tables for fast per-pixel color mapping.
+   * Async factory: creates the Renderer plus its GPU FieldRenderer.
+   * DOM append order is overlay first, field canvas second — explicit
+   * z-index (overlay 1, field 0) enforces the stacking either way.
+   * @returns {Promise<Renderer>}
    */
-  async _loadColormaps() {
-    const names = ['viridis', 'coolwarm', 'magma'];
-    const offscreen = document.createElement('canvas');
-    offscreen.width = 256;
-    offscreen.height = 1;
-    const ctx = offscreen.getContext('2d');
-
-    for (const name of names) {
-      const resp = await fetch(`/colormaps/${name}.png`);
-      const blob = await resp.blob();
-      const bitmap = await createImageBitmap(blob);
-      ctx.drawImage(bitmap, 0, 0);
-      const imageData = ctx.getImageData(0, 0, 256, 1);
-      this.colormaps[name] = new Uint8Array(imageData.data.buffer);
-    }
+  static async create(container, device, solver) {
+    const renderer = new Renderer(container, device, solver);
+    renderer.fieldRenderer = await FieldRenderer.create(device, container, solver);
+    return renderer;
   }
 
   get canvas() {
@@ -105,37 +92,46 @@ export class Renderer {
    */
   draw() {
     const { device, solver } = this;
-    // Choose which field to visualize
-    const srcBuffer = this.showSmoke ? solver.smokeBuffer : solver.pressureBuffer;
+    const usePressure = !this.showSmoke;
 
-    // Asynchronous GPU-to-CPU readback of the active field (smoke or pressure).
-    // Only one readback is in-flight at a time to avoid mapping conflicts.
-    if (!this.readbackPending) {
+    this._frameCount = (this._frameCount || 0) + 1;
+
+    // Pressure needs a CPU-side display range (symmetric about the mean) —
+    // read back every 10 frames. Smoke uses the fixed [0,1] range: no
+    // field readback at all (ADR-0005).
+    if (usePressure && !this.readbackPending && this._frameCount % 10 === 1) {
       this.readbackPending = true;
       const encoder = device.createCommandEncoder();
-      encoder.copyBufferToBuffer(srcBuffer, 0, this._stagingBuffer, 0, this.numX * this.numY * 4);
+      encoder.copyBufferToBuffer(solver.pressureBuffer, 0, this._stagingBuffer, 0, this.numX * this.numY * 4);
       device.queue.submit([encoder.finish()]);
 
       this._stagingBuffer.mapAsync(GPUMapMode.READ).then(() => {
         const raw = this._stagingBuffer.getMappedRange();
-        this.fieldData = new Float32Array(raw.slice(0));
+        this._pressureRange = this._computePressureRange(new Float32Array(raw.slice(0)));
         this._stagingBuffer.unmap();
         this.readbackPending = false;
       }).catch(() => { this.readbackPending = false; });
     }
 
-    // Read solid mask once (refreshed on invalidateSolid())
+    // Read solid mask once (refreshed on invalidateSolid()) — particles need it
     if (!this._solidReadbackDone) {
       this.readbackSolid();
     }
 
-    if (this.fieldData) {
-      this._renderField(this.fieldData);
+    // GPU field render — every frame
+    if (usePressure) {
+      const [minV, maxV] = this._pressureRange || [-1, 1];
+      this.fieldRenderer.draw(solver.pressureBuffer, 'coolwarm', minV, maxV);
+    } else {
+      this.fieldRenderer.draw(solver.smokeBuffer, 'magma', 0, 1);
     }
+    this._updateColorbar(usePressure);
+
+    // Overlay canvas: clear to transparent, then draw overlays on top
+    this._ctx.clearRect(0, 0, this._canvas.width, this._canvas.height);
 
     // Velocity readback every 10 frames (not every frame) to reduce GPU stalls.
     // Needed for streamlines, arrows, and particle advection.
-    this._frameCount = (this._frameCount || 0) + 1;
     if (this._frameCount % 10 === 0 && (this.showStreamlines || this.showVelocities || this.showParticles)) {
       this.readbackVelocity();
     }
@@ -524,90 +520,39 @@ export class Renderer {
   }
 
   /**
-   * Renders the scalar field (smoke or pressure) to the canvas via putImageData.
-   * Maps field values through a colormap LUT, renders solid cells as dark gray,
-   * and updates the colorbar UI labels and gradient.
-   * @param {Float32Array} data - Scalar field values indexed as [i * numY + j]
+   * Computes the pressure display range: symmetric about the field mean so
+   * the diverging coolwarm colormap centers on zero gauge pressure.
+   * @param {Float32Array} data - Pressure field readback
+   * @returns {[number, number]} [minVal, maxVal]
    */
-  _renderField(data) {
-    const { numX, numY } = this;
-    let minVal, maxVal;
-
-    if (this.showSmoke) {
-      // Smoke has a fixed [0, 1] range — 0 = dye, 1 = clear
-      minVal = 0;
-      maxVal = 1;
-    } else {
-      // Pressure: center range around the mean for diverging colormap
-      minVal = data[0];
-      maxVal = data[0];
-      let sum = 0;
-      for (let i = 1; i < data.length; i++) {
-        if (data[i] < minVal) minVal = data[i];
-        if (data[i] > maxVal) maxVal = data[i];
-        sum += data[i];
-      }
-      sum += data[0];
-      const mean = sum / data.length;
-      const range = Math.max(Math.abs(maxVal - mean), Math.abs(minVal - mean));
-      minVal = mean - range;
-      maxVal = mean + range;
+  _computePressureRange(data) {
+    let minVal = data[0], maxVal = data[0], sum = 0;
+    for (let i = 0; i < data.length; i++) {
+      if (data[i] < minVal) minVal = data[i];
+      if (data[i] > maxVal) maxVal = data[i];
+      sum += data[i];
     }
+    const mean = sum / data.length;
+    const range = Math.max(Math.abs(maxVal - mean), Math.abs(minVal - mean));
+    return [mean - range, mean + range];
+  }
 
-    const colormapName = this.showSmoke ? 'magma' : 'coolwarm';
-    const colormapData = this.colormaps[colormapName];
-
-    const pixels = this._imageData.data;
-
-    const solid = this.solidData;
-
-    // data is indexed [i * numY + j], display row j from bottom to top
-    for (let j = 0; j < numY; j++) {
-      for (let i = 0; i < numX; i++) {
-        const idx = i * numY + j;
-        const pixelIdx = ((numY - 1 - j) * numX + i) * 4;
-
-        // Solid cells rendered as dark gray
-        if (solid && solid[idx] === 0.0) {
-          pixels[pixelIdx]     = 50;
-          pixels[pixelIdx + 1] = 50;
-          pixels[pixelIdx + 2] = 60;
-          pixels[pixelIdx + 3] = 255;
-          continue;
-        }
-
-        // Normalize value to [0,1] and look up RGBA in the colormap LUT
-        const value = data[idx];
-        if (colormapData) {
-          const t = Math.max(0, Math.min(1, (value - minVal) / (maxVal - minVal + 1e-10)));
-          const lutIdx = Math.floor(t * 255) * 4;
-          pixels[pixelIdx]     = colormapData[lutIdx];
-          pixels[pixelIdx + 1] = colormapData[lutIdx + 1];
-          pixels[pixelIdx + 2] = colormapData[lutIdx + 2];
-          pixels[pixelIdx + 3] = 255;
-        } else {
-          const gray = Math.floor(Math.max(0, Math.min(1, (value - minVal) / (maxVal - minVal + 1e-10))) * 255);
-          pixels[pixelIdx]     = gray;
-          pixels[pixelIdx + 1] = gray;
-          pixels[pixelIdx + 2] = gray;
-          pixels[pixelIdx + 3] = 255;
-        }
-      }
-    }
-
-    this._ctx.putImageData(this._imageData, 0, 0);
-
-    // Update colorbar labels and gradient
+  /**
+   * Updates the colorbar labels and gradient for the active field.
+   * @param {boolean} usePressure - True when displaying pressure
+   */
+  _updateColorbar(usePressure) {
     const maxEl = document.getElementById('colorbar-max');
     const minEl = document.getElementById('colorbar-min');
     const unitEl = document.getElementById('colorbar-unit');
     const gradient = document.getElementById('colorbar-gradient');
-    if (this.showSmoke) {
+    if (!usePressure) {
       if (maxEl) maxEl.textContent = 'clear';
       if (minEl) minEl.textContent = 'dye';
       if (unitEl) unitEl.textContent = '';
       if (gradient) gradient.style.background = 'linear-gradient(to bottom, #fcfdbf, #fc8961, #b73779, #51127c, #000004)';
     } else {
+      const [minVal, maxVal] = this._pressureRange || [-1, 1];
       const fmt = v => (Math.abs(v) > 1000 || Math.abs(v) < -1000) ? v.toExponential(1) : v.toFixed(0);
       if (maxEl) maxEl.textContent = fmt(maxVal);
       if (minEl) minEl.textContent = fmt(minVal);
@@ -631,9 +576,9 @@ export class Renderer {
     this.h = h;
     this._canvas.width = numX;
     this._canvas.height = numY;
-    this._imageData = this._ctx.createImageData(numX, numY);
     this._stagingBuffer = this._createStagingBuffer(numX, numY);
-    this.fieldData = null;
+    this._pressureRange = null;
+    this.fieldRenderer.resize();
     this.solidData = null;
     this._solidReadbackDone = false;
     this.uData = null;
