@@ -9,7 +9,7 @@ Overview of the WebGPU Eulerian fluid solver: how the pieces fit together, the f
 | **Backend** | FastAPI + Uvicorn | ~10 lines of Python; serves static files only, plus a `/api/health` endpoint |
 | **Frontend** | Vanilla ES modules | No build step, no bundler, no framework |
 | **Compute** | WebGPU compute shaders (WGSL) | 3 shaders: pressure, boundary, advect |
-| **Rendering** | 2D canvas (`putImageData` + Canvas 2D API) | Field visualization via `putImageData`; overlays (streamlines, arrows, obstacles) via canvas drawing calls. Not Three.js. |
+| **Rendering** | WebGPU render pass (field) + 2D canvas (overlays) | Field View: fullscreen triangle, bilinear buffer sampling, colormap LUT texture, in-shader solids. Overlays: transparent Canvas 2D layer on top. See ADR-0005. |
 | **Colormaps** | 256x1 PNG LUT textures | Scientific colormaps (magma, coolwarm, viridis) loaded from `static/colormaps/` |
 
 ## 2. Module Dependency Graph

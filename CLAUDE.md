@@ -14,7 +14,7 @@ Open `http://localhost:8000` in Chrome (WebGPU required).
 ## Architecture
 
 - **Compute**: 3 WGSL shaders (pressure, boundary, advect) dispatched via raw WebGPU compute pipelines
-- **Rendering**: 2D canvas with `putImageData` + canvas drawing for overlays (streamlines, arrows, particles, obstacles)
+- **Rendering**: Hybrid (ADR-0005) — Field View drawn by a WebGPU render pass (`field-renderer.js` + `render_field.wgsl`: bilinear sampling, colormap LUT textures, in-shader solid cells) on a display-resolution canvas; overlays (streamlines, arrows, particles, obstacles) drawn on a transparent 2D canvas layered above, also at display resolution
 - **Particles**: CPU-side Lagrangian particle system (`particles.js`) using velocity readback data — continuous emitters, fading trails
 - **Backend**: FastAPI server with NoCacheMiddleware for development (serves static files)
 - **No build step**: Vanilla ES modules
@@ -35,7 +35,7 @@ Inflow velocities at column `i=1` survive advection because the left wall (`i=0`
 `m = 1.0` means clear (no dye), `m = 0.0` means dark dye. The renderer uses a fixed [0, 1] range for smoke (no auto-ranging) with the magma colormap.
 
 ### Solid Cell Rendering
-Solid cells (`s = 0`) are rendered as dark gray (50, 50, 60) in the field visualization by reading back the solid mask. The mask is re-read when presets change or obstacles are dragged (`renderer.invalidateSolid()`).
+Solid cells (`s = 0`) are rendered dark gray (50, 50, 60) in-shader by `render_field.wgsl`, which binds the solid buffer directly — no readback needed for display. The CPU-side solid readback (`renderer.invalidateSolid()`) still exists because the particle system needs `solidData` to kill particles entering solids.
 
 ### Obstacle Shape Switching
 When changing obstacle shape, `rasterizeObstacle()` must clear smoke (`m=1.0`) in the old obstacle's bounding box cells. Without this, stale dye imprints persist. Also, `_prevBBox` must be nulled before rasterizing on a new grid size to avoid out-of-bounds buffer writes.
@@ -55,7 +55,7 @@ Streamline paths and velocity arrow geometry are computed once when new velocity
 ES modules are cached aggressively by browsers. The server includes `NoCacheMiddleware` that sends `Cache-Control: no-cache, no-store, must-revalidate` for `.js`, `.css`, `.html`, and `.wgsl` files. Without this, code changes don't reach the browser and debugging becomes impossible. This was the root cause of multiple "fix doesn't work" cycles during particle system development.
 
 ### Resolution Control
-Use discrete buttons (not a range slider) for grid resolution tiers. A continuous slider fires `input` events during drag, each triggering expensive GPU buffer destruction/recreation. Discrete buttons fire once per click.
+Use discrete buttons (not a range slider) for grid resolution tiers. A continuous slider fires `input` events during drag, each triggering expensive GPU buffer destruction/recreation. Discrete buttons fire once per click. Tiers: 64–1024 (1024 added with GPU field rendering).
 
 ### Screenshots
 `static/screenshots/` holds README images (karman-smoke, karman-pressure, windtunnel-streamlines). `.gitignore` blocks `*.png` globally but has `!static/screenshots/*.png` exception.
@@ -80,3 +80,4 @@ The solver's `extrapolate` boundary step copies interior velocities to wall cell
 - Always disable browser cache via CDP (`Network.setCacheDisabled`) OR rely on the server's NoCacheMiddleware
 - Canvas content must be inspected via `getImageData` pixel sampling, not screenshots
 - When testing particle visibility, sample for the specific trail color (currently ice-blue: R<180, G>150, B>200)
+- The Field View lives on the WebGPU canvas (`#field-canvas`); sample it by `drawImage`-ing into a temp 2D canvas, then `getImageData`. The overlay (`#overlay-canvas`) is transparent — `getImageData` it directly. `window.__flowlab` exposes `{ device, solver, renderer, interaction, ui, adaptive, particles }` for test scripting.
