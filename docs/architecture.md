@@ -14,7 +14,7 @@ Overview of the WebGPU Eulerian fluid solver: how the pieces fit together, the f
 
 ## 2. Module Dependency Graph
 
-Eight JS modules under `static/js/`. Arrows show `import` edges.
+Nine JS modules under `static/js/`. Arrows show `import` edges.
 
 ```mermaid
 graph TD
@@ -25,11 +25,12 @@ graph TD
     main --> Adaptive["adaptive.js"]
     main --> Particles["particles.js"]
     UI --> Presets["presets.js"]
+    Renderer --> FieldRenderer["field-renderer.js"]
 ```
 
 **Runtime wiring (not static imports):** `main.js` passes `solver`, `renderer`, `interaction`, and `ui` instances into `AdaptiveController` via its constructor. `UI` also receives a reference to `AdaptiveController` (`ui.adaptive = adaptive`). `Interaction` receives a back-reference to `Renderer` at runtime (`interaction._renderer = renderer`). `ParticleSystem` receives a reference to `Renderer` for velocity sampling.
 
-`FluidSolver`, `Renderer`, `Interaction`, `Presets`, `ParticleSystem`, and `AdaptiveController` are leaf modules with no static imports of their own.
+`FluidSolver`, `Interaction`, `Presets`, `ParticleSystem`, `AdaptiveController`, and `FieldRenderer` are leaf modules with no static imports of their own. `Renderer` imports `FieldRenderer`.
 
 ## 3. Frame Loop
 

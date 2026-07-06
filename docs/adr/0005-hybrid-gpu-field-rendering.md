@@ -14,5 +14,5 @@ The Field View moves to a WebGPU render pass: a fragment shader samples the fiel
 ## Consequences
 
 - Two stacked canvases (WebGPU + 2D); pointer events belong to the top layer.
-- Solid-mask rendering moves into WGSL — `invalidateSolid()`/solid readback disappears.
-- `putImageData`, the CPU colormap LUT loop, and the field staging buffer go away.
+- Solid-mask rendering moves into WGSL for the Field View, but `invalidateSolid()` and the solid readback stay — the particle system still needs `solidData` on the CPU side (see CLAUDE.md's Solid Cell Rendering section for this deliberate divergence).
+- `putImageData` and the CPU colormap LUT loop go away, but a staging buffer survives: pressure auto-ranging still needs a throttled CPU-side readback to compute the display range.
