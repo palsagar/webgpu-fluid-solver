@@ -17,7 +17,7 @@ export class AdaptiveController {
         this.ui = ui;
 
         // Grid resolution tiers (cell count along Y axis)
-        this.tiers = [64, 128, 256, 512];
+        this.tiers = [64, 128, 256, 512, 1024];
         this.currentTierIndex = 2; // start at 256
         this.frameTimes = [];
         this.warmupFrames = 0;
