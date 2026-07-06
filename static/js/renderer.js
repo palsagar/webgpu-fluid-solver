@@ -2,9 +2,11 @@ import { FieldRenderer } from './field-renderer.js';
 
 /**
  * Renderer for the 2D flow simulation.
- * Uses a 2D canvas with putImageData for field visualization (pressure/smoke)
- * and canvas drawing for overlays (streamlines, velocity arrows, particles, obstacles).
- * GPU data is read back via staging buffers for CPU-side rendering.
+ * Field View (pressure/smoke) is drawn by FieldRenderer via a WebGPU render pass
+ * onto a bottom canvas. This class owns the transparent, display-resolution 2D
+ * overlay canvas on top (streamlines, velocity arrows, particles, obstacle) and
+ * the GPU readbacks feeding it and the particle system: velocity, solid mask,
+ * and a throttled pressure-range readback for auto-ranging.
  */
 export class Renderer {
   /**
@@ -110,14 +112,15 @@ export class Renderer {
     // field readback at all (ADR-0005).
     if (usePressure && !this.readbackPending && this._frameCount % 10 === 1) {
       this.readbackPending = true;
+      const staging = this._stagingBuffer;
       const encoder = device.createCommandEncoder();
-      encoder.copyBufferToBuffer(solver.pressureBuffer, 0, this._stagingBuffer, 0, this.numX * this.numY * 4);
+      encoder.copyBufferToBuffer(solver.pressureBuffer, 0, staging, 0, this.numX * this.numY * 4);
       device.queue.submit([encoder.finish()]);
 
-      this._stagingBuffer.mapAsync(GPUMapMode.READ).then(() => {
-        const raw = this._stagingBuffer.getMappedRange();
+      staging.mapAsync(GPUMapMode.READ).then(() => {
+        const raw = staging.getMappedRange();
         this._pressureRange = this._computePressureRange(new Float32Array(raw.slice(0)));
-        this._stagingBuffer.unmap();
+        staging.unmap();
         this.readbackPending = false;
       }).catch(() => { this.readbackPending = false; });
     }
