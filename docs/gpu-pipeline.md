@@ -2,6 +2,8 @@
 
 How the WebGPU compute shaders and the renderer work together to simulate and visualize fluid flow. For the numerical algorithms behind each shader, see [Numerical Methods](numerical-methods.md). For how these pieces fit into the overall application, see [Architecture](architecture.md).
 
+> **Stale as of 2026-07-19:** the buffer-layout and advection sections below (§1, §3, §4) still describe the pre-3-slot ping-pong design (`u`/`uNew`, `v`/`vNew`, `m`/`mNew`, `advectVelBindGroupA`/`B`, `_advectVelFlip`, `_syncVelBindGroups()`). Commit `a9b78f5` replaced this with a three-slot rotation (`velPairs[0..2]`, `smokeBufs[0..2]`, `_velCur`/`_smokeCur`, a 3×3 `advectSmoke` table). A later task rewrites advection again (MacCormack), so a full rewrite of this doc is deferred until then rather than done twice.
+
 ---
 
 ## 1. Buffer Layout

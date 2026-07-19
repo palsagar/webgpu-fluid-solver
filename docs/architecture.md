@@ -2,6 +2,8 @@
 
 Overview of the WebGPU Eulerian fluid solver: how the pieces fit together, the frame loop, preset system, adaptive resolution, and interaction model.
 
+> **Stale as of 2026-07-19:** the solver moved from a two-buffer ping-pong (`u`/`uNew`, `v`/`vNew`, `m`/`mNew`, `resetFlipState()`) to a three-slot rotation (`velPairs[0..2]`, `smokeBufs[0..2]`, `_velCur`/`_smokeCur`) in commit `a9b78f5`. The buffer-rotation references below (e.g. "both ping-pong buffers", `uNew`/`vNew`/`mNew`) describe the pre-3-slot design. A later task rewrites advection again (MacCormack), so this doc is pending a rewrite rather than a patch now.
+
 ## 1. Tech Stack
 
 | Layer | Technology | Notes |
