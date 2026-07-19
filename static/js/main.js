@@ -126,12 +126,10 @@ async function init() {
             solver.step(ui.numIters);
             // Re-apply inflow velocity AFTER step — the pressure solver can drift
             // the i=1 column values, so we force them back each frame.
-            // Must write to BOTH ping-pong buffers since the solver alternates reads.
             if (ui.boundaryVelData) {
                 const bv = ui.boundaryVelData;
                 const n = solver.numY;
-                solver.device.queue.writeBuffer(solver.u, 1 * n * 4, bv.uData, 1 * n, n);
-                solver.device.queue.writeBuffer(solver.uNew, 1 * n * 4, bv.uData, 1 * n, n);
+                solver.writeInflowColumn(1, bv.uData, 1 * n, n);
             }
         }
         renderer.draw();

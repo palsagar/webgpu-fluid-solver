@@ -2,8 +2,8 @@
  * GPU-based 2D incompressible fluid solver using WebGPU compute shaders.
  *
  * Runs pressure solve (red-black Gauss-Seidel), boundary extrapolation,
- * velocity advection, and smoke advection entirely on the GPU. Uses
- * ping-pong buffer pairs for advection to avoid read/write hazards.
+ * velocity advection, and smoke advection entirely on the GPU. Velocity and
+ * smoke rotate through three buffer slots to avoid read/write hazards.
  */
 export class FluidSolver {
   /**
@@ -27,10 +27,10 @@ export class FluidSolver {
   /**
    * Allocates all GPU buffers for the simulation grid.
    *
-   * Creates primary field buffers (u, v, p, s, m) and ping-pong
-   * destination buffers (uNew, vNew, mNew) for advection. Also
-   * creates three uniform buffers: one general-purpose and two for
-   * red/black pressure solve (which differ only in the color flag).
+   * Velocity and smoke live in a 3-slot rotation (see `velPairs`/`smokeBufs`).
+   * Pressure (p) and the solid mask (s) are single buffers. Also creates three
+   * uniform buffers: one general-purpose and two for the red/black pressure
+   * solve (which differ only in the color flag).
    *
    * @param {number} numX - Grid width in cells
    * @param {number} numY - Grid height in cells
@@ -40,18 +40,24 @@ export class FluidSolver {
     const size = numX * numY;
     const storageUsage = GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST;
 
-    // Primary field buffers: horizontal velocity (u), vertical velocity (v),
-    // pressure (p), solid mask (s), smoke/dye density (m)
-    this.u    = device.createBuffer({ size: size * 4, usage: storageUsage });
-    this.v    = device.createBuffer({ size: size * 4, usage: storageUsage });
-    this.p    = device.createBuffer({ size: size * 4, usage: storageUsage });
-    this.s    = device.createBuffer({ size: size * 4, usage: storageUsage });
-    this.m    = device.createBuffer({ size: size * 4, usage: storageUsage });
+    // Three velocity pairs and three smoke buffers. MacCormack rotates through
+    // them: current -> forward -> backward, with combine writing in place into
+    // the backward pair. A 2-cycle would need a fourth pair and a distinct
+    // combine output, which exceeds maxStorageBuffersPerShaderStage (8).
+    this.velPairs = [];
+    this.smokeBufs = [];
+    for (let k = 0; k < 3; k++) {
+      this.velPairs.push({
+        u: device.createBuffer({ size: size * 4, usage: storageUsage }),
+        v: device.createBuffer({ size: size * 4, usage: storageUsage }),
+      });
+      this.smokeBufs.push(device.createBuffer({ size: size * 4, usage: storageUsage }));
+    }
+    this._velCur = 0;
+    this._smokeCur = 0;
 
-    // Ping-pong destination buffers for advection (avoids read/write hazards)
-    this.uNew = device.createBuffer({ size: size * 4, usage: storageUsage });
-    this.vNew = device.createBuffer({ size: size * 4, usage: storageUsage });
-    this.mNew = device.createBuffer({ size: size * 4, usage: storageUsage });
+    this.p = device.createBuffer({ size: size * 4, usage: storageUsage });
+    this.s = device.createBuffer({ size: size * 4, usage: storageUsage });
 
     // Uniform buffers: red/black variants carry color=0 and color=1 respectively
     const uniformUsage = GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST;
@@ -106,14 +112,10 @@ export class FluidSolver {
 
   /** Releases all GPU buffers. Must be called before resize or disposal. */
   destroy() {
-    this.u.destroy();
-    this.v.destroy();
+    for (const pair of this.velPairs) { pair.u.destroy(); pair.v.destroy(); }
+    for (const b of this.smokeBufs) b.destroy();
     this.p.destroy();
     this.s.destroy();
-    this.m.destroy();
-    this.uNew.destroy();
-    this.vNew.destroy();
-    this.mNew.destroy();
     this.uniformBuf.destroy();
     this.uniformBufRed.destroy();
     this.uniformBufBlack.destroy();
@@ -189,87 +191,76 @@ export class FluidSolver {
   }
 
   /**
-   * Creates all bind groups for the compute pipelines. Sets up two bind groups
-   * per advection pass (A and B) for ping-pong: A reads from primary buffers and
-   * writes to *New buffers, B does the reverse. Initializes flip state to A.
+   * Creates all bind groups for the compute pipelines, indexed by rotation slot.
+   *
+   * Pressure and boundary get one variant per velocity pair; advection gets one
+   * variant per (source, destination) slot pairing. Smoke advection is indexed
+   * by BOTH the velocity slot and the smoke slot, because the velocity field
+   * that carries the dye is not tied to the smoke rotation.
    */
   _createBindGroups() {
     const device = this.device;
     const entry = (binding, buffer) => ({ binding, resource: { buffer } });
 
-    // Pressure red/black — A reads u,v; B reads uNew,vNew. These MUST follow
-    // the same flip as advection: pressure writes velocities in place, so
-    // pointing it at the stale pair discards the entire solve.
-    this.pressureRedBindGroupA = device.createBindGroup({
-      layout: this._pressureBGL,
-      entries: [entry(0, this.uniformBufRed), entry(1, this.u), entry(2, this.v), entry(3, this.s), entry(4, this.p)],
-    });
-    this.pressureRedBindGroupB = device.createBindGroup({
-      layout: this._pressureBGL,
-      entries: [entry(0, this.uniformBufRed), entry(1, this.uNew), entry(2, this.vNew), entry(3, this.s), entry(4, this.p)],
-    });
-    this.pressureBlackBindGroupA = device.createBindGroup({
-      layout: this._pressureBGL,
-      entries: [entry(0, this.uniformBufBlack), entry(1, this.u), entry(2, this.v), entry(3, this.s), entry(4, this.p)],
-    });
-    this.pressureBlackBindGroupB = device.createBindGroup({
-      layout: this._pressureBGL,
-      entries: [entry(0, this.uniformBufBlack), entry(1, this.uNew), entry(2, this.vNew), entry(3, this.s), entry(4, this.p)],
-    });
+    // One variant per velocity pair — pressure and boundary write velocity in
+    // place, so they must target whichever pair is live this step.
+    this.pressureRed = [];
+    this.pressureBlack = [];
+    this.boundary = [];
+    for (const pair of this.velPairs) {
+      this.pressureRed.push(device.createBindGroup({
+        layout: this._pressureBGL,
+        entries: [entry(0, this.uniformBufRed), entry(1, pair.u), entry(2, pair.v), entry(3, this.s), entry(4, this.p)],
+      }));
+      this.pressureBlack.push(device.createBindGroup({
+        layout: this._pressureBGL,
+        entries: [entry(0, this.uniformBufBlack), entry(1, pair.u), entry(2, pair.v), entry(3, this.s), entry(4, this.p)],
+      }));
+      this.boundary.push(device.createBindGroup({
+        layout: this._boundaryBGL,
+        entries: [entry(0, this.uniformBuf), entry(1, pair.u), entry(2, pair.v)],
+      }));
+    }
 
-    // Boundary: [uniformBuf, u, v]
-    this.boundaryBindGroupA = device.createBindGroup({
-      layout: this._boundaryBGL,
-      entries: [entry(0, this.uniformBuf), entry(1, this.u), entry(2, this.v)],
-    });
-    this.boundaryBindGroupB = device.createBindGroup({
-      layout: this._boundaryBGL,
-      entries: [entry(0, this.uniformBuf), entry(1, this.uNew), entry(2, this.vNew)],
-    });
+    // Velocity advection, interim 2-cycle form: read pair c, write pair (c+1)%3.
+    // Task 5 replaces these with the three MacCormack passes.
+    this.advectVel = [];
+    for (let c = 0; c < 3; c++) {
+      const src = this.velPairs[c], dst = this.velPairs[(c + 1) % 3];
+      this.advectVel.push(device.createBindGroup({
+        layout: this._advectBGL,
+        entries: [entry(0, this.uniformBuf), entry(1, src.u), entry(2, src.v), entry(3, this.s), entry(4, dst.u), entry(5, dst.v)],
+      }));
+    }
 
-    // Advect velocity A/B (ping-pong)
-    this.advectVelBindGroupA = device.createBindGroup({
-      layout: this._advectBGL,
-      entries: [entry(0, this.uniformBuf), entry(1, this.u), entry(2, this.v), entry(3, this.s), entry(4, this.uNew), entry(5, this.vNew)],
-    });
-    this.advectVelBindGroupB = device.createBindGroup({
-      layout: this._advectBGL,
-      entries: [entry(0, this.uniformBuf), entry(1, this.uNew), entry(2, this.vNew), entry(3, this.s), entry(4, this.u), entry(5, this.v)],
-    });
+    // Smoke advection is a 3x3 table indexed [velCur][smokeCur]. The velocity
+    // slot and the smoke slot advance independently once viscous substepping
+    // lands, so binding smoke's advecting velocity to the smoke index would
+    // silently trace dye through the wrong velocity field.
+    this.advectSmoke = [];
+    for (let vc = 0; vc < 3; vc++) {
+      this.advectSmoke.push([]);
+      for (let sc = 0; sc < 3; sc++) {
+        this.advectSmoke[vc].push(device.createBindGroup({
+          layout: this._advectBGL,
+          entries: [entry(0, this.uniformBuf),
+                    entry(1, this.velPairs[vc].u),      // live velocity
+                    entry(2, this.velPairs[vc].v),
+                    entry(3, this.s),
+                    entry(4, this.smokeBufs[sc]),
+                    entry(5, this.smokeBufs[(sc + 1) % 3])],
+        }));
+      }
+    }
 
-    // Advect smoke A/B (ping-pong)
-    this.advectSmokeBindGroupA = device.createBindGroup({
-      layout: this._advectBGL,
-      entries: [entry(0, this.uniformBuf), entry(1, this.u), entry(2, this.v), entry(3, this.s), entry(4, this.m), entry(5, this.mNew)],
-    });
-    this.advectSmokeBindGroupB = device.createBindGroup({
-      layout: this._advectBGL,
-      entries: [entry(0, this.uniformBuf), entry(1, this.u), entry(2, this.v), entry(3, this.s), entry(4, this.mNew), entry(5, this.m)],
-    });
-
-    // Start with A
-    this._advectVelBindGroup   = this.advectVelBindGroupA;
-    this._advectSmokeBindGroup = this.advectSmokeBindGroupA;
-    this._advectVelFlip   = false;
-    this._advectSmokeFlip = false;
-    this._syncVelBindGroups();
-  }
-
-  /**
-   * Points pressure and boundary at whichever pair advection is about to read.
-   * Velocity lives in u,v when the flip is false and in uNew,vNew when true.
-   */
-  _syncVelBindGroups() {
-    const b = this._advectVelFlip;
-    this._pressureRedBindGroup   = b ? this.pressureRedBindGroupB   : this.pressureRedBindGroupA;
-    this._pressureBlackBindGroup = b ? this.pressureBlackBindGroupB : this.pressureBlackBindGroupA;
-    this._boundaryBindGroup      = b ? this.boundaryBindGroupB      : this.boundaryBindGroupA;
+    this._velCur = 0;
+    this._smokeCur = 0;
   }
 
   /**
    * Runs one full simulation time step: pressure solve, boundary extrapolation,
    * velocity advection, and smoke advection. Encodes all passes into a single
-   * command buffer and submits to the GPU queue, then swaps ping-pong state.
+   * command buffer and submits to the GPU queue, then advances the rotation.
    *
    * @param {number} numIters - Number of red-black Gauss-Seidel pressure iterations
    */
@@ -292,14 +283,14 @@ export class FluidSolver {
       {
         const pass = encoder.beginComputePass();
         pass.setPipeline(this.pressurePipeline);
-        pass.setBindGroup(0, this._pressureRedBindGroup);
+        pass.setBindGroup(0, this.pressureRed[this._velCur]);
         pass.dispatchWorkgroups(dx, dy, 1);
         pass.end();
       }
       {
         const pass = encoder.beginComputePass();
         pass.setPipeline(this.pressurePipeline);
-        pass.setBindGroup(0, this._pressureBlackBindGroup);
+        pass.setBindGroup(0, this.pressureBlack[this._velCur]);
         pass.dispatchWorkgroups(dx, dy, 1);
         pass.end();
       }
@@ -309,51 +300,46 @@ export class FluidSolver {
     {
       const pass = encoder.beginComputePass();
       pass.setPipeline(this.boundaryHPipeline);
-      pass.setBindGroup(0, this._boundaryBindGroup);
+      pass.setBindGroup(0, this.boundary[this._velCur]);
       pass.dispatchWorkgroups(Math.ceil(numX / 64), 1, 1);
       pass.end();
     }
     {
       const pass = encoder.beginComputePass();
       pass.setPipeline(this.boundaryVPipeline);
-      pass.setBindGroup(0, this._boundaryBindGroup);
+      pass.setBindGroup(0, this.boundary[this._velCur]);
       pass.dispatchWorkgroups(Math.ceil(numY / 64), 1, 1);
       pass.end();
     }
 
-    // Advect velocity
+    // Advect velocity: reads pair _velCur, writes pair (_velCur + 1) % 3.
     {
       const pass = encoder.beginComputePass();
       pass.setPipeline(this.advectVelPipeline);
-      pass.setBindGroup(0, this._advectVelBindGroup);
+      pass.setBindGroup(0, this.advectVel[this._velCur]);
       pass.dispatchWorkgroups(dx, dy, 1);
       pass.end();
     }
 
-    // Advect smoke
+    // Advect smoke through the SAME velocity pair the passes above worked on —
+    // the projected, boundary-corrected time-n field in slot _velCur. Slot
+    // _velCur + 1 now holds the advected, unprojected time-(n+1) velocity, and
+    // tracing dye through that would be a semi-Lagrangian step out of sync with
+    // the velocity it is supposed to follow. Hence both indices only advance
+    // after the whole command buffer is encoded.
     {
       const pass = encoder.beginComputePass();
       pass.setPipeline(this.advectSmokePipeline);
-      pass.setBindGroup(0, this._advectSmokeBindGroup);
+      pass.setBindGroup(0, this.advectSmoke[this._velCur][this._smokeCur]);
       pass.dispatchWorkgroups(dx, dy, 1);
       pass.end();
     }
 
     device.queue.submit([encoder.finish()]);
 
-    // Swap ping-pong bind groups so the next step reads from the buffers
-    // that were just written to, and writes to the ones that were read from
-    this._advectVelFlip = !this._advectVelFlip;
-    this._advectVelBindGroup = this._advectVelFlip
-      ? this.advectVelBindGroupB
-      : this.advectVelBindGroupA;
-
-    this._advectSmokeFlip = !this._advectSmokeFlip;
-    this._advectSmokeBindGroup = this._advectSmokeFlip
-      ? this.advectSmokeBindGroupB
-      : this.advectSmokeBindGroupA;
-
-    this._syncVelBindGroups();
+    // Advance the rotation. Advection wrote into the next slot.
+    this._velCur   = (this._velCur + 1) % 3;
+    this._smokeCur = (this._smokeCur + 1) % 3;
   }
 
   /**
@@ -390,31 +376,53 @@ export class FluidSolver {
     this._writeParamsTo(this.uniformBufBlack, 1);
   }
 
-  /**
-   * Resets ping-pong state so the next step reads from the primary buffers (u, v, m).
-   * Call after uploading new field data to ensure the solver reads the correct buffers.
-   */
+  /** Resets the rotation so the next step reads pair 0. Call after uploading fields. */
   resetFlipState() {
-    this._advectVelFlip = false;
-    this._advectSmokeFlip = false;
-    this._advectVelBindGroup = this.advectVelBindGroupA;
-    this._advectSmokeBindGroup = this.advectSmokeBindGroupA;
-    this._syncVelBindGroups();
+    this._velCur = 0;
+    this._smokeCur = 0;
   }
 
   writeSolidMask(data) { this.device.queue.writeBuffer(this.s, 0, data); }
-  writeVelocityU(data) { this.device.queue.writeBuffer(this.u, 0, data); }
-  writeVelocityV(data) { this.device.queue.writeBuffer(this.v, 0, data); }
-  writeSmoke(data)     { this.device.queue.writeBuffer(this.m, 0, data); }
+
+  /** Writes u to every velocity pair, so no pair holds stale data. */
+  writeVelocityU(data) {
+    for (const p of this.velPairs) this.device.queue.writeBuffer(p.u, 0, data);
+  }
+  writeVelocityV(data) {
+    for (const p of this.velPairs) this.device.queue.writeBuffer(p.v, 0, data);
+  }
+  writeSmoke(data) {
+    for (const b of this.smokeBufs) this.device.queue.writeBuffer(b, 0, data);
+  }
+
+  /**
+   * Re-applies one column of u to every velocity pair. Used for the inflow BC,
+   * which must survive whichever pair the rotation currently reads.
+   * @param {number} col - column index (i)
+   * @param {Float32Array} data - source array
+   * @param {number} srcOffset - element offset into `data`
+   * @param {number} count - element count to copy
+   */
+  writeInflowColumn(col, data, srcOffset, count) {
+    const byteOffset = col * this.numY * 4;
+    for (const p of this.velPairs) {
+      this.device.queue.writeBuffer(p.u, byteOffset, data, srcOffset, count);
+    }
+  }
+
+  /**
+   * Writes smoke values at a single cell index to every smoke buffer.
+   * @param {number} index - flat cell index (i * numY + j)
+   * @param {Float32Array} data - values to write at that index
+   */
+  writeSmokeCell(index, data) {
+    for (const b of this.smokeBufs) this.device.queue.writeBuffer(b, index * 4, data);
+  }
 
   get pressureBuffer()  { return this.p; }
-  /** Returns the smoke buffer that holds the most recent advection output. */
-  get smokeBuffer()     { return this._advectSmokeFlip ? this.mNew : this.m; }
-  /** Returns the velocity buffers that hold the most recent advection output. */
-  get velocityBuffers() {
-    return this._advectVelFlip
-      ? { u: this.uNew, v: this.vNew }
-      : { u: this.u, v: this.v };
-  }
   get solidBuffer()     { return this.s; }
+  /** Returns the smoke buffer that holds the most recent advection output. */
+  get smokeBuffer()     { return this.smokeBufs[this._smokeCur]; }
+  /** Returns the velocity buffers that hold the most recent advection output. */
+  get velocityBuffers() { return this.velPairs[this._velCur]; }
 }

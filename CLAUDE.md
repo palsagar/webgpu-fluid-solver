@@ -25,14 +25,17 @@ Open `http://localhost:8000` in Chrome (WebGPU required).
 ### WebGPU Bind Group Layouts
 Do NOT use `layout: 'auto'` for compute pipelines — auto-layout only includes bindings that are **statically used** by the entry point. If a shader declares bindings it doesn't reference (e.g., boundary.wgsl's `extrapolate_horizontal` doesn't use `v`), the auto-layout omits them, and bind group creation fails. Use explicit `GPUBindGroupLayout` with all declared bindings.
 
-### Ping-Pong Buffers
-Advection uses ping-pong buffer pairs (u/uNew, v/vNew, m/mNew). When writing boundary conditions or obstacle velocities from JS, **write to BOTH buffers** — the solver alternates which one it reads from based on `_advectVelFlip` / `_advectSmokeFlip` state.
+### Three-Slot Buffer Rotation
+Velocity and smoke rotate through three slots: `solver.velPairs[0..2]` (each `{u, v}`) and `solver.smokeBufs[0..2]`, with `_velCur` / `_smokeCur` naming the live slot. Three rather than two because MacCormack's combine writes in place into the backward pair; a 2-cycle would need a fourth pair and a distinct combine output, exceeding `maxStorageBuffersPerShaderStage` (8).
 
-The same flip governs the **pressure and boundary** bind groups, not just
+Never write a rotation buffer directly from JS. Use `writeVelocityU` / `writeVelocityV` / `writeSmoke` / `writeInflowColumn` / `writeSmokeCell` — they write **every** slot, so no slot can hold stale data whichever one the rotation lands on.
+
+The rotation governs the **pressure and boundary** bind groups, not just
 advection. `pressure.wgsl` writes `u`/`v` in place, so a bind group pointing at
-the stale pair has its entire solve discarded by the next advection write. Any
-new pass that reads or writes velocity must select its bind group through
-`_syncVelBindGroups()`.
+the wrong slot has its entire solve discarded by the next advection write. Any
+new pass that reads or writes velocity must index its bind group by `_velCur`.
+
+Smoke advection bind groups are a 3x3 table indexed `[velCur][smokeCur]`: the dye is carried by the velocity slot, which advances independently of the smoke slot. Both indices advance only **after** the whole command buffer is encoded, so smoke advects through the projected time-n velocity rather than the unprojected time-(n+1) field velocity advection just produced.
 
 ### Boundary Velocity Enforcement
 Inflow velocities at column `i=1` survive advection because the left wall (`i=0`) is solid — the advection condition `s[(i-1)*n+j] != 0` fails, so the velocity isn't overwritten. However, they still need per-frame re-application **after** `step()` to prevent the pressure solver from drifting them.

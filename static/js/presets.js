@@ -133,15 +133,12 @@ export function loadPreset(name, solver, interaction) {
 
   }
 
-  // Write all fields to both ping-pong buffers to avoid stale data
+  // Write all fields — the solver writes every buffer in the rotation
   solver.resetFlipState();
   solver.writeSolidMask(sData);
   solver.writeVelocityU(uData);
   solver.writeVelocityV(new Float32Array(numX * numY));
   solver.writeSmoke(mData);
-  solver.device.queue.writeBuffer(solver.uNew, 0, new Float32Array(numX * numY));
-  solver.device.queue.writeBuffer(solver.vNew, 0, new Float32Array(numX * numY));
-  solver.device.queue.writeBuffer(solver.mNew, 0, mData);
 
   // Resize interaction arrays if grid size changed
   const iSize = numX * numY;
