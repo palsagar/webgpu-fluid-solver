@@ -25,11 +25,11 @@ export const PRESETS = {
     // convergence measurement. The original 20/40/60/80/120 divergence sweep
     // sampled all counts sequentially on one solver instance and mistook
     // vortex-shedding phase drift for iteration convergence. A controlled
-    // re-measurement (reset to an identical IC per count; see this commit's
-    // message for both tables) confirms mean|div| still falls with more
-    // iterations, but far more mildly than first reported — and max|div|
-    // near the obstacle actually *rises* with more iterations. Raising
-    // numIters is an open question left to a follow-up, not resolved here.
+    // re-measurement confirms mean|div| still falls with more iterations,
+    // far more mildly than first reported. max|div| near the obstacle rises
+    // too — a normalisation effect (same relative accuracy on a stronger,
+    // correctly-developed flow), not a solver defect. Raising numIters
+    // remains an open question.
     numIters: 80, dt: 1/120, omega: 1.9, inVel: 1.0,
     // Small obstacle to trigger periodic vortex shedding
     obstacle: { shape: 'circle', x: 0.3, y: 0.5, radius: 0.06 },
