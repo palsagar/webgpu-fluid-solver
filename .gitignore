@@ -2,6 +2,11 @@
 __pycache__/
 .venv/
 
+# Node / Playwright
+node_modules/
+test-results/
+playwright-report/
+
 # Old / unused
 fast_euler_solver_browser.html
 
