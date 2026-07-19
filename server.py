@@ -7,7 +7,12 @@ from starlette.responses import Response
 
 
 class NoCacheMiddleware(BaseHTTPMiddleware):
-    """Disable browser caching for JS/CSS/HTML during development."""
+    """Disable browser caching for JS/CSS/HTML, and set baseline security headers.
+
+    Caching is off unconditionally: ES modules are cached aggressively enough
+    that stale code silently defeats debugging, which is worth more here than
+    the bandwidth saved on a single-page demo.
+    """
 
     async def dispatch(self, request: Request, call_next) -> Response:
         response = await call_next(request)
@@ -15,6 +20,12 @@ class NoCacheMiddleware(BaseHTTPMiddleware):
         if path.endswith((".js", ".css", ".html", ".wgsl")) or path == "/":
             response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
             response.headers["Pragma"] = "no-cache"
+        response.headers["X-Content-Type-Options"] = "nosniff"
+        response.headers["Referrer-Policy"] = "no-referrer"
+        # frame-ancestors only — index.html uses inline <script> blocks and calls
+        # the GitHub API, so a default-src/script-src policy would need those
+        # refactored out first to avoid breaking the page.
+        response.headers["Content-Security-Policy"] = "frame-ancestors 'none'"
         return response
 
 
