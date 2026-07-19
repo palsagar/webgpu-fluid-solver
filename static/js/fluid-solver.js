@@ -327,10 +327,10 @@ export class FluidSolver {
 
     // MacCormack smoke: forward -> backward -> combine. Each is a 3x3 table
     // indexed [velCur][smokeCur]. All three bind u/v as the advecting velocity,
-    // so all three need the velocity axis: the velocity slot and the smoke slot
-    // advance by different amounts (+1 vs +2) and diverge further once viscous
-    // substepping lands, so keying the advecting velocity off the smoke index
-    // would silently trace dye through the wrong velocity field.
+    // so all three need the velocity axis. The two slots advance by +2 together
+    // today (see step()), but they are independent indices and will diverge once
+    // viscous substepping lands, so keying the advecting velocity off the smoke
+    // index would silently trace dye through the wrong velocity field.
     //
     // Slot roles for smoke slot sc: phi^n = sc, phi^ = hat = (sc+1)%3,
     // phi~ = tilde = (sc+2)%3. The combine writes phi^{n+1} in place into tilde.

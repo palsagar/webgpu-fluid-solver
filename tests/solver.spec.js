@@ -360,16 +360,181 @@ test('velocity advection leaves the inflow BC and solid-cell velocities bit-exac
 
   // Bit-exact, not approximate. Both advect passes revert these faces to phi^n
   // (the face guard is `s[idx] != 0 && s[(i-1)*n+j] != 0`, and s[0*n+j] == 0),
-  // so phi^ == phi~ == phi^n and `corrected` is exactly phi^. The limiter's
-  // phi^ SEED is what makes the clamp the identity there: the combine re-traces
-  // unconditionally, and that stencil -- for a trace the forward pass never
-  // took -- need not bracket phi^n[idx].
+  // so phi^ == phi~ == phi^n and `corrected` is exactly phi^.
+  //
+  // What holds the INFLOW in PRODUCTION is that revert alone -- NOT the
+  // limiter's phi^ seed. u_stencil clamps x to [h, nx*h], so its i0 is never 0
+  // and the i=1 u-face never samples column 0; its corner range always contains
+  // u[1, j0] and u[1, j1], and presets.js:97 writes inVel into u[1, j] for every
+  // j. Both corners therefore equal the face's own value, so the clamp is the
+  // identity with or without the seed.
+  //
+  // Removing the seed DOES fail `inflowDrift` -- by exactly 2.5 -- but read that
+  // number carefully, because Task 6's report originally misread it as "the
+  // entire inflow velocity". Karman's inVel is 1.0, not 2.5. The 2.5 is
+  // 3.5 - 1.0, an artifact of THIS TEST's own synthetic injection above: the
+  // v = -2.25 written into the solid left wall makes cv = -1.125 at every i=1
+  // u-face, bending the re-traced y up ~1.2 cells until the stencil collapses
+  // into the solid top row, where the test itself wrote u = 3.5. So this
+  // assertion's mutation sensitivity is about the injected wall values, not
+  // about the inflow mechanism. The seed's genuine production case is the
+  // dragged-obstacle face class, pinned by the next test down.
   //
   // Note the revert is FACE-based while cell (1, j) is FLUID, so porting the
-  // smoke combine's `if (s[idx] == 0.0)` guard would NOT fire here. Dropping
-  // the seed, or clamping to stencil corners alone, fails this test.
+  // smoke combine's `if (s[idx] == 0.0)` guard would NOT fire here.
   expect(r.inflowDrift).toBe(0);
   expect(r.solidDrift).toBe(0);
+});
+
+// The one production case the phi^ seed is genuinely load-bearing for.
+//
+// interaction.js:202-207 rasterises a dragged obstacle by writing the drag
+// velocity vx into every solid cell AND into the u-face one column to its right
+// (`uData[(i+1)*n+j] = vx`). That face is FLUID -- s[(i+1)*n+j] != 0 -- so no
+// cell-based solid test reaches it, and the test above does not either: it
+// iterates solid CELL indices only. But the face still reverts on both advect
+// passes, because the cell to its LEFT is solid, so `corrected == vx` exactly.
+//
+// The re-trace is where the seed earns its keep. cu = u[idx] == vx, so the
+// departure point is dt*|vx| away from the face -- out in the free stream,
+// where nothing is near vx. The corner range misses vx entirely, and without
+// the phi^ seed the clamp snaps the face to the nearest free-stream value,
+// silently destroying the moving-wall BC every drag frame.
+test('the velocity limiter holds the wall BC on fluid faces right of a dragged obstacle', async ({ page }) => {
+  await boot(page);
+  const r = await page.evaluate(async () => {
+    const { solver, device } = window.__flowlab;
+    solver.paused = true;
+
+    // Drag the obstacle UPSTREAM. The sign matters: the combine re-traces with
+    // POSITIVE dt (x = i*h - dt*cu), so vx < 0 sends the departure point to the
+    // RIGHT, downstream into developed wake, where u is nowhere near vx. A
+    // positive vx would trace back INTO the obstacle, whose cells also hold vx,
+    // and the corner range would contain vx by accident -- a vacuous test.
+    const vx = -2.0, vy = 0.0;
+
+    // See the inflow-BC test above for why advection is isolated from step().
+    const isolatedStep = () => {
+      solver._writeAllParams();
+      const c = solver._velCur;
+      const dx = Math.ceil(solver.numX / 8), dy = Math.ceil(solver.numY / 8);
+      const enc = device.createCommandEncoder();
+      for (const [pipeline, group] of [
+        [solver.advectVelPipeline, solver.velFwd[c]],
+        [solver.advectVelPipeline, solver.velBack[c]],
+        [solver.mcVelPipeline,     solver.velCombine[c]],
+      ]) {
+        const pass = enc.beginComputePass();
+        pass.setPipeline(pipeline);
+        pass.setBindGroup(0, group);
+        pass.dispatchWorkgroups(dx, dy, 1);
+        pass.end();
+      }
+      device.queue.submit([enc.finish()]);
+      return solver.velPairs[(c + 2) % 3];
+    };
+
+    const numX = solver.numX, n = solver.numY;
+    const size = numX * n * 4;
+    const readBuf = async (src) => {
+      const staging = device.createBuffer({
+        size, usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST,
+      });
+      const enc = device.createCommandEncoder();
+      enc.copyBufferToBuffer(src, 0, staging, 0, size);
+      device.queue.submit([enc.finish()]);
+      await staging.mapAsync(GPUMapMode.READ);
+      const out = new Float32Array(staging.getMappedRange().slice(0));
+      staging.unmap();
+      staging.destroy();
+      return out;
+    };
+
+    const sMask = await readBuf(solver.solidBuffer);
+
+    // Replicate interaction.js's drag write exactly: vx/vy into solid cells,
+    // vx into the u-face one column right of each solid cell.
+    const solids = [], dragFaces = [];
+    for (let i = 1; i < numX - 1; i++) {
+      for (let j = 1; j < n - 1; j++) {
+        if (sMask[i * n + j] !== 0) continue;
+        solids.push(i * n + j);
+        // The face class under test: fluid cell, solid left neighbour.
+        if (sMask[(i + 1) * n + j] !== 0) dragFaces.push((i + 1) * n + j);
+      }
+    }
+    for (const p of solver.velPairs) {
+      for (const idx of solids) {
+        device.queue.writeBuffer(p.u, idx * 4, new Float32Array([vx]));
+        device.queue.writeBuffer(p.v, idx * 4, new Float32Array([vy]));
+      }
+      for (const k of dragFaces) {
+        device.queue.writeBuffer(p.u, k * 4, new Float32Array([vx]));
+      }
+    }
+
+    const c = solver._velCur;
+    const uBefore = await readBuf(solver.velPairs[c].u);
+    const vBefore = await readBuf(solver.velPairs[c].v);
+    const out = isolatedStep();
+    const uAfter = await readBuf(out.u);
+
+    let dragDrift = 0;
+    for (const k of dragFaces) {
+      dragDrift = Math.max(dragDrift, Math.abs(uAfter[k] - uBefore[k]));
+    }
+
+    // Non-vacuity guard. Rather than replicate u_stencil (which would be a
+    // fourth copy of shader logic, free to drift), locate the departure point
+    // from u_departure's formula -- a 4-term average, no stencil -- and show vx
+    // sits below every u the bilinear stencil there could touch.
+    //
+    //   x = i*h - dt*cu, cu == u[idx] == vx exactly  -> i0 = fi + floor(dxCells)
+    //   y = j*h + h/2 - dt*cv                        -> j0 = fj + floor(dyCells)
+    // with i1 = i0+1, j1 = j0+1. One cell of slack each way absorbs any f32-vs-
+    // f64 disagreement in the floor. If every u in that 4x4 box exceeds vx by a
+    // margin then lo > vx at that face, so an unseeded clamp MUST move it.
+    const h = solver.h, dt = solver.params.dt;
+    let guarded = 0, minMargin = Infinity;
+    for (const k of dragFaces) {
+      const fi = Math.floor(k / n), fj = k % n;
+      if (fj + 1 >= n) continue;
+      const cu = uBefore[k];
+      const cv = 0.25 * (vBefore[(fi - 1) * n + fj] + vBefore[k] +
+                         vBefore[(fi - 1) * n + fj + 1] + vBefore[fi * n + fj + 1]);
+      const i0 = fi + Math.floor((-dt * cu) / h);
+      const j0 = fj + Math.floor((-dt * cv) / h);
+      if (i0 - 1 < 1 || i0 + 2 >= numX || j0 - 1 < 1 || j0 + 2 >= n) continue;
+
+      // Every reachable cell must be fluid -- a solid one holds vx itself, and
+      // would bracket vx for an uninteresting reason.
+      let clean = true, lo = Infinity;
+      for (let i = i0 - 1; i <= i0 + 2 && clean; i++) {
+        for (let j = j0 - 1; j <= j0 + 2; j++) {
+          if (sMask[i * n + j] === 0) { clean = false; break; }
+          lo = Math.min(lo, uBefore[i * n + j]);
+        }
+      }
+      if (!clean) continue;
+      guarded++;
+      minMargin = Math.min(minMargin, lo - vx);
+    }
+
+    return { dragDrift, dragFaceCount: dragFaces.length, guarded, minMargin };
+  });
+
+  // Guards: no faces, or a reach box that already contains vx, would make this
+  // vacuous. `minMargin > 0` is the proof that the corner range excludes vx at
+  // every guarded face, so the seed -- not the corner range -- is what holds
+  // them. Removing the phi^ seed from maccormack_velocity.wgsl fails this test.
+  expect(r.dragFaceCount).toBeGreaterThan(10);
+  expect(r.guarded).toBeGreaterThan(5);
+  expect(r.minMargin).toBeGreaterThan(0.25);
+
+  // Bit-exact, same argument as the inflow test: the face reverts on both
+  // passes, so corrected == vx exactly, and the phi^ seed makes the clamp the
+  // identity despite a corner range that provably excludes vx.
+  expect(r.dragDrift).toBe(0);
 });
 
 test('the velocity limiter keeps the combine within the range of the field it advected', async ({ page }) => {

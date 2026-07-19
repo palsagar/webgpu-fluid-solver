@@ -19,6 +19,15 @@
 // invisible to every behavioural test. solver.spec.js asserts the two copies
 // stay textually identical.
 //
+// Textual identity is not bit identity: these are separate shader modules, so
+// the compiler is free to contract the two copies' arithmetic differently (FMA
+// in one, mul+add in the other), and a departure point sitting exactly on a
+// cell boundary could in principle `floor()` into a different cell here than in
+// the forward pass. The consequence is bounded by the seed -- a stencil off by
+// one cell still yields a range containing phi^, so the clamp can only ever
+// return a value between phi^ and a neighbouring cell's -- so this is a caveat,
+// not a defect, and no fix is attempted.
+//
 // THE SEED IS LOAD-BEARING. Seeding lo/hi with phi^ (rather than taking the
 // stencil corners alone) is what makes a reverted face collapse to exactly
 // first-order semi-Lagrangian:
@@ -30,13 +39,34 @@
 //   range need NOT contain phi^n[idx]. Without the seed the clamp would drag
 //   the face off its boundary value.
 //
-// That is exactly what preserves the inflow BC: presets.js writes the inflow
-// into column i=1 and makes i=0 solid, so every u-face at i=1 reverts. Note
-// the revert is FACE-based, not cell-based -- cell (1, j) is fluid -- so the
-// smoke combine's `if (s[idx] == 0.0)` guard would NOT fire at those faces.
-// With the seed no guard is needed at all: the clamp is the identity wherever
-// a revert happened, including inside solid cells, where the value is the
-// (possibly moving) wall BC. Hence no `s` binding here.
+// WHERE THAT ACTUALLY BITES: solid walls and, above all, a DRAGGED OBSTACLE.
+// interaction.js:202-207 writes the drag velocity vx into every solid cell AND
+// into the u-face one column to the obstacle's right. That face is FLUID, but
+// it reverts, because the cell to its left is solid. Its own value is vx, and
+// the re-trace uses cu = u[idx] == vx, so the departure point lands a full
+// dt*|vx| away -- out in the free stream, where nothing is near vx. The corner
+// range there misses vx entirely, and an unseeded clamp snaps the face to the
+// free-stream value, destroying the moving-wall BC. solver.spec.js pins exactly
+// this face class, by mutation.
+//
+// WHERE IT PROVABLY DOES NOT BITE: the i=1 inflow face -- contrary to what an
+// earlier version of this comment (and of commit 321e5a6's message) claimed.
+// u_stencil clamps x to [h, nx*h], so x0f = floor(x * h1) >= 1 and i0 can never
+// be 0; the u-face at i=1 never samples column 0, and its corner range always
+// includes u[1, j0] and u[1, j1]. presets.js:97 writes the inflow into u[1, j]
+// for EVERY j, solid rows included, so both of those corners already equal the
+// face's own value: the range brackets the inflow and the clamp is the identity
+// with or without the seed. What preserves the inflow BC is the REVERT, not the
+// seed. (backwardStep, presets.js:124, fills column 1 only above the step, so
+// that column is not uniform and the seed can matter within a cell or so of the
+// step lip. The uniform-column argument is windTunnel-specific.)
+//
+// Note the revert is FACE-based, not cell-based -- cell (1, j) is fluid, and so
+// is the cell right of a dragged obstacle -- so the smoke combine's
+// `if (s[idx] == 0.0)` guard would fire at neither. With the seed no guard is
+// needed at all: the clamp is the identity wherever a revert happened,
+// including inside solid cells, where the value is the (possibly moving) wall
+// BC. Hence no `s` binding here.
 //
 // Solid stencil corners are NOT excluded, unlike the smoke combine. Velocity in
 // a solid cell is a genuine wall BC that interaction.js rewrites in full every
