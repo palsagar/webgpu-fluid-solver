@@ -42,8 +42,17 @@ async function init() {
     document.getElementById('start-sim-btn').addEventListener('click', dismissWelcome);
     document.getElementById('welcome-close-btn').addEventListener('click', dismissWelcome);
 
+    // Surface validation/OOM errors that WebGPU would otherwise swallow
+    device.addEventListener('uncapturederror', (e) => {
+        console.error('WebGPU uncaptured error:', e.error);
+    });
+
+    let rafId = null;
     device.lost.then((info) => {
         console.error('GPU device lost:', info.message);
+        // Stop the loop — every GPU call from here on fails, and the readbacks
+        // would otherwise re-allocate staging buffers every frame forever.
+        if (rafId !== null) cancelAnimationFrame(rafId);
         document.getElementById('device-lost-banner').style.display = 'block';
     });
 
@@ -55,7 +64,7 @@ async function init() {
     const h = 1.0 / numY;
 
     const solver = await FluidSolver.create(device, numX, numY, h);
-    const renderer = new Renderer(container, device, solver);
+    const renderer = await Renderer.create(container, device, solver);
     const interaction = new Interaction(renderer.canvas, solver);
 
     renderer.setInteraction(interaction);
@@ -76,6 +85,27 @@ async function init() {
 
     const adaptive = new AdaptiveController(solver, renderer, interaction, ui);
     ui.adaptive = adaptive;
+
+    // Test handle for browser-driven verification (Playwright)
+    window.__flowlab = { device, solver, renderer, interaction, ui, adaptive, particles };
+
+    // Canvas backing stores are display-resolution and set at construction, so
+    // they need re-sizing when the container changes. Debounced: a drag-resize
+    // fires continuously and each change reallocates the swapchain.
+    //
+    // Deliberately does NOT re-tier the grid. applyTier() destroys every GPU
+    // buffer, reloads the preset, and clears particle emitters — running that
+    // on a window resize would silently discard the user's obstacle position,
+    // dye field, and emitters. Cells go slightly non-square until the next
+    // explicit tier change, which is exactly how master behaved.
+    let resizeTimer = null;
+    new ResizeObserver(() => {
+        clearTimeout(resizeTimer);
+        resizeTimer = setTimeout(() => {
+            renderer.fieldRenderer.resizeCanvas();
+            renderer.resizeCanvas();
+        }, 150);
+    }).observe(container);
 
     // Exponentially-smoothed frame time for the performance HUD
     let frameTimeSmoothed = 0;
@@ -119,9 +149,14 @@ async function init() {
                 ' | iters: ' + ui.numIters;
         }
 
-        requestAnimationFrame(frame);
+        rafId = requestAnimationFrame(frame);
     }
-    requestAnimationFrame(frame);
+    rafId = requestAnimationFrame(frame);
 }
 
-init();
+init().catch((err) => {
+    console.error('Initialization failed:', err);
+    const banner = document.getElementById('fatal-banner');
+    document.getElementById('fatal-banner-message').textContent = err.message ?? String(err);
+    banner.style.display = 'block';
+});

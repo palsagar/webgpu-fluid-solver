@@ -23,10 +23,10 @@ Drag obstacles through the flow. Watch vortices form. Explore pressure fields, s
 
 - **GPU-accelerated solver** — Red-Black Gauss-Seidel pressure projection + semi-Lagrangian advection, all in WGSL compute shaders
 - **Interactive obstacles** — Drag circles, squares, airfoils, or wedges through the fluid with velocity coupling
-- **Multiple visualizations** — Smoke dye (magma colormap), pressure field (viridis), streamlines, velocity arrows
+- **Multiple visualizations** — Smoke dye (magma colormap), pressure field (coolwarm), streamlines, velocity arrows, tracer particles
 - **Curated presets** — Wind tunnel, Karman vortex street, backward-facing step
 - **Advanced controls** — Adjust timestep, relaxation, iterations, inflow velocity, grid resolution
-- **Adaptive resolution** — Auto-scales grid from 64 to 512 based on frame rate
+- **Adaptive resolution** — Auto-scales the grid between 64 and 512 based on frame rate; 1024 is selectable manually
 - **800+ fps** at 256x256 on modern GPUs
 
 ## Quick Start
@@ -54,12 +54,11 @@ Open `http://localhost:8000` in Chrome 113+ (WebGPU required).
 
 The solver implements a staggered MAC grid with:
 
-1. **Gravity integration** — applies body forces to the velocity field
-2. **Pressure projection** — Red-Black Gauss-Seidel with SOR enforces incompressibility
-3. **Boundary extrapolation** — copies interior velocities to boundary cells
-4. **Semi-Lagrangian advection** — backtraces particles through the velocity field with bilinear interpolation
+1. **Pressure projection** — Red-Black Gauss-Seidel with SOR enforces incompressibility
+2. **Boundary extrapolation** — copies interior velocities to boundary cells
+3. **Semi-Lagrangian advection** — backtraces particles through the velocity field with bilinear interpolation
 
-All four steps run as WebGPU compute shaders dispatched ~84 times per frame (4 + 2 x 40 iterations). Data stays on the GPU — the CPU only reads back field values for visualization via async staging buffers.
+All three steps run as WebGPU compute shaders dispatched ~84 times per frame (4 + 2 x 40 iterations). The field view is then drawn by a WebGPU render pass straight from the simulation buffers — data stays on the GPU. The CPU reads back only what the overlays need: velocity for streamlines, arrows, and particles, plus a throttled pressure readback for colormap auto-ranging.
 
 ## Project Structure
 
@@ -71,16 +70,18 @@ static/
   js/
     main.js                 # Entry point, animation loop
     fluid-solver.js         # GPU buffer management, compute dispatch
-    renderer.js             # 2D canvas rendering, colormaps, overlays
+    field-renderer.js       # WebGPU render pass for the field view
+    renderer.js             # Overlay canvas, GPU readbacks, colorbar
     interaction.js           # Mouse/touch drag, shape rasterization
+    particles.js             # CPU Lagrangian tracer particles + emitters
     presets.js               # Preset configurations
     ui.js                    # DOM bindings, sliders, keyboard shortcuts
     adaptive.js              # Frame-rate-based resolution scaling
   shaders/
-    integrate.wgsl           # Gravity/force integration
     pressure.wgsl            # Red-Black Gauss-Seidel pressure solver
     boundary.wgsl            # Boundary extrapolation
     advect.wgsl              # Semi-Lagrangian advection (velocity + smoke)
+    render_field.wgsl        # Field view: bilinear sampling, colormap LUT, solids
   colormaps/
     viridis.png              # Scientific colormaps (256x1 LUT textures)
     coolwarm.png

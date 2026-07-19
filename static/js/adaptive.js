@@ -17,10 +17,15 @@ export class AdaptiveController {
         this.ui = ui;
 
         // Grid resolution tiers (cell count along Y axis)
-        this.tiers = [64, 128, 256, 512];
+        this.tiers = [64, 128, 256, 512, 1024];
         this.currentTierIndex = 2; // start at 256
+        // Ceiling for automatic promotion. 1024 is manual-only: it measures
+        // ~58 ms/frame (~17 fps) even on the dev machine, so auto-promoting
+        // into it would stall for seconds, drop back, and promote again.
+        // Lowered further by downscale() when a tier proves too slow.
+        this.maxAutoTierIndex = this.tiers.indexOf(512);
         this.frameTimes = [];
-        this.warmupFrames = 0;
+        this.tierStartTime = 0;
         this.lastUpscaleTime = 0;
         this.manualOverride = false;
         this.enabled = false; // disabled by default — user can enable manually
@@ -34,17 +39,20 @@ export class AdaptiveController {
      */
     tick(frameTimeMs) {
         if (!this.enabled || this.manualOverride) return;
-        this.warmupFrames++;
-        if (this.warmupFrames <= 120) return; // wait ~2s for GPU/JIT to stabilize
+        // Warmup is wall-clock, not frame-counted: at 17 fps a 120-frame gate
+        // takes 7s, so a bad tier would hold the screen hostage before the
+        // downscale check could even run.
+        if (this.tierStartTime === 0) this.tierStartTime = Date.now();
+        if (Date.now() - this.tierStartTime < 2000) return; // let GPU/JIT stabilize
         this.frameTimes.push(frameTimeMs);
         if (this.frameTimes.length > 120) this.frameTimes.shift(); // rolling window of 120 samples
-        if (this.frameTimes.length < 60) return; // need enough samples for stable average
+        if (this.frameTimes.length < 20) return; // need enough samples for stable average
         const avg = this.frameTimes.reduce((a, b) => a + b, 0) / this.frameTimes.length;
         // >20ms avg (~<50 FPS): drop resolution immediately
         if (avg > 20 && this.currentTierIndex > 0) {
             this.downscale();
         // <8ms avg (~>125 FPS) with 5s cooldown: try higher resolution
-        } else if (avg < 8 && this.currentTierIndex < this.tiers.length - 1) {
+        } else if (avg < 8 && this.currentTierIndex < this.maxAutoTierIndex) {
             if (Date.now() - this.lastUpscaleTime > 5000) {
                 this.upscale();
             }
@@ -60,6 +68,10 @@ export class AdaptiveController {
         const tier = this.tiers[this.currentTierIndex];
         const container = this.renderer.canvas.parentElement;
         const numY = tier;
+        // A collapsed container (hidden tab, zero-height layout) would make
+        // numX Infinity/NaN. solver.resize() destroys buffers before creating
+        // new ones, so throwing here would leave the solver unrecoverable.
+        if (!(container.clientHeight > 0) || !(container.clientWidth > 0)) return;
         // Scale X cells proportionally to canvas aspect ratio
         const numX = Math.round(tier * container.clientWidth / container.clientHeight);
         const h = 1.0 / numY;
@@ -70,12 +82,16 @@ export class AdaptiveController {
 
         // Reset measurement state for the new resolution
         this.frameTimes = [];
-        this.warmupFrames = 0;
+        this.tierStartTime = 0;
     }
 
     /** Drops to the next lower resolution tier and notifies the renderer. */
     downscale() {
+        const failedTier = this.currentTierIndex;
         this.currentTierIndex--;
+        // Remember that this tier was too slow. Without it the controller
+        // promotes straight back once the cooldown expires, and oscillates.
+        this.maxAutoTierIndex = Math.min(this.maxAutoTierIndex, failedTier - 1);
         this.applyTier();
         this.renderer.showTierChange(this.tiers[this.currentTierIndex], -1);
     }

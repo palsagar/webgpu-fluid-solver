@@ -206,7 +206,8 @@ body {
   padding: 20px;
 }
 
-#device-lost-banner {
+#device-lost-banner,
+#fatal-banner {
   display: none;
   position: fixed;
   top: 0;
