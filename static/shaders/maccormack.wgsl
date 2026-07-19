@@ -89,14 +89,21 @@ fn maccormack_smoke(@builtin(global_invocation_id) id: vec3u) {
     let idx = i * n + j;
 
     // Solid cells carry no transported field -- they carry a boundary
-    // condition. advect_smoke reverts them to phi^n; the combine must too, or
-    // the clamp below rewrites them. Benign for a STATIC obstacle (u = v = 0
-    // inside, so the departure point is the cell centre and the clamp is a
-    // no-op) but not during a DRAG, where interaction.js writes the obstacle's
-    // own velocity into the solid cells: the departure then lands far away,
-    // lo/hi need not contain phi^n[idx], and the clamp corrupts the cell.
-    // Invisible for smoke (solids are painted in-shader) -- but for velocity
-    // the value in a solid cell IS the moving-wall BC.
+    // condition, so they must come out of the combine holding phi^n.
+    //
+    // This branch is a PROVABLE NO-OP, not a correctness requirement. An
+    // earlier version of this comment claimed the clamp would otherwise
+    // corrupt solid cells during an obstacle DRAG (when interaction.js writes
+    // the obstacle's own velocity into them and the re-traced departure lands
+    // far away, so the corner range need not contain phi^n[idx]). That is
+    // wrong: advect_smoke reverts solid cells to mOrig on BOTH passes, so here
+    // cmHat[idx] == cmTilde[idx] == cmN[idx] bit-for-bit, `corrected` is
+    // exactly cmHat, and the bounds below are SEEDED with cmHat -- so
+    // lo <= corrected <= hi holds identically and the clamp is the identity.
+    // The seed, not this branch, is what protects solid cells; Task 6's
+    // velocity combine relies on that and carries no such branch (and no `s`
+    // binding) at all. Kept here only as a cheap early-out that states the
+    // intent locally.
     if (s[idx] == 0.0) {
         cmTilde[idx] = cmN[idx];
         return;
