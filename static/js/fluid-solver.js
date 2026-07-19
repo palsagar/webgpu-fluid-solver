@@ -197,20 +197,34 @@ export class FluidSolver {
     const device = this.device;
     const entry = (binding, buffer) => ({ binding, resource: { buffer } });
 
-    // Pressure red/black: [uniformBufRed/Black, u, v, s, p]
-    this.pressureRedBindGroup = device.createBindGroup({
+    // Pressure red/black — A reads u,v; B reads uNew,vNew. These MUST follow
+    // the same flip as advection: pressure writes velocities in place, so
+    // pointing it at the stale pair discards the entire solve.
+    this.pressureRedBindGroupA = device.createBindGroup({
       layout: this._pressureBGL,
       entries: [entry(0, this.uniformBufRed), entry(1, this.u), entry(2, this.v), entry(3, this.s), entry(4, this.p)],
     });
-    this.pressureBlackBindGroup = device.createBindGroup({
+    this.pressureRedBindGroupB = device.createBindGroup({
+      layout: this._pressureBGL,
+      entries: [entry(0, this.uniformBufRed), entry(1, this.uNew), entry(2, this.vNew), entry(3, this.s), entry(4, this.p)],
+    });
+    this.pressureBlackBindGroupA = device.createBindGroup({
       layout: this._pressureBGL,
       entries: [entry(0, this.uniformBufBlack), entry(1, this.u), entry(2, this.v), entry(3, this.s), entry(4, this.p)],
     });
+    this.pressureBlackBindGroupB = device.createBindGroup({
+      layout: this._pressureBGL,
+      entries: [entry(0, this.uniformBufBlack), entry(1, this.uNew), entry(2, this.vNew), entry(3, this.s), entry(4, this.p)],
+    });
 
     // Boundary: [uniformBuf, u, v]
-    this.boundaryBindGroup = device.createBindGroup({
+    this.boundaryBindGroupA = device.createBindGroup({
       layout: this._boundaryBGL,
       entries: [entry(0, this.uniformBuf), entry(1, this.u), entry(2, this.v)],
+    });
+    this.boundaryBindGroupB = device.createBindGroup({
+      layout: this._boundaryBGL,
+      entries: [entry(0, this.uniformBuf), entry(1, this.uNew), entry(2, this.vNew)],
     });
 
     // Advect velocity A/B (ping-pong)
@@ -238,6 +252,18 @@ export class FluidSolver {
     this._advectSmokeBindGroup = this.advectSmokeBindGroupA;
     this._advectVelFlip   = false;
     this._advectSmokeFlip = false;
+    this._syncVelBindGroups();
+  }
+
+  /**
+   * Points pressure and boundary at whichever pair advection is about to read.
+   * Velocity lives in u,v when the flip is false and in uNew,vNew when true.
+   */
+  _syncVelBindGroups() {
+    const b = this._advectVelFlip;
+    this._pressureRedBindGroup   = b ? this.pressureRedBindGroupB   : this.pressureRedBindGroupA;
+    this._pressureBlackBindGroup = b ? this.pressureBlackBindGroupB : this.pressureBlackBindGroupA;
+    this._boundaryBindGroup      = b ? this.boundaryBindGroupB      : this.boundaryBindGroupA;
   }
 
   /**
@@ -266,14 +292,14 @@ export class FluidSolver {
       {
         const pass = encoder.beginComputePass();
         pass.setPipeline(this.pressurePipeline);
-        pass.setBindGroup(0, this.pressureRedBindGroup);
+        pass.setBindGroup(0, this._pressureRedBindGroup);
         pass.dispatchWorkgroups(dx, dy, 1);
         pass.end();
       }
       {
         const pass = encoder.beginComputePass();
         pass.setPipeline(this.pressurePipeline);
-        pass.setBindGroup(0, this.pressureBlackBindGroup);
+        pass.setBindGroup(0, this._pressureBlackBindGroup);
         pass.dispatchWorkgroups(dx, dy, 1);
         pass.end();
       }
@@ -283,14 +309,14 @@ export class FluidSolver {
     {
       const pass = encoder.beginComputePass();
       pass.setPipeline(this.boundaryHPipeline);
-      pass.setBindGroup(0, this.boundaryBindGroup);
+      pass.setBindGroup(0, this._boundaryBindGroup);
       pass.dispatchWorkgroups(Math.ceil(numX / 64), 1, 1);
       pass.end();
     }
     {
       const pass = encoder.beginComputePass();
       pass.setPipeline(this.boundaryVPipeline);
-      pass.setBindGroup(0, this.boundaryBindGroup);
+      pass.setBindGroup(0, this._boundaryBindGroup);
       pass.dispatchWorkgroups(Math.ceil(numY / 64), 1, 1);
       pass.end();
     }
@@ -326,6 +352,8 @@ export class FluidSolver {
     this._advectSmokeBindGroup = this._advectSmokeFlip
       ? this.advectSmokeBindGroupB
       : this.advectSmokeBindGroupA;
+
+    this._syncVelBindGroups();
   }
 
   /**
@@ -371,6 +399,7 @@ export class FluidSolver {
     this._advectSmokeFlip = false;
     this._advectVelBindGroup = this.advectVelBindGroupA;
     this._advectSmokeBindGroup = this.advectSmokeBindGroupA;
+    this._syncVelBindGroups();
   }
 
   writeSolidMask(data) { this.device.queue.writeBuffer(this.s, 0, data); }

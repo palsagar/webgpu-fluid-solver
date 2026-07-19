@@ -28,6 +28,12 @@ Do NOT use `layout: 'auto'` for compute pipelines — auto-layout only includes 
 ### Ping-Pong Buffers
 Advection uses ping-pong buffer pairs (u/uNew, v/vNew, m/mNew). When writing boundary conditions or obstacle velocities from JS, **write to BOTH buffers** — the solver alternates which one it reads from based on `_advectVelFlip` / `_advectSmokeFlip` state.
 
+The same flip governs the **pressure and boundary** bind groups, not just
+advection. `pressure.wgsl` writes `u`/`v` in place, so a bind group pointing at
+the stale pair has its entire solve discarded by the next advection write. Any
+new pass that reads or writes velocity must select its bind group through
+`_syncVelBindGroups()`.
+
 ### Boundary Velocity Enforcement
 Inflow velocities at column `i=1` survive advection because the left wall (`i=0`) is solid — the advection condition `s[(i-1)*n+j] != 0` fails, so the velocity isn't overwritten. However, they still need per-frame re-application **after** `step()` to prevent the pressure solver from drifting them.
 
