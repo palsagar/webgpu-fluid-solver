@@ -21,8 +21,15 @@ export const PRESETS = {
   karmanVortex: {
     name: 'Kármán Vortex',
     // Higher iteration count and smaller timestep for resolving vortex shedding.
-    // Iteration count measured against divergence convergence after the
-    // projection fix; see docs/ROADMAP.md step 0.
+    // numIters left at 80 (see docs/ROADMAP.md step 0) — NOT a clean
+    // convergence measurement. The original 20/40/60/80/120 divergence sweep
+    // sampled all counts sequentially on one solver instance and mistook
+    // vortex-shedding phase drift for iteration convergence. A controlled
+    // re-measurement (reset to an identical IC per count; see this commit's
+    // message for both tables) confirms mean|div| still falls with more
+    // iterations, but far more mildly than first reported — and max|div|
+    // near the obstacle actually *rises* with more iterations. Raising
+    // numIters is an open question left to a follow-up, not resolved here.
     numIters: 80, dt: 1/120, omega: 1.9, inVel: 1.0,
     // Small obstacle to trigger periodic vortex shedding
     obstacle: { shape: 'circle', x: 0.3, y: 0.5, radius: 0.06 },
