@@ -59,8 +59,10 @@ export class FluidSolver {
     this.p = device.createBuffer({ size: size * 4, usage: storageUsage });
     this.s = device.createBuffer({ size: size * 4, usage: storageUsage });
 
-    // Uniform buffers: red/black variants carry color=0 and color=1 respectively
-    const uniformUsage = GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST;
+    // Uniform buffers: red/black variants carry color=0 and color=1 respectively.
+    // COPY_SRC so tests can read back what was actually uploaded -- the sign of
+    // dt in uniformBufNegDt is not observable any other way.
+    const uniformUsage = GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST | GPUBufferUsage.COPY_SRC;
     this.uniformBuf      = device.createBuffer({ size: 32, usage: uniformUsage });
     this.uniformBufRed   = device.createBuffer({ size: 32, usage: uniformUsage });
     this.uniformBufBlack = device.createBuffer({ size: 32, usage: uniformUsage });
@@ -72,7 +74,8 @@ export class FluidSolver {
   /**
    * Packs simulation parameters into a 32-byte ArrayBuffer and uploads
    * to the main uniform buffer. Layout must match the WGSL struct:
-   * [numX(u32), numY(u32), h(f32), dt(f32), omega(f32), density(f32), color(u32), pad].
+   * [numX(u32), numY(u32), h(f32), dt(f32), omega(f32), density(f32), color(u32), nu(f32)].
+   * The older 7-field shaders (pressure/boundary/advect) simply ignore nu.
    *
    * @param {number} [colorOverride] - If provided, overrides the color field (0=red, 1=black)
    */
@@ -88,6 +91,7 @@ export class FluidSolver {
     dv.setFloat32(16, p.omega,  true);
     dv.setFloat32(20, p.density, true);
     dv.setUint32(24, color,    true);
+    dv.setFloat32(28, p.nu ?? 0, true);
     this.device.queue.writeBuffer(this.uniformBuf, 0, ab);
   }
 
@@ -112,6 +116,7 @@ export class FluidSolver {
     dv.setFloat32(16, p.omega,  true);
     dv.setFloat32(20, p.density, true);
     dv.setUint32(24, color,    true);
+    dv.setFloat32(28, p.nu ?? 0, true);
     this.device.queue.writeBuffer(buf, 0, ab);
   }
 
@@ -198,10 +203,13 @@ export class FluidSolver {
                 bglEntry(6, STORAGE)],
     });
 
-    // Smoke combine: uniform + u,v + phi^n + phi^ + phi~ (rw, in place) = 5 storage buffers.
+    // Smoke combine: uniform + u,v + phi^n + phi^ + phi~ (rw, in place) + s
+    // = 6 storage buffers. `s` lets the combine skip solid cells and drop
+    // solid corners from the limiter bounds.
     solver._mcSmokeBGL = device.createBindGroupLayout({
       entries: [bglEntry(0, UNIFORM), bglEntry(1, RO_STORAGE), bglEntry(2, RO_STORAGE),
-                bglEntry(3, RO_STORAGE), bglEntry(4, RO_STORAGE), bglEntry(5, STORAGE)],
+                bglEntry(3, RO_STORAGE), bglEntry(4, RO_STORAGE), bglEntry(5, STORAGE),
+                bglEntry(6, RO_STORAGE)],
     });
 
     const makePipelineLayout = (bgl) => device.createPipelineLayout({ bindGroupLayouts: [bgl] });
@@ -308,7 +316,7 @@ export class FluidSolver {
           layout: this._mcSmokeBGL,
           entries: [entry(0, this.uniformBuf),
                     entry(1, vel.u), entry(2, vel.v),
-                    entry(3, n), entry(4, hat), entry(5, tilde)],
+                    entry(3, n), entry(4, hat), entry(5, tilde), entry(6, this.s)],
         }));
       }
     }

@@ -73,35 +73,44 @@ fn smoke_departure(i: u32, j: u32) -> vec2f {
                  f32(j) * h + h2 - params.dt * cv);
 }
 
-// True at solid cells, which hold no transported dye and must keep whatever
-// was written into them (obstacle fill, or the inlet band in the left wall).
+// True when any corner of the bilinear stencil sits in a solid cell, so the
+// interpolated value is contaminated by whatever the obstacle fill happens to
+// hold rather than by transported dye.
 //
-// Deliberately does NOT test the bilinear stencil corners for solidity, even
-// though a trace departing into a solid is formally unreliable. This solver
-// injects both dye and inflow THROUGH solid boundary cells: the preset writes
-// the inlet band into column i=0, which is part of the solid left wall, and
-// cells at i=1 pick it up only because their departure point clamps back into
-// that column. Rejecting solid stencil corners therefore walls the dye out of
-// the domain entirely -- the smoke field stays uniformly 1.0 forever. It also
-// misfires on the forward pass, where reverting means "do not advect at all"
-// rather than "fall back to first order", freezing dye in a one-cell halo
-// around every obstacle.
+// Applied on the BACKWARD pass ONLY -- see the dt < 0.0 guard in advect_smoke.
+// The two passes need opposite answers here:
 //
-// Boundedness near obstacles is instead guaranteed by the combine pass, which
-// clamps to the forward stencil's min/max and so cannot create new extrema.
-fn smoke_unreliable(i: u32, j: u32) -> bool {
+//   Backward pass: reverting means "fall back to first order". The backward
+//   trace at i=1 runs DOWNSTREAM (to ~3.63h at Karman settings) into fluid, so
+//   the inlet is untouched; near obstacles the correction term zeroes and the
+//   combine collapses to plain semi-Lagrangian, which is exactly what we want.
+//
+//   Forward pass: reverting means "do not advect at all". Worse, this solver
+//   injects both dye and inflow THROUGH solid boundary cells -- the preset
+//   writes the inlet band into column i=0, part of the solid left wall, and
+//   cells at i=1 pick it up only because their departure point clamps back
+//   into that column. Rejecting solid stencil corners on the forward pass
+//   therefore walls dye out of the domain entirely (the field stays uniformly
+//   1.0 forever) and freezes dye in a one-cell halo around every obstacle.
+fn stencil_touches_solid(st: Stencil) -> bool {
     let n = params.numY;
-    return s[i * n + j] == 0.0;
+    return s[st.i0 * n + st.j0] == 0.0 || s[st.i1 * n + st.j0] == 0.0 ||
+           s[st.i0 * n + st.j1] == 0.0 || s[st.i1 * n + st.j1] == 0.0;
 }
 
 // advect_smoke: one semi-Lagrangian pass. Serves as both the MacCormack
 // forward pass (dt > 0, mIn == mOrig) and the backward pass (dt < 0).
 //
-// At solid cells mOut = mOrig. On the backward pass that makes the correction
-// term (phi^n - phi~)/2 vanish and collapses the combine to plain first-order
-// SL; on the forward pass it reproduces the old semi-Lagrangian kernel's
-// "copy through" behaviour. Either way the combine pass needs neither a branch
-// nor the solid mask.
+// At solid cells mOut = mOrig on both passes: solids hold no transported dye
+// and must keep whatever was written into them (obstacle fill, or the inlet
+// band in the left wall). On the backward pass that also makes the correction
+// term (phi^n - phi~)/2 vanish; on the forward pass it reproduces the old
+// semi-Lagrangian kernel's "copy through" behaviour.
+//
+// The sign of params.dt is the free discriminator between the two passes -- it
+// is already negated for the backward pass via a separate uniform buffer -- so
+// the pass-specific stencil-corner test below costs neither a binding nor a
+// second shader module.
 @compute @workgroup_size(8, 8)
 fn advect_smoke(@builtin(global_invocation_id) id: vec3u) {
     let i = id.x;
@@ -110,13 +119,21 @@ fn advect_smoke(@builtin(global_invocation_id) id: vec3u) {
     if (i < 1u || i >= params.numX - 1u || j < 1u || j >= n - 1u) { return; }
 
     let idx = i * n + j;
-    if (smoke_unreliable(i, j)) {
+    if (s[idx] == 0.0) {
         mOut[idx] = mOrig[idx];
         return;
     }
 
     let d = smoke_departure(i, j);
     let st = scalar_stencil(d.x, d.y);
+
+    // Backward pass only. Reverting here zeroes the correction term, so the
+    // combine degrades to first-order SL near obstacles -- bounded by
+    // construction, and the intended behaviour where the trace is unreliable.
+    if (params.dt < 0.0 && stencil_touches_solid(st)) {
+        mOut[idx] = mOrig[idx];
+        return;
+    }
 
     let sx = 1.0 - st.tx;
     let sy = 1.0 - st.ty;

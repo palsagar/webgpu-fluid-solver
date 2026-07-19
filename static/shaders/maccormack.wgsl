@@ -1,14 +1,19 @@
 // ============================================================================
 // MacCormack combine (smoke)
 //
-// phi^{n+1} = phi^ + (phi^n - phi~)/2, clamped to the min/max of the forward
-// trace's bilinear stencil so the correction cannot create new extrema.
+// phi^{n+1} = phi^ + (phi^n - phi~)/2, clamped to the fluid corners of the
+// forward trace's bilinear stencil (plus phi^ itself) so the correction cannot
+// create new extrema. See maccormack_smoke for why solid corners are dropped
+// and why phi^ has to be in the range regardless.
 //
 // Separate file from advect_smoke.wgsl on purpose: bindings 3/4/5 mean
 // different buffers here, and WGSL forbids two module-scope bindings at the
 // same @group/@binding. `Params`, `Stencil`, `scalar_stencil` and
 // `smoke_departure` are re-declared verbatim below -- WGSL has no modules, so
-// duplication is the only way to share them. Keep the two copies in sync.
+// duplication is the only way to share them. The limiter is correct ONLY while
+// the re-trace here reproduces the forward stencil exactly, and drift between
+// the copies still yields values in [0,1] -- so it is invisible to the bounds
+// test. solver.spec.js asserts the two copies stay textually identical.
 // ============================================================================
 
 struct Params {
@@ -28,6 +33,7 @@ struct Params {
 @group(0) @binding(3) var<storage, read> cmN: array<f32>;       // phi^n
 @group(0) @binding(4) var<storage, read> cmHat: array<f32>;     // phi^  (forward)
 @group(0) @binding(5) var<storage, read_write> cmTilde: array<f32>; // phi~ in, phi^{n+1} out
+@group(0) @binding(6) var<storage, read> s: array<f32>;         // solid mask
 
 // Grid indices and weights for a cell-centred bilinear stencil at (x_in, y_in).
 struct Stencil {
@@ -70,9 +76,9 @@ fn smoke_departure(i: u32, j: u32) -> vec2f {
                  f32(j) * h + h2 - params.dt * cv);
 }
 
-// maccormack_smoke: phi^{n+1} = phi^ + (phi^n - phi~)/2, clamped to the
-// min/max of the forward trace's bilinear stencil so no new extrema appear.
-// Writes in place into the phi~ slot; elementwise, so aliasing is safe.
+// maccormack_smoke: phi^{n+1} = phi^ + (phi^n - phi~)/2, clamped so no new
+// extrema appear. Writes in place into the phi~ slot; elementwise, so aliasing
+// is safe.
 @compute @workgroup_size(8, 8)
 fn maccormack_smoke(@builtin(global_invocation_id) id: vec3u) {
     let i = id.x;
@@ -81,18 +87,67 @@ fn maccormack_smoke(@builtin(global_invocation_id) id: vec3u) {
     if (i < 1u || i >= params.numX - 1u || j < 1u || j >= n - 1u) { return; }
 
     let idx = i * n + j;
+
+    // Solid cells carry no transported field -- they carry a boundary
+    // condition. advect_smoke reverts them to phi^n; the combine must too, or
+    // the clamp below rewrites them. Benign for a STATIC obstacle (u = v = 0
+    // inside, so the departure point is the cell centre and the clamp is a
+    // no-op) but not during a DRAG, where interaction.js writes the obstacle's
+    // own velocity into the solid cells: the departure then lands far away,
+    // lo/hi need not contain phi^n[idx], and the clamp corrupts the cell.
+    // Invisible for smoke (solids are painted in-shader) -- but for velocity
+    // the value in a solid cell IS the moving-wall BC.
+    if (s[idx] == 0.0) {
+        cmTilde[idx] = cmN[idx];
+        return;
+    }
+
     let corrected = cmHat[idx] + 0.5 * (cmN[idx] - cmTilde[idx]);
 
     // Re-trace to recover the stencil bounds. Cheaper than carrying min/max
     // through two extra full-grid buffers.
     let d = smoke_departure(i, j);
     let st = scalar_stencil(d.x, d.y);
-    let a = cmN[st.i0 * n + st.j0];
-    let b = cmN[st.i1 * n + st.j0];
-    let c = cmN[st.i0 * n + st.j1];
-    let e = cmN[st.i1 * n + st.j1];
-    let lo = min(min(a, b), min(c, e));
-    let hi = max(max(a, b), max(c, e));
+
+    // Bounds come from the FLUID corners of the stencil, plus phi^ itself.
+    //
+    // Excluding solid corners: interaction.js clears smoke only in the
+    // PREVIOUS obstacle bbox, so cells newly covered by a dragged obstacle
+    // keep stale dye. Under semi-Lagrangian that leaked into neighbours only
+    // in proportion to its bilinear weight; a clamp against the raw corner
+    // value admits the FULL excursion to it, letting stale dye bleed off the
+    // obstacle surface far harder than the first-order scheme ever did.
+    //
+    // Seeding with phi^ (the first-order result) rather than dropping solid
+    // corners outright is what keeps that exclusion from walling dye out of
+    // the domain. This solver injects dye THROUGH a solid: the preset writes
+    // the inlet band into column i=0, part of the solid left wall, and the
+    // forward trace at i=1 clamps back into it. A fluid-only range there is
+    // lo = hi = 1.0 (clear), which would pin i=1 to clear forever and kill the
+    // smoke field outright -- the same failure mode as testing stencil corners
+    // on the forward advection pass. phi^ already carries each solid corner's
+    // contribution at exactly its bilinear weight, so admitting it restores
+    // precisely the semi-Lagrangian leakage rate and no more.
+    //
+    // Boundedness is unaffected: phi^ is a convex combination of phi^n samples,
+    // so lo/hi stay inside the range of phi^n. This also handles the
+    // all-corners-solid case without a special branch -- the bounds collapse to
+    // lo = hi = phi^, i.e. no correction at all.
+    var ks = array<u32, 4>(
+        st.i0 * n + st.j0,
+        st.i1 * n + st.j0,
+        st.i0 * n + st.j1,
+        st.i1 * n + st.j1
+    );
+    var lo = cmHat[idx];
+    var hi = cmHat[idx];
+    for (var q = 0u; q < 4u; q = q + 1u) {
+        let k = ks[q];
+        if (s[k] == 0.0) { continue; }
+        let val = cmN[k];
+        lo = min(lo, val);
+        hi = max(hi, val);
+    }
 
     cmTilde[idx] = clamp(corrected, lo, hi);
 }

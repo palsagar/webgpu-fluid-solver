@@ -1,4 +1,6 @@
 import { test, expect } from '@playwright/test';
+import { readFileSync } from 'node:fs';
+import path from 'node:path';
 
 /**
  * Solver correctness tests.
@@ -267,6 +269,220 @@ test('MacCormack keeps smoke inside [0,1]', async ({ page }) => {
   // overshoot clips into visible halos at dye fronts.
   expect(range.lo).toBeGreaterThanOrEqual(-1e-4);
   expect(range.hi).toBeLessThanOrEqual(1 + 1e-4);
+});
+
+/**
+ * Strips comments and collapses whitespace, so the shader-drift comparison
+ * below survives reformatting and comment edits but not a change to any token.
+ */
+function normalizeWgsl(src) {
+  return src
+    .replace(/\/\*[\s\S]*?\*\//g, ' ')
+    .replace(/\/\/[^\n]*/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+/** Extracts `fn name(...) { ... }` from already-normalized WGSL by brace matching. */
+function extractFn(src, name) {
+  const start = src.indexOf(`fn ${name}(`);
+  if (start === -1) throw new Error(`fn ${name} not found`);
+  let depth = 0;
+  for (let k = src.indexOf('{', start); k < src.length; k++) {
+    if (src[k] === '{') depth++;
+    else if (src[k] === '}' && --depth === 0) return src.slice(start, k + 1);
+  }
+  throw new Error(`unbalanced braces in fn ${name}`);
+}
+
+test('the combine re-traces with the same stencil code advect_smoke traced with', () => {
+  // The limiter is correct ONLY because the combine's re-trace reproduces the
+  // forward pass's stencil exactly. WGSL has no modules, so scalar_stencil and
+  // smoke_departure are duplicated across the two files. Drift between the
+  // copies still yields values in [0,1], so the bounds test below cannot catch
+  // it -- it would be a silent wrong-answer path. Hence this textual check.
+  // Playwright transpiles specs to CJS, so import.meta is unavailable and
+  // config.rootDir points at testDir. npm test runs from the repo root.
+  const dir = path.join(process.cwd(), 'static', 'shaders');
+  const fwd = normalizeWgsl(readFileSync(path.join(dir, 'advect_smoke.wgsl'), 'utf8'));
+  const comb = normalizeWgsl(readFileSync(path.join(dir, 'maccormack.wgsl'), 'utf8'));
+
+  for (const fn of ['scalar_stencil', 'smoke_departure']) {
+    expect(
+      extractFn(comb, fn),
+      `${fn} has drifted between advect_smoke.wgsl and maccormack.wgsl`,
+    ).toBe(extractFn(fwd, fn));
+  }
+});
+
+test('a step leaves solid-cell values untouched, even when the solid carries velocity', async ({ page }) => {
+  await boot(page);
+  const r = await page.evaluate(async () => {
+    const { solver, device, ui } = window.__flowlab;
+    solver.paused = true;
+
+    const numX = solver.numX, numY = solver.numY;
+    const size = numX * numY * 4;
+    const readBuf = async (src) => {
+      const staging = device.createBuffer({
+        size, usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST,
+      });
+      const enc = device.createCommandEncoder();
+      enc.copyBufferToBuffer(src, 0, staging, 0, size);
+      device.queue.submit([enc.finish()]);
+      await staging.mapAsync(GPUMapMode.READ);
+      const out = new Float32Array(staging.getMappedRange().slice(0));
+      staging.unmap();
+      staging.destroy();
+      return out;
+    };
+
+    const sMask = await readBuf(solver.solidBuffer);
+    let idx = -1;
+    for (let i = 2; i < numX - 2 && idx < 0; i++) {
+      for (let j = 2; j < numY - 2; j++) {
+        if (sMask[i * numY + j] === 0) { idx = i * numY + j; break; }
+      }
+    }
+    if (idx < 0) return { found: false };
+
+    // Stamp a marker no fluid cell is carrying, into every smoke slot so it is
+    // present whichever slot this step reads as phi^n.
+    const MARK = 0.25;
+    for (const b of solver.smokeBufs) {
+      device.queue.writeBuffer(b, idx * 4, new Float32Array([MARK]));
+    }
+    // Simulate a drag: rasterizeObstacle writes the obstacle's own velocity
+    // into its solid cells, which sends the departure point far away.
+    for (const p of solver.velPairs) {
+      device.queue.writeBuffer(p.u, idx * 4, new Float32Array([5.0]));
+      device.queue.writeBuffer(p.v, idx * 4, new Float32Array([5.0]));
+    }
+
+    solver.step(ui.numIters);
+    const m = await readBuf(solver.smokeBuffer);
+    return { found: true, mark: MARK, after: m[idx] };
+  });
+
+  expect(r.found).toBe(true);
+  // A solid cell carries a boundary condition, not a transported field. For
+  // smoke this is invisible (solids are painted in-shader by render_field.wgsl)
+  // but Task 6 puts VELOCITY here, where the value in a solid cell IS the
+  // moving-wall BC and rewriting it corrupts the boundary condition.
+  //
+  // Two independent mechanisms hold this: the combine's explicit solid guard,
+  // and the fact that the limiter bounds are seeded with phi^ -- which equals
+  // phi^n at solids, since both advect passes revert there -- so the interval
+  // always contains the value being clamped. This pins the invariant, not
+  // either mechanism, so it survives Task 6 rewiring one of them.
+  expect(r.after).toBeCloseTo(r.mark, 6);
+});
+
+test('the backward pass uniform really holds a negated dt, and nu reaches offset 28', async ({ page }) => {
+  await boot(page);
+  const got = await page.evaluate(async () => {
+    const { solver, device, ui } = window.__flowlab;
+    solver.paused = true;
+
+    // nu has no producer yet (viscosity lands in a later task), so give it a
+    // value the ArrayBuffer's zero-fill cannot fake before re-uploading.
+    solver.params.nu = 0.375;
+    solver.step(ui.numIters); // step() re-writes every uniform buffer
+
+    const read = async (buf) => {
+      const staging = device.createBuffer({
+        size: 32, usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST,
+      });
+      const enc = device.createCommandEncoder();
+      enc.copyBufferToBuffer(buf, 0, staging, 0, 32);
+      device.queue.submit([enc.finish()]);
+      await staging.mapAsync(GPUMapMode.READ);
+      const dv = new DataView(staging.getMappedRange().slice(0));
+      staging.unmap();
+      staging.destroy();
+      return { dt: dv.getFloat32(12, true), nu: dv.getFloat32(28, true) };
+    };
+
+    const out = { fwd: await read(solver.uniformBuf), back: await read(solver.uniformBufNegDt) };
+    delete solver.params.nu;
+    return out;
+  });
+
+  // The sharpness test below proves a correction FIRES; it does not pin the
+  // correction's SIGN. Dropping the negation leaves the backward pass tracing
+  // upstream, so phi~ = SL(SL(phi^n)) and the combine still applies a non-zero
+  // (but wrong) anti-diffusive correction -- dye still saturates and every
+  // behavioural assertion stays green. Only the uploaded bytes show it.
+  expect(got.fwd.dt).toBeGreaterThan(0);
+  expect(got.back.dt).toBe(-got.fwd.dt);
+
+  // Offset 28 is written, not merely zero-filled by the ArrayBuffer.
+  expect(got.fwd.nu).toBeCloseTo(0.375, 6);
+  expect(got.back.nu).toBeCloseTo(0.375, 6);
+});
+
+test('MacCormack actually corrects: dye fronts reach saturation, unlike first-order SL', async ({ page }) => {
+  await boot(page);
+  const stats = await page.evaluate(async () => {
+    const { solver, device, ui } = window.__flowlab;
+    solver.paused = true;
+
+    const numX = solver.numX, numY = solver.numY;
+    const size = numX * numY * 4;
+    const readBuf = async (src) => {
+      const staging = device.createBuffer({
+        size, usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST,
+      });
+      const enc = device.createCommandEncoder();
+      enc.copyBufferToBuffer(src, 0, staging, 0, size);
+      device.queue.submit([enc.finish()]);
+      await staging.mapAsync(GPUMapMode.READ);
+      const out = new Float32Array(staging.getMappedRange().slice(0));
+      staging.unmap();
+      staging.destroy();
+      return out;
+    };
+
+    for (let k = 0; k < 200; k++) {
+      if (ui.smokeInletData) {
+        device.queue.writeBuffer(solver.smokeBuffer, 0, ui.smokeInletData);
+      }
+      solver.step(ui.numIters);
+    }
+
+    const m = await readBuf(solver.smokeBuffer);
+    const sMask = await readBuf(solver.solidBuffer);
+
+    let saturated = 0, smeared = 0, fluid = 0;
+    for (let i = 1; i < numX - 1; i++) {
+      for (let j = 1; j < numY - 1; j++) {
+        const k = i * numY + j;
+        if (sMask[k] === 0) continue;
+        fluid++;
+        // m = 0 is fully dark dye, m = 1 is clear (inverted convention).
+        if (m[k] <= 1e-3) saturated++;
+        else if (m[k] < 1 - 1e-3) smeared++;
+      }
+    }
+    return { saturated, smeared, fluid };
+  });
+
+  expect(stats.fluid).toBeGreaterThan(1000);
+
+  // THE regression assertion for this task. First-order semi-Lagrangian
+  // diffuses every dye front, so NO interior fluid cell ever reaches full
+  // saturation -- measured at exactly 0 under the pre-MacCormack solver. The
+  // second-order correction is what carries dye to m = 0.
+  //
+  // Anything that SUPPRESSES the correction -- a combine that writes phi^
+  // through, a backward pass that never runs, a limiter clamped to phi^ --
+  // collapses this to 0 and fails. That is invisible to every other test in
+  // this file: the wiring test asserts only which buffer OBJECTS are bound,
+  // and the bounds test passes trivially under first-order SL.
+  //
+  // It does NOT pin the correction's sign; see the negated-dt test above,
+  // which is the other half of this pair.
+  expect(stats.saturated).toBeGreaterThan(100);
 });
 
 test('smoke advection dispatches the bind groups for the live velocity slot, not the smoke slot', async ({ page }) => {
