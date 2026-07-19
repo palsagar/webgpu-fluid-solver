@@ -4,37 +4,67 @@
  * and a colormap LUT texture. Solid cells are drawn dark gray in-shader.
  * Overlays are NOT drawn here — they live on the 2D canvas layered above.
  */
+
+/** Byte offsets of the uniform block — must match `RenderParams` in render_field.wgsl. */
+const UNIFORMS = { numX: 0, numY: 4, minVal: 8, maxVal: 12, size: 16 };
+
+/** Colormap LUT PNGs are 256x1 strips; the shader samples them as a 1D ramp. */
+const LUT_WIDTH = 256;
+
 export class FieldRenderer {
   /**
-   * @param {GPUDevice} device - WebGPU device handle
+   * Argument order matches Renderer.create — keep them in step.
    * @param {HTMLElement} container - DOM element to attach the canvas to
+   * @param {GPUDevice} device - WebGPU device handle
    * @param {Object} solver - Solver providing numX, numY, and solidBuffer
    */
-  constructor(device, container, solver) {
+  constructor(container, device, solver) {
     this.device = device;
     this.solver = solver;
+    this.container = container;
 
     // Bottom layer of the canvas stack — sized to display pixels, not grid cells
     this.canvas = document.createElement('canvas');
     this.canvas.id = 'field-canvas';
     this.canvas.style.cssText = 'position:absolute;inset:0;width:100%;height:100%;z-index:0;';
-    const dpr = window.devicePixelRatio || 1;
-    this.canvas.width  = Math.max(1, Math.round(container.clientWidth * dpr));
-    this.canvas.height = Math.max(1, Math.round(container.clientHeight * dpr));
+    this.resizeCanvas();
     container.appendChild(this.canvas);
 
     this.format = navigator.gpu.getPreferredCanvasFormat();
     this.ctx = this.canvas.getContext('webgpu');
-    this.ctx.configure({ device, format: this.format, alphaMode: 'opaque' });
+    // COPY_SRC enables captureNextFrame() — a presented WebGPU canvas cannot be
+    // read back with drawImage or a page screenshot, so tests need the texture.
+    this.ctx.configure({
+      device,
+      format: this.format,
+      alphaMode: 'opaque',
+      usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.COPY_SRC,
+    });
 
-    // Uniforms: [numX u32, numY u32, minVal f32, maxVal f32] — must match render_field.wgsl
     this.uniformBuf = device.createBuffer({
-      size: 16,
+      size: UNIFORMS.size,
       usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
     });
+    this._uniformData = new DataView(new ArrayBuffer(UNIFORMS.size));
 
     this._fieldBindGroups = new Map(); // GPUBuffer -> GPUBindGroup, cleared on resize
     this._lutBindGroups = {};          // colormap name -> GPUBindGroup
+  }
+
+  /**
+   * Matches the canvas backing store to the container's display size.
+   * Called on construction and whenever the container resizes — without this
+   * the backing store keeps its launch-time size and the field is CSS-stretched.
+   * @returns {boolean} True if the dimensions actually changed.
+   */
+  resizeCanvas() {
+    const dpr = window.devicePixelRatio || 1;
+    const w = Math.max(1, Math.round(this.container.clientWidth * dpr));
+    const h = Math.max(1, Math.round(this.container.clientHeight * dpr));
+    if (w === this.canvas.width && h === this.canvas.height) return false;
+    this.canvas.width = w;
+    this.canvas.height = h;
+    return true;
   }
 
   /**
@@ -42,11 +72,20 @@ export class FieldRenderer {
    * bind group layouts, and uploads the colormap LUT textures.
    * @returns {Promise<FieldRenderer>}
    */
-  static async create(device, container, solver) {
-    const fr = new FieldRenderer(device, container, solver);
+  static async create(container, device, solver) {
+    const fr = new FieldRenderer(container, device, solver);
 
-    const code = await fetch('/shaders/render_field.wgsl').then(r => r.text());
-    const module = device.createShaderModule({ code });
+    const resp = await fetch('/shaders/render_field.wgsl');
+    if (!resp.ok) throw new Error(`render_field.wgsl: HTTP ${resp.status}`);
+    const module = device.createShaderModule({ code: await resp.text() });
+
+    // createShaderModule does not throw on bad WGSL — it yields an invalid
+    // module and the failure only surfaces later as a black field.
+    const info = await module.getCompilationInfo();
+    const errors = info.messages.filter(m => m.type === 'error');
+    if (errors.length) {
+      throw new Error('render_field.wgsl failed to compile:\n' + errors.map(m => m.message).join('\n'));
+    }
 
     // Explicit bind group layouts (ADR-0002)
     fr._fieldBGL = device.createBindGroupLayout({
@@ -74,7 +113,7 @@ export class FieldRenderer {
       magFilter: 'linear', minFilter: 'linear',
       addressModeU: 'clamp-to-edge', addressModeV: 'clamp-to-edge',
     });
-    await fr._loadLuts(['magma', 'coolwarm', 'viridis']);
+    await fr._loadLuts(['magma', 'coolwarm']);
     return fr;
   }
 
@@ -84,14 +123,21 @@ export class FieldRenderer {
    */
   async _loadLuts(names) {
     for (const name of names) {
-      const blob = await fetch(`/colormaps/${name}.png`).then(r => r.blob());
-      const bitmap = await createImageBitmap(blob);
+      const resp = await fetch(`/colormaps/${name}.png`);
+      if (!resp.ok) throw new Error(`colormap ${name}: HTTP ${resp.status}`);
+      const bitmap = await createImageBitmap(await resp.blob());
+      if (bitmap.width !== LUT_WIDTH || bitmap.height !== 1) {
+        throw new Error(`colormap ${name}: expected ${LUT_WIDTH}x1, got ${bitmap.width}x${bitmap.height}`);
+      }
       const texture = this.device.createTexture({
-        size: [256, 1],
+        size: [LUT_WIDTH, 1],
         format: 'rgba8unorm',
+        // RENDER_ATTACHMENT is required: copyExternalImageToTexture is
+        // implemented as a render pass, and omitting it silently yields a
+        // black LUT (and therefore a black field).
         usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST | GPUTextureUsage.RENDER_ATTACHMENT,
       });
-      this.device.queue.copyExternalImageToTexture({ source: bitmap }, { texture }, [256, 1]);
+      this.device.queue.copyExternalImageToTexture({ source: bitmap }, { texture }, [LUT_WIDTH, 1]);
       this._lutBindGroups[name] = this.device.createBindGroup({
         layout: this._lutBGL,
         entries: [
@@ -127,26 +173,34 @@ export class FieldRenderer {
   /**
    * Renders one frame of the Field View.
    * @param {GPUBuffer} fieldBuffer - Scalar field to display (smoke or pressure)
-   * @param {string} colormapName - 'magma' | 'coolwarm' | 'viridis'
+   * @param {string} colormapName - 'magma' (smoke) | 'coolwarm' (pressure)
    * @param {number} minVal - Field value mapped to LUT t=0
    * @param {number} maxVal - Field value mapped to LUT t=1
    */
   draw(fieldBuffer, colormapName, minVal, maxVal) {
     const lutBG = this._lutBindGroups[colormapName];
-    if (!lutBG) return; // LUT textures still loading — skip this frame
+    if (!lutBG) {
+      // LUTs are loaded before create() resolves, so this only fires on an
+      // unknown name — warn once rather than rendering nothing forever.
+      if (!this._warnedLuts?.has(colormapName)) {
+        (this._warnedLuts ??= new Set()).add(colormapName);
+        console.warn(`FieldRenderer: no LUT named "${colormapName}"; field not drawn`);
+      }
+      return;
+    }
 
-    const ab = new ArrayBuffer(16);
-    const dv = new DataView(ab);
-    dv.setUint32(0, this.solver.numX, true);
-    dv.setUint32(4, this.solver.numY, true);
-    dv.setFloat32(8, minVal, true);
-    dv.setFloat32(12, maxVal, true);
-    this.device.queue.writeBuffer(this.uniformBuf, 0, ab);
+    const dv = this._uniformData;
+    dv.setUint32(UNIFORMS.numX, this.solver.numX, true);
+    dv.setUint32(UNIFORMS.numY, this.solver.numY, true);
+    dv.setFloat32(UNIFORMS.minVal, minVal, true);
+    dv.setFloat32(UNIFORMS.maxVal, maxVal, true);
+    this.device.queue.writeBuffer(this.uniformBuf, 0, dv.buffer);
 
     const encoder = this.device.createCommandEncoder();
+    const texture = this.ctx.getCurrentTexture();
     const pass = encoder.beginRenderPass({
       colorAttachments: [{
-        view: this.ctx.getCurrentTexture().createView(),
+        view: texture.createView(),
         loadOp: 'clear',
         clearValue: { r: 0, g: 0, b: 0, a: 1 },
         storeOp: 'store',
@@ -157,7 +211,59 @@ export class FieldRenderer {
     pass.setBindGroup(1, lutBG);
     pass.draw(3);
     pass.end();
+
+    const finishCapture = this._pendingCapture ? this._encodeCapture(encoder, texture) : null;
     this.device.queue.submit([encoder.finish()]);
+    if (finishCapture) finishCapture();
+  }
+
+  /**
+   * Arms a one-shot pixel readback of the next rendered frame.
+   * Test seam: a presented canvas texture is unreadable via drawImage or a
+   * screenshot, so the copy must ride in the render pass's own encoder.
+   * @returns {Promise<{width: number, height: number, data: Uint8Array}>} RGBA8
+   */
+  captureNextFrame() {
+    return new Promise((resolve) => { this._pendingCapture = resolve; });
+  }
+
+  /**
+   * Appends the capture copy to `encoder` and returns a function that starts
+   * the map-and-resolve once the encoder has been submitted.
+   */
+  _encodeCapture(encoder, texture) {
+    const resolve = this._pendingCapture;
+    this._pendingCapture = null;
+
+    const { width, height } = texture;
+    const bytesPerRow = Math.ceil(width * 4 / 256) * 256; // WebGPU row alignment
+    const buffer = this.device.createBuffer({
+      size: bytesPerRow * height,
+      usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ,
+    });
+    encoder.copyTextureToBuffer({ texture }, { buffer, bytesPerRow }, [width, height]);
+
+    const bgra = this.format.startsWith('bgra');
+    return () => {
+      buffer.mapAsync(GPUMapMode.READ).then(() => {
+        const padded = new Uint8Array(buffer.getMappedRange());
+        const data = new Uint8Array(width * height * 4);
+        for (let y = 0; y < height; y++) {
+          const src = y * bytesPerRow;
+          const dst = y * width * 4;
+          for (let x = 0; x < width * 4; x += 4) {
+            // Canvas format is platform-dependent; normalize to RGBA
+            data[dst + x]     = padded[src + x + (bgra ? 2 : 0)];
+            data[dst + x + 1] = padded[src + x + 1];
+            data[dst + x + 2] = padded[src + x + (bgra ? 0 : 2)];
+            data[dst + x + 3] = padded[src + x + 3];
+          }
+        }
+        buffer.unmap();
+        buffer.destroy();
+        resolve({ width, height, data });
+      });
+    };
   }
 
   /**

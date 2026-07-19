@@ -325,6 +325,7 @@ export class UI {
         document.querySelectorAll('[data-tier]').forEach(btn => {
             btn.addEventListener('click', () => {
                 const idx = parseInt(btn.dataset.tier);
+                if (!Number.isInteger(idx) || idx < 0 || idx >= this.adaptive?.tiers.length) return;
                 if (this.adaptive) {
                     this.adaptive.manualOverride = true;
                     this.adaptive.currentTierIndex = idx;

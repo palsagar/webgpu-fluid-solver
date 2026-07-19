@@ -33,6 +33,13 @@ export class Renderer {
     this.readbackPending = false;
     this.solidData = null;
     this._solidReadbackDone = false;
+    this._solidReadbackPending = false;
+
+    // Bumped on every grid resize. Readbacks capture it before mapAsync and
+    // discard themselves on resolve if it moved — otherwise a readback in
+    // flight across a resize writes old-sized arrays that later index out of
+    // bounds against the new grid, poisoning particle positions with NaN.
+    this._gridGen = 0;
 
     this._velReadbackPending = false;
     this.uData = null;
@@ -47,11 +54,9 @@ export class Renderer {
     this._canvas = document.createElement('canvas');
     this._canvas.id = 'overlay-canvas';
     this._canvas.style.cssText = 'position:absolute;inset:0;width:100%;height:100%;z-index:1;display:block;';
+    this.container = container;
     container.appendChild(this._canvas);
-
-    const dpr = window.devicePixelRatio || 1;
-    this._canvas.width  = Math.max(1, Math.round(container.clientWidth * dpr));
-    this._canvas.height = Math.max(1, Math.round(container.clientHeight * dpr));
+    this.resizeCanvas();
 
     this._ctx = this._canvas.getContext('2d');
 
@@ -67,12 +72,30 @@ export class Renderer {
    */
   static async create(container, device, solver) {
     const renderer = new Renderer(container, device, solver);
-    renderer.fieldRenderer = await FieldRenderer.create(device, container, solver);
+    renderer.fieldRenderer = await FieldRenderer.create(container, device, solver);
     return renderer;
   }
 
   get canvas() {
     return this._canvas;
+  }
+
+  /**
+   * Matches the overlay canvas backing store to the container's display size.
+   * Cached overlay geometry is baked in canvas pixels, so it is discarded here.
+   * @returns {boolean} True if the dimensions actually changed.
+   */
+  resizeCanvas() {
+    const dpr = window.devicePixelRatio || 1;
+    const w = Math.max(1, Math.round(this.container.clientWidth * dpr));
+    const h = Math.max(1, Math.round(this.container.clientHeight * dpr));
+    if (w === this._canvas.width && h === this._canvas.height) return false;
+    this._canvas.width = w;
+    this._canvas.height = h;
+    this._cachedStreamlines = null;
+    this._cachedArrows = null;
+    this._velDataVersion = -1; // force overlay recompute against the new pixel size
+    return true;
   }
 
   /**
@@ -113,13 +136,16 @@ export class Renderer {
     if (usePressure && !this.readbackPending && this._frameCount % 10 === 1) {
       this.readbackPending = true;
       const staging = this._stagingBuffer;
+      const gen = this._gridGen;
       const encoder = device.createCommandEncoder();
       encoder.copyBufferToBuffer(solver.pressureBuffer, 0, staging, 0, this.numX * this.numY * 4);
       device.queue.submit([encoder.finish()]);
 
       staging.mapAsync(GPUMapMode.READ).then(() => {
         const raw = staging.getMappedRange();
-        this._pressureRange = this._computePressureRange(new Float32Array(raw.slice(0)));
+        if (gen === this._gridGen) {
+          this._pressureRange = this._computePressureRange(new Float32Array(raw.slice(0)));
+        }
         staging.unmap();
         this.readbackPending = false;
       }).catch(() => { this.readbackPending = false; });
@@ -318,20 +344,33 @@ export class Renderer {
    * Reads the solid cell mask (s-field) from GPU to CPU via a temporary staging buffer.
    * The mask is used to render solid cells as dark gray and to block particle advection.
    * Uses a one-shot staging buffer that is destroyed after readback completes.
+   * Guarded against re-entry: dragging an obstacle calls invalidateSolid() on
+   * every mousemove, which without the guard allocates a full-grid staging
+   * buffer per frame (~9 MB at the 1024 tier).
    */
   readbackSolid() {
+    if (this._solidReadbackPending) return;
+    this._solidReadbackPending = true;
+
     const { device, solver, numX, numY } = this;
     const size = numX * numY * 4;
+    const gen = this._gridGen;
     const staging = device.createBuffer({ size, usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST });
     const encoder = device.createCommandEncoder();
     encoder.copyBufferToBuffer(solver.solidBuffer, 0, staging, 0, size);
     device.queue.submit([encoder.finish()]);
     staging.mapAsync(GPUMapMode.READ).then(() => {
-      this.solidData = new Float32Array(staging.getMappedRange().slice(0));
+      if (gen === this._gridGen) {
+        this.solidData = new Float32Array(staging.getMappedRange().slice(0));
+        this._solidReadbackDone = true;
+      }
       staging.unmap();
       staging.destroy();
-      this._solidReadbackDone = true;
-    }).catch(() => { staging.destroy(); });
+      this._solidReadbackPending = false;
+    }).catch(() => {
+      staging.destroy();
+      this._solidReadbackPending = false;
+    });
   }
 
   /**
@@ -345,6 +384,7 @@ export class Renderer {
 
     const { device, solver, numX, numY } = this;
     const size = numX * numY * 4;
+    const gen = this._gridGen;
     const { u: uBuf, v: vBuf } = solver.velocityBuffers;
 
     const stagingU = device.createBuffer({ size, usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST });
@@ -356,14 +396,16 @@ export class Renderer {
     device.queue.submit([encoder.finish()]);
 
     Promise.all([stagingU.mapAsync(GPUMapMode.READ), stagingV.mapAsync(GPUMapMode.READ)]).then(() => {
-      this.uData = new Float32Array(stagingU.getMappedRange().slice(0));
-      this.vData = new Float32Array(stagingV.getMappedRange().slice(0));
+      if (gen === this._gridGen) {
+        this.uData = new Float32Array(stagingU.getMappedRange().slice(0));
+        this.vData = new Float32Array(stagingV.getMappedRange().slice(0));
+        this._velDataGen++;
+      }
       stagingU.unmap();
       stagingV.unmap();
       stagingU.destroy();
       stagingV.destroy();
       this._velReadbackPending = false;
-      this._velDataGen++;
     }).catch(() => {
       try { stagingU.destroy(); } catch (_) {}
       try { stagingV.destroy(); } catch (_) {}
@@ -546,6 +588,10 @@ export class Renderer {
     }
     const mean = sum / data.length;
     const range = Math.max(Math.abs(maxVal - mean), Math.abs(minVal - mean));
+    // A uniform field (all zeros before the solver runs) would give a zero-width
+    // range, which the shader maps to t=0 — a saturated blue screen instead of
+    // the neutral center of the diverging colormap. Widen it to keep t at 0.5.
+    if (range < 1e-10) return [mean - 1, mean + 1];
     return [mean - range, mean + range];
   }
 
@@ -582,6 +628,12 @@ export class Renderer {
    * @param {number} h - New cell size
    */
   resize(numX, numY, h) {
+    // Invalidate readbacks already in flight — they carry old-grid data.
+    this._gridGen++;
+    this.readbackPending = false;
+    this._velReadbackPending = false;
+    this._solidReadbackPending = false;
+
     this._stagingBuffer.destroy();
     this.numX = numX;
     this.numY = numY;

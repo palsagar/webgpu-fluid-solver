@@ -42,8 +42,17 @@ async function init() {
     document.getElementById('start-sim-btn').addEventListener('click', dismissWelcome);
     document.getElementById('welcome-close-btn').addEventListener('click', dismissWelcome);
 
+    // Surface validation/OOM errors that WebGPU would otherwise swallow
+    device.addEventListener('uncapturederror', (e) => {
+        console.error('WebGPU uncaptured error:', e.error);
+    });
+
+    let rafId = null;
     device.lost.then((info) => {
         console.error('GPU device lost:', info.message);
+        // Stop the loop — every GPU call from here on fails, and the readbacks
+        // would otherwise re-allocate staging buffers every frame forever.
+        if (rafId !== null) cancelAnimationFrame(rafId);
         document.getElementById('device-lost-banner').style.display = 'block';
     });
 
@@ -79,6 +88,19 @@ async function init() {
 
     // Test handle for browser-driven verification (Playwright)
     window.__flowlab = { device, solver, renderer, interaction, ui, adaptive, particles };
+
+    // Canvas backing stores are display-resolution and set at construction, so
+    // they need re-sizing when the container changes. Debounced: a drag-resize
+    // fires continuously and each change reallocates the swapchain.
+    let resizeTimer = null;
+    new ResizeObserver(() => {
+        clearTimeout(resizeTimer);
+        resizeTimer = setTimeout(() => {
+            const changed = renderer.fieldRenderer.resizeCanvas() | renderer.resizeCanvas();
+            // Re-derive numX from the new aspect ratio so cells stay square
+            if (changed) adaptive.applyTier();
+        }, 150);
+    }).observe(container);
 
     // Exponentially-smoothed frame time for the performance HUD
     let frameTimeSmoothed = 0;
@@ -122,9 +144,14 @@ async function init() {
                 ' | iters: ' + ui.numIters;
         }
 
-        requestAnimationFrame(frame);
+        rafId = requestAnimationFrame(frame);
     }
-    requestAnimationFrame(frame);
+    rafId = requestAnimationFrame(frame);
 }
 
-init();
+init().catch((err) => {
+    console.error('Initialization failed:', err);
+    const banner = document.getElementById('fatal-banner');
+    document.getElementById('fatal-banner-message').textContent = err.message ?? String(err);
+    banner.style.display = 'block';
+});

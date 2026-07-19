@@ -6,12 +6,16 @@
 // dark gray in-shader. Replaces the CPU putImageData path.
 // ============================================================================
 
+// Byte layout must match UNIFORMS in field-renderer.js
 struct RenderParams {
     numX: u32,
     numY: u32,
     minVal: f32,
     maxVal: f32,
 };
+
+// Solid (obstacle / wall) cells. Also asserted in tests/render.spec.js.
+const SOLID_COLOR = vec3<f32>(50.0 / 255.0, 50.0 / 255.0, 60.0 / 255.0);
 
 @group(0) @binding(0) var<uniform> params: RenderParams;
 @group(0) @binding(1) var<storage, read> field: array<f32>;
@@ -65,7 +69,7 @@ fn fs_main(in: VSOut) -> @location(0) vec4<f32> {
     let nj = i32(round(gy));
     let nearestIdx = cellIndex(ni, nj);
     if (solid[nearestIdx] == 0.0) {
-        return vec4<f32>(50.0 / 255.0, 50.0 / 255.0, 60.0 / 255.0, 1.0);
+        return vec4<f32>(SOLID_COLOR, 1.0);
     }
 
     let center = field[nearestIdx];
@@ -80,6 +84,8 @@ fn fs_main(in: VSOut) -> @location(0) vec4<f32> {
     let v11 = fluidValue(i0 + 1, j0 + 1, center);
     let value = mix(mix(v00, v10, tx), mix(v01, v11, tx), ty);
 
+    // Epsilon is a divide-by-zero backstop only; callers guarantee a non-degenerate
+    // range (fixed [0,1] for smoke, widened in _computePressureRange for pressure).
     let t = clamp((value - params.minVal) / (params.maxVal - params.minVal + 1e-10), 0.0, 1.0);
     // textureSampleLevel is legal in non-uniform control flow (after the solid early-return);
     // plain textureSample would be a compile error here.
