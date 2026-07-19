@@ -118,15 +118,25 @@ stateDiagram-v2
 
 ### Resolution Tiers
 
-| Index | numY | Default? |
-|-------|------|----------|
-| 0 | 64 | |
-| 1 | 128 | |
-| 2 | 256 | Yes |
-| 3 | 512 | |
-| 4 | 1024 | |
+| Index | numY | Default? | Auto-selectable? |
+|-------|------|----------|------------------|
+| 0 | 64 | | Yes |
+| 1 | 128 | | Yes |
+| 2 | 256 | Yes | Yes |
+| 3 | 512 | | Yes |
+| 4 | 1024 | | No — manual only |
 
 `numX` is computed from the container's aspect ratio: `Math.round(tier * width / height)`.
+
+`AdaptiveController.maxAutoTierIndex` caps automatic promotion at 512. 1024 measures
+~58 ms/frame (~17 fps) even on the dev machine, so auto-promoting into it would stall
+for seconds, drop back, and immediately promote again. `downscale()` lowers the cap
+further whenever a tier proves too slow, so the controller never retries a tier it has
+already failed.
+
+Window resizes do **not** re-tier: `applyTier()` destroys every GPU buffer, reloads the
+preset, and clears particle emitters, so running it on a resize would silently discard
+user state. Only the canvas backing stores are resized.
 
 ### `applyTier()` Sequence
 

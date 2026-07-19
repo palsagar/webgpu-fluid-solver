@@ -26,7 +26,7 @@ Drag obstacles through the flow. Watch vortices form. Explore pressure fields, s
 - **Multiple visualizations** — Smoke dye (magma colormap), pressure field (coolwarm), streamlines, velocity arrows, tracer particles
 - **Curated presets** — Wind tunnel, Karman vortex street, backward-facing step
 - **Advanced controls** — Adjust timestep, relaxation, iterations, inflow velocity, grid resolution
-- **Adaptive resolution** — Auto-scales grid from 64 to 1024 based on frame rate
+- **Adaptive resolution** — Auto-scales the grid between 64 and 512 based on frame rate; 1024 is selectable manually
 - **800+ fps** at 256x256 on modern GPUs
 
 ## Quick Start

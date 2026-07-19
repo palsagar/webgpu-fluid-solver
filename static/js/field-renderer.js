@@ -11,6 +11,24 @@ const UNIFORMS = { numX: 0, numY: 4, minVal: 8, maxVal: 12, size: 16 };
 /** Colormap LUT PNGs are 256x1 strips; the shader samples them as a 1D ramp. */
 const LUT_WIDTH = 256;
 
+/**
+ * Upper bound on either canvas dimension. The field pass shades one fragment
+ * per backing-store pixel, and that cost is independent of the grid tier —
+ * adaptive resolution cannot claw it back. Caps the worst case on very large
+ * or high-DPI displays; CSS upscales beyond this.
+ * Renderer.resizeCanvas applies the identical formula — keep them in step.
+ */
+export const MAX_BACKING_DIM = 3840;
+
+/** Backing-store size for a container, in device pixels, clamped. */
+export function backingSize(container) {
+  const dpr = window.devicePixelRatio || 1;
+  const w = Math.max(1, Math.round(container.clientWidth * dpr));
+  const h = Math.max(1, Math.round(container.clientHeight * dpr));
+  const scale = Math.min(1, MAX_BACKING_DIM / Math.max(w, h));
+  return { w: Math.max(1, Math.round(w * scale)), h: Math.max(1, Math.round(h * scale)) };
+}
+
 export class FieldRenderer {
   /**
    * Argument order matches Renderer.create — keep them in step.
@@ -58,9 +76,7 @@ export class FieldRenderer {
    * @returns {boolean} True if the dimensions actually changed.
    */
   resizeCanvas() {
-    const dpr = window.devicePixelRatio || 1;
-    const w = Math.max(1, Math.round(this.container.clientWidth * dpr));
-    const h = Math.max(1, Math.round(this.container.clientHeight * dpr));
+    const { w, h } = backingSize(this.container);
     if (w === this.canvas.width && h === this.canvas.height) return false;
     this.canvas.width = w;
     this.canvas.height = h;

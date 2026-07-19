@@ -1,4 +1,4 @@
-import { FieldRenderer } from './field-renderer.js';
+import { FieldRenderer, backingSize } from './field-renderer.js';
 
 /**
  * Renderer for the 2D flow simulation.
@@ -34,6 +34,9 @@ export class Renderer {
     this.solidData = null;
     this._solidReadbackDone = false;
     this._solidReadbackPending = false;
+    // Bumped by invalidateSolid(). A readback issued before an invalidation
+    // carries a pre-invalidation mask, so it must not mark the mask fresh.
+    this._solidGen = 0;
 
     // Bumped on every grid resize. Readbacks capture it before mapAsync and
     // discard themselves on resolve if it moved — otherwise a readback in
@@ -86,9 +89,7 @@ export class Renderer {
    * @returns {boolean} True if the dimensions actually changed.
    */
   resizeCanvas() {
-    const dpr = window.devicePixelRatio || 1;
-    const w = Math.max(1, Math.round(this.container.clientWidth * dpr));
-    const h = Math.max(1, Math.round(this.container.clientHeight * dpr));
+    const { w, h } = backingSize(this.container);
     if (w === this._canvas.width && h === this._canvas.height) return false;
     this._canvas.width = w;
     this._canvas.height = h;
@@ -214,6 +215,7 @@ export class Renderer {
    */
   invalidateSolid() {
     this._solidReadbackDone = false;
+    this._solidGen++;
     if (this.particleSystem) this.particleSystem.clear();
   }
 
@@ -355,12 +357,15 @@ export class Renderer {
     const { device, solver, numX, numY } = this;
     const size = numX * numY * 4;
     const gen = this._gridGen;
+    const solidGen = this._solidGen;
     const staging = device.createBuffer({ size, usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST });
     const encoder = device.createCommandEncoder();
     encoder.copyBufferToBuffer(solver.solidBuffer, 0, staging, 0, size);
     device.queue.submit([encoder.finish()]);
     staging.mapAsync(GPUMapMode.READ).then(() => {
-      if (gen === this._gridGen) {
+      // An invalidateSolid() landing mid-flight means this copy predates the
+      // new mask; leave _solidReadbackDone false so the next frame re-reads.
+      if (gen === this._gridGen && solidGen === this._solidGen) {
         this.solidData = new Float32Array(staging.getMappedRange().slice(0));
         this._solidReadbackDone = true;
       }

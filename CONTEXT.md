@@ -69,7 +69,7 @@ _Not yet implemented_ (ADR-0006).
 _Avoid_: swirl boost, turbulence (— it is neither)
 
 **Resolution Tier**:
-One of the discrete Grid sizes (64 / 128 / 256 / 512 / 1024 cells tall). Switched manually or by Adaptive Resolution.
+One of the discrete Grid sizes (64 / 128 / 256 / 512 / 1024 cells tall). Switched manually or by Adaptive Resolution — except 1024, which is manual-only.
 
 **Adaptive Resolution**:
 Automatic Resolution Tier switching driven by measured frame times: downscale fast when slow, upscale cautiously with a cooldown.

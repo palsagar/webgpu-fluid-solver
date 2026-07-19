@@ -92,13 +92,18 @@ async function init() {
     // Canvas backing stores are display-resolution and set at construction, so
     // they need re-sizing when the container changes. Debounced: a drag-resize
     // fires continuously and each change reallocates the swapchain.
+    //
+    // Deliberately does NOT re-tier the grid. applyTier() destroys every GPU
+    // buffer, reloads the preset, and clears particle emitters — running that
+    // on a window resize would silently discard the user's obstacle position,
+    // dye field, and emitters. Cells go slightly non-square until the next
+    // explicit tier change, which is exactly how master behaved.
     let resizeTimer = null;
     new ResizeObserver(() => {
         clearTimeout(resizeTimer);
         resizeTimer = setTimeout(() => {
-            const changed = renderer.fieldRenderer.resizeCanvas() | renderer.resizeCanvas();
-            // Re-derive numX from the new aspect ratio so cells stay square
-            if (changed) adaptive.applyTier();
+            renderer.fieldRenderer.resizeCanvas();
+            renderer.resizeCanvas();
         }, 150);
     }).observe(container);
 

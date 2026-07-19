@@ -144,3 +144,61 @@ test('canvases follow the container when the window resizes', async ({ page }) =
   expect(after[1]).not.toBe(before[1]); // overlay must track the field canvas
   expect(after[0]).toBe(after[1]);
 });
+
+test('resizing preserves simulation state', async ({ page }) => {
+  await boot(page, 30);
+  // Move the obstacle off its preset default and place an emitter
+  const before = await page.evaluate(() => {
+    const { interaction, particles, solver } = window.__flowlab;
+    interaction.obstacleX = solver.numX * solver.h * 0.6;
+    particles.addEmitter(solver.numX * solver.h * 0.2, solver.numY * solver.h * 0.5);
+    return {
+      obstacleX: interaction.obstacleX,
+      emitters: particles.emitters.length,
+      numX: solver.numX,
+    };
+  });
+  expect(before.emitters).toBeGreaterThan(0);
+
+  await page.setViewportSize({ width: 900, height: 700 });
+  await page.waitForFunction(
+    (w) => window.__flowlab.renderer.fieldRenderer.canvas.width !== w,
+    (await page.evaluate(() => window.__flowlab.renderer.fieldRenderer.canvas.width)) + 1,
+    { timeout: 5000 },
+  );
+  await runFrames(page, 30);
+
+  // applyTier() would destroy buffers, reload the preset, and clear emitters
+  const after = await page.evaluate(() => {
+    const { interaction, particles, solver } = window.__flowlab;
+    return { obstacleX: interaction.obstacleX, emitters: particles.emitters.length, numX: solver.numX };
+  });
+  expect(after.obstacleX).toBeCloseTo(before.obstacleX, 6);
+  expect(after.emitters).toBe(before.emitters);
+  expect(after.numX).toBe(before.numX);
+});
+
+test('invalidating the solid mask mid-readback is not swallowed', async ({ page }) => {
+  await boot(page, 30);
+  const done = await page.evaluate(async () => {
+    const r = window.__flowlab.renderer;
+    // Let any in-flight readback settle first
+    while (r._solidReadbackPending) await new Promise(requestAnimationFrame);
+    // Silence the render loop: otherwise it issues its own (correct) readback
+    // while we wait, and we would observe that one instead of the raced one.
+    const realDraw = r.draw;
+    r.draw = () => {};
+    try {
+      r._solidReadbackDone = false;
+      r.readbackSolid();   // now in flight
+      r.invalidateSolid(); // lands before the map resolves
+      while (r._solidReadbackPending) await new Promise(requestAnimationFrame);
+      return r._solidReadbackDone;
+    } finally {
+      r.draw = realDraw;
+    }
+  });
+  // The in-flight copy predates the invalidation, so the mask must stay stale
+  // and be re-read next frame — otherwise particles use an obsolete obstacle.
+  expect(done).toBe(false);
+});
