@@ -1,22 +1,22 @@
 // ============================================================================
-// Semi-Lagrangian Advection — Transports velocity and smoke fields forward
+// Semi-Lagrangian Advection (velocity) — transports the u and v fields forward
 //
 // Uses the semi-Lagrangian (backward-trace) method: for each grid point,
 // trace a virtual particle backward in time by -dt using the current
 // velocity, then bilinearly interpolate the field value at the departure
 // point. This is unconditionally stable for any dt.
 //
-// Two entry points:
+// One entry point:
 //   - advect_velocity: advects the u and v fields (writes to buf4=u_new,
-//     buf5=v_new). Uses ping-pong buffers so the host swaps read/write
-//     roles each frame.
-//   - advect_smoke: advects the scalar dye/smoke field m (reads buf4=m,
-//     writes buf5=m_new).
+//     buf5=v_new). The host rotates which slot is read and which is written.
+//
+// Smoke lives in advect_smoke.wgsl / maccormack.wgsl: it advects by MacCormack,
+// which needs a third buffer binding and so cannot share this module's binding
+// block (WGSL forbids two module-scope bindings at the same @group/@binding).
 //
 // The bilinear sampling functions account for the MAC staggered grid:
 //   - u lives on vertical faces → no x offset, h/2 y offset
 //   - v lives on horizontal faces → h/2 x offset, no y offset
-//   - scalars (smoke) live at cell centers → h/2 offset in both axes
 // ============================================================================
 
 struct Params {
@@ -33,10 +33,8 @@ struct Params {
 @group(0) @binding(1) var<storage, read> u: array<f32>;    // horizontal velocity (current)
 @group(0) @binding(2) var<storage, read> v: array<f32>;    // vertical velocity (current)
 @group(0) @binding(3) var<storage, read> s: array<f32>;    // solid mask
-// Binding 4: u_new (advect_velocity) or m (advect_smoke) — same slot, different bind group per dispatch
-@group(0) @binding(4) var<storage, read_write> buf4: array<f32>;
-// Binding 5: v_new (advect_velocity) or m_new (advect_smoke)
-@group(0) @binding(5) var<storage, read_write> buf5: array<f32>;
+@group(0) @binding(4) var<storage, read_write> buf4: array<f32>;  // u_new (output)
+@group(0) @binding(5) var<storage, read_write> buf5: array<f32>;  // v_new (output)
 
 // sample_u: Bilinearly interpolate the u velocity field at an arbitrary
 // world-space position (x_in, y_in).
@@ -119,10 +117,6 @@ fn sample_v(x_in: f32, y_in: f32) -> f32 {
            sx * ty * v[x0 * n + y1];
 }
 
-// sample_scalar would go here for cell-centered fields (dx=h/2, dy=h/2),
-// but WGSL cannot pass storage buffers as function arguments, so the
-// bilinear interpolation is inlined directly inside advect_smoke below.
-
 // advect_velocity: Semi-Lagrangian advection of u and v fields.
 //   buf4 = u_new (output), buf5 = v_new (output)
 //
@@ -170,66 +164,5 @@ fn advect_velocity(@builtin(global_invocation_id) id: vec3u) {
         let cv = v[idx];
         // Trace backward and sample v at the departure point
         buf5[idx] = sample_v(x - dt * cu, y - dt * cv);
-    }
-}
-
-// advect_smoke: Semi-Lagrangian advection of the scalar smoke/dye field.
-//   buf4 = m (input, current smoke), buf5 = m_new (output)
-//
-// Smoke is cell-centered (position i*h + h/2, j*h + h/2), so the velocity
-// at each cell center is averaged from the two flanking faces in each axis.
-//
-// Note: buf4 is declared read_write but is only read here; the JS host
-// binds separate buffers so there is no read-write hazard.
-@compute @workgroup_size(8, 8)
-fn advect_smoke(@builtin(global_invocation_id) id: vec3u) {
-    let i = id.x;
-    let j = id.y;
-    let n = params.numY;
-    let h = params.h;
-    let h1 = 1.0 / h;
-    let h2 = 0.5 * h;
-    let dt = params.dt;
-    let nx = params.numX;
-    let ny = params.numY;
-
-    if (i < 1u || i >= nx - 1u || j < 1u || j >= n - 1u) { return; }
-
-    let idx = i * n + j;
-
-    // Default: copy current smoke value
-    buf5[idx] = buf4[idx];
-
-    if (s[idx] != 0.0) {
-        // Cell-center velocity: average of the two flanking face velocities
-        let cu = (u[idx] + u[(i + 1u) * n + j]) * 0.5;
-        let cv = (v[idx] + v[i * n + j + 1u]) * 0.5;
-        // Trace backward from cell center to find departure point
-        let x_in = f32(i) * h + h2 - dt * cu;
-        let y_in = f32(j) * h + h2 - dt * cv;
-
-        // Inline bilinear interpolation of smoke (cell-centered: h/2 offset in both axes)
-        let x = clamp(x_in, h, f32(nx) * h);
-        let y = clamp(y_in, h, f32(ny) * h);
-
-        // Convert world position to grid indices, accounting for h/2 cell-center offset
-        let x0f = floor((x - h2) * h1);
-        let x0 = min(u32(x0f), nx - 1u);
-        let tx = ((x - h2) - x0f * h) * h1;
-        let x1 = min(x0 + 1u, nx - 1u);
-
-        let y0f = floor((y - h2) * h1);
-        let y0 = min(u32(y0f), ny - 1u);
-        let ty = ((y - h2) - y0f * h) * h1;
-        let y1 = min(y0 + 1u, ny - 1u);
-
-        let sx = 1.0 - tx;
-        let sy = 1.0 - ty;
-
-        // Bilinear interpolation of smoke at the departure point
-        buf5[idx] = sx * sy * buf4[x0 * n + y0] +
-                    tx * sy * buf4[x1 * n + y0] +
-                    tx * ty * buf4[x1 * n + y1] +
-                    sx * ty * buf4[x0 * n + y1];
     }
 }

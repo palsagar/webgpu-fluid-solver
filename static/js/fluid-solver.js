@@ -64,6 +64,9 @@ export class FluidSolver {
     this.uniformBuf      = device.createBuffer({ size: 32, usage: uniformUsage });
     this.uniformBufRed   = device.createBuffer({ size: 32, usage: uniformUsage });
     this.uniformBufBlack = device.createBuffer({ size: 32, usage: uniformUsage });
+    // Identical to uniformBuf but with dt negated, so the MacCormack backward
+    // pass can reuse the advect_smoke entry point unchanged.
+    this.uniformBufNegDt = device.createBuffer({ size: 32, usage: uniformUsage });
   }
 
   /**
@@ -94,20 +97,30 @@ export class FluidSolver {
    *
    * @param {GPUBuffer} buf - Target uniform buffer
    * @param {number} [colorOverride] - If provided, overrides the color field
+   * @param {number} [dtOverride] - If provided, overrides dt (negated for MacCormack's backward pass)
    */
-  _writeParamsTo(buf, colorOverride) {
+  _writeParamsTo(buf, colorOverride, dtOverride) {
     const p = this.params;
     const color = colorOverride !== undefined ? colorOverride : p.color;
+    const dt = dtOverride !== undefined ? dtOverride : p.dt;
     const ab = new ArrayBuffer(32);
     const dv = new DataView(ab);
     dv.setUint32(0,  p.numX,   true);
     dv.setUint32(4,  p.numY,   true);
     dv.setFloat32(8,  p.h,     true);
-    dv.setFloat32(12, p.dt,    true);
+    dv.setFloat32(12, dt,      true);
     dv.setFloat32(16, p.omega,  true);
     dv.setFloat32(20, p.density, true);
     dv.setUint32(24, color,    true);
     this.device.queue.writeBuffer(buf, 0, ab);
+  }
+
+  /** Uploads params to every uniform buffer, including the negated-dt variant. */
+  _writeAllParams() {
+    this.writeParams();
+    this._writeParamsTo(this.uniformBufRed, 0);
+    this._writeParamsTo(this.uniformBufBlack, 1);
+    this._writeParamsTo(this.uniformBufNegDt, undefined, -this.params.dt);
   }
 
   /** Releases all GPU buffers. Must be called before resize or disposal. */
@@ -119,6 +132,7 @@ export class FluidSolver {
     this.uniformBuf.destroy();
     this.uniformBufRed.destroy();
     this.uniformBufBlack.destroy();
+    this.uniformBufNegDt.destroy();
   }
 
   /**
@@ -135,15 +149,19 @@ export class FluidSolver {
   static async create(device, numX, numY, h) {
     const solver = new FluidSolver(device, numX, numY, h);
 
-    const [pressureWgsl, boundaryWgsl, advectWgsl] = await Promise.all([
+    const [pressureWgsl, boundaryWgsl, advectWgsl, advectSmokeWgsl, maccormackWgsl] = await Promise.all([
       fetch('/shaders/pressure.wgsl').then(r => r.text()),
       fetch('/shaders/boundary.wgsl').then(r => r.text()),
       fetch('/shaders/advect.wgsl').then(r => r.text()),
+      fetch('/shaders/advect_smoke.wgsl').then(r => r.text()),
+      fetch('/shaders/maccormack.wgsl').then(r => r.text()),
     ]);
 
-    const pressureMod  = device.createShaderModule({ code: pressureWgsl });
-    const boundaryMod  = device.createShaderModule({ code: boundaryWgsl });
-    const advectMod    = device.createShaderModule({ code: advectWgsl });
+    const pressureMod    = device.createShaderModule({ code: pressureWgsl });
+    const boundaryMod    = device.createShaderModule({ code: boundaryWgsl });
+    const advectMod      = device.createShaderModule({ code: advectWgsl });
+    const advectSmokeMod = device.createShaderModule({ code: advectSmokeWgsl });
+    const maccormackMod  = device.createShaderModule({ code: maccormackWgsl });
 
     // Create explicit bind group layouts so all declared bindings are included
     // (auto-layout only includes statically-used bindings, which breaks shared bind groups)
@@ -167,25 +185,38 @@ export class FluidSolver {
       entries: [bglEntry(0, UNIFORM), bglEntry(1, STORAGE), bglEntry(2, STORAGE)],
     });
 
-    // Layout for advect: uniform(0) + read-only(1,2,3) + read-write(4,5)
-    solver._advectBGL = device.createBindGroupLayout({
+    // Layout for velocity advect: uniform(0) + read-only(1,2,3) + read-write(4,5).
+    // 5 storage buffers.
+    solver._advectVelBGL = device.createBindGroupLayout({
       entries: [bglEntry(0, UNIFORM), bglEntry(1, RO_STORAGE), bglEntry(2, RO_STORAGE), bglEntry(3, RO_STORAGE), bglEntry(4, STORAGE), bglEntry(5, STORAGE)],
+    });
+
+    // Smoke advect: uniform + u,v,s + mIn,mOrig + mOut = 6 storage buffers.
+    solver._advectSmokeBGL = device.createBindGroupLayout({
+      entries: [bglEntry(0, UNIFORM), bglEntry(1, RO_STORAGE), bglEntry(2, RO_STORAGE),
+                bglEntry(3, RO_STORAGE), bglEntry(4, RO_STORAGE), bglEntry(5, RO_STORAGE),
+                bglEntry(6, STORAGE)],
+    });
+
+    // Smoke combine: uniform + u,v + phi^n + phi^ + phi~ (rw, in place) = 5 storage buffers.
+    solver._mcSmokeBGL = device.createBindGroupLayout({
+      entries: [bglEntry(0, UNIFORM), bglEntry(1, RO_STORAGE), bglEntry(2, RO_STORAGE),
+                bglEntry(3, RO_STORAGE), bglEntry(4, RO_STORAGE), bglEntry(5, STORAGE)],
     });
 
     const makePipelineLayout = (bgl) => device.createPipelineLayout({ bindGroupLayouts: [bgl] });
 
-    solver.pressurePipeline    = device.createComputePipeline({ layout: makePipelineLayout(solver._pressureBGL),  compute: { module: pressureMod,  entryPoint: 'main' } });
-    solver.boundaryHPipeline   = device.createComputePipeline({ layout: makePipelineLayout(solver._boundaryBGL),  compute: { module: boundaryMod,  entryPoint: 'extrapolate_horizontal' } });
-    solver.boundaryVPipeline   = device.createComputePipeline({ layout: makePipelineLayout(solver._boundaryBGL),  compute: { module: boundaryMod,  entryPoint: 'extrapolate_vertical' } });
-    solver.advectVelPipeline   = device.createComputePipeline({ layout: makePipelineLayout(solver._advectBGL),    compute: { module: advectMod,    entryPoint: 'advect_velocity' } });
-    solver.advectSmokePipeline = device.createComputePipeline({ layout: makePipelineLayout(solver._advectBGL),    compute: { module: advectMod,    entryPoint: 'advect_smoke' } });
+    solver.pressurePipeline    = device.createComputePipeline({ layout: makePipelineLayout(solver._pressureBGL),    compute: { module: pressureMod,     entryPoint: 'main' } });
+    solver.boundaryHPipeline   = device.createComputePipeline({ layout: makePipelineLayout(solver._boundaryBGL),    compute: { module: boundaryMod,     entryPoint: 'extrapolate_horizontal' } });
+    solver.boundaryVPipeline   = device.createComputePipeline({ layout: makePipelineLayout(solver._boundaryBGL),    compute: { module: boundaryMod,     entryPoint: 'extrapolate_vertical' } });
+    solver.advectVelPipeline   = device.createComputePipeline({ layout: makePipelineLayout(solver._advectVelBGL),   compute: { module: advectMod,       entryPoint: 'advect_velocity' } });
+    solver.advectSmokePipeline = device.createComputePipeline({ layout: makePipelineLayout(solver._advectSmokeBGL), compute: { module: advectSmokeMod,  entryPoint: 'advect_smoke' } });
+    solver.mcSmokePipeline     = device.createComputePipeline({ layout: makePipelineLayout(solver._mcSmokeBGL),     compute: { module: maccormackMod,   entryPoint: 'maccormack_smoke' } });
 
     solver._createBindGroups();
 
     // Write initial uniform data
-    solver._writeParamsTo(solver.uniformBuf, 0);
-    solver._writeParamsTo(solver.uniformBufRed, 0);
-    solver._writeParamsTo(solver.uniformBufBlack, 1);
+    solver._writeAllParams();
 
     return solver;
   }
@@ -223,32 +254,61 @@ export class FluidSolver {
     }
 
     // Velocity advection, interim 2-cycle form: read pair c, write pair (c+1)%3.
-    // Task 5 replaces these with the three MacCormack passes.
+    // Task 6 replaces these with the three MacCormack passes.
     this.advectVel = [];
     for (let c = 0; c < 3; c++) {
       const src = this.velPairs[c], dst = this.velPairs[(c + 1) % 3];
       this.advectVel.push(device.createBindGroup({
-        layout: this._advectBGL,
+        layout: this._advectVelBGL,
         entries: [entry(0, this.uniformBuf), entry(1, src.u), entry(2, src.v), entry(3, this.s), entry(4, dst.u), entry(5, dst.v)],
       }));
     }
 
-    // Smoke advection is a 3x3 table indexed [velCur][smokeCur]. The velocity
-    // slot and the smoke slot advance independently once viscous substepping
-    // lands, so binding smoke's advecting velocity to the smoke index would
-    // silently trace dye through the wrong velocity field.
-    this.advectSmoke = [];
+    // MacCormack smoke: forward -> backward -> combine. Each is a 3x3 table
+    // indexed [velCur][smokeCur]. All three bind u/v as the advecting velocity,
+    // so all three need the velocity axis: the velocity slot and the smoke slot
+    // advance by different amounts (+1 vs +2) and diverge further once viscous
+    // substepping lands, so keying the advecting velocity off the smoke index
+    // would silently trace dye through the wrong velocity field.
+    //
+    // Slot roles for smoke slot sc: phi^n = sc, phi^ = hat = (sc+1)%3,
+    // phi~ = tilde = (sc+2)%3. The combine writes phi^{n+1} in place into tilde.
+    this.smokeFwd = [];
+    this.smokeBack = [];
+    this.smokeCombine = [];
     for (let vc = 0; vc < 3; vc++) {
-      this.advectSmoke.push([]);
+      this.smokeFwd.push([]);
+      this.smokeBack.push([]);
+      this.smokeCombine.push([]);
+      const vel = this.velPairs[vc];
       for (let sc = 0; sc < 3; sc++) {
-        this.advectSmoke[vc].push(device.createBindGroup({
-          layout: this._advectBGL,
+        const n = this.smokeBufs[sc];
+        const hat = this.smokeBufs[(sc + 1) % 3];
+        const tilde = this.smokeBufs[(sc + 2) % 3];
+
+        // Forward: dt > 0, mIn == mOrig == phi^n, writes phi^.
+        this.smokeFwd[vc].push(device.createBindGroup({
+          layout: this._advectSmokeBGL,
           entries: [entry(0, this.uniformBuf),
-                    entry(1, this.velPairs[vc].u),      // live velocity
-                    entry(2, this.velPairs[vc].v),
-                    entry(3, this.s),
-                    entry(4, this.smokeBufs[sc]),
-                    entry(5, this.smokeBufs[(sc + 1) % 3])],
+                    entry(1, vel.u), entry(2, vel.v), entry(3, this.s),
+                    entry(4, n), entry(5, n), entry(6, hat)],
+        }));
+
+        // Backward: dt < 0 via uniformBufNegDt, mIn == phi^, mOrig == phi^n,
+        // writes phi~. mOrig is what makes unreliable cells revert cleanly.
+        this.smokeBack[vc].push(device.createBindGroup({
+          layout: this._advectSmokeBGL,
+          entries: [entry(0, this.uniformBufNegDt),
+                    entry(1, vel.u), entry(2, vel.v), entry(3, this.s),
+                    entry(4, hat), entry(5, n), entry(6, tilde)],
+        }));
+
+        // Combine: phi^ + (phi^n - phi~)/2, limited, in place into phi~.
+        this.smokeCombine[vc].push(device.createBindGroup({
+          layout: this._mcSmokeBGL,
+          entries: [entry(0, this.uniformBuf),
+                    entry(1, vel.u), entry(2, vel.v),
+                    entry(3, n), entry(4, hat), entry(5, tilde)],
         }));
       }
     }
@@ -268,9 +328,7 @@ export class FluidSolver {
     const { device, numX, numY } = this;
 
     // Write params to all uniform buffers
-    this.writeParams();
-    this._writeParamsTo(this.uniformBufRed, 0);
-    this._writeParamsTo(this.uniformBufBlack, 1);
+    this._writeAllParams();
 
     const encoder = device.createCommandEncoder();
 
@@ -321,25 +379,33 @@ export class FluidSolver {
       pass.end();
     }
 
-    // Advect smoke through the SAME velocity pair the passes above worked on —
-    // the projected, boundary-corrected time-n field in slot _velCur. Slot
-    // _velCur + 1 now holds the advected, unprojected time-(n+1) velocity, and
-    // tracing dye through that would be a semi-Lagrangian step out of sync with
-    // the velocity it is supposed to follow. Hence both indices only advance
-    // after the whole command buffer is encoded.
-    {
+    // Advect smoke by MacCormack: forward -> backward -> limited combine.
+    // Result lands in the tilde slot, (_smokeCur + 2) % 3.
+    //
+    // All three passes trace through the SAME velocity pair the passes above
+    // worked on — the projected, boundary-corrected time-n field in slot
+    // _velCur. Slot _velCur + 1 now holds the advected, unprojected time-(n+1)
+    // velocity, and tracing dye through that would be a semi-Lagrangian step
+    // out of sync with the velocity it is supposed to follow. Hence both
+    // indices only advance after the whole command buffer is encoded.
+    for (const [pipeline, group] of [
+      [this.advectSmokePipeline, this.smokeFwd[this._velCur][this._smokeCur]],
+      [this.advectSmokePipeline, this.smokeBack[this._velCur][this._smokeCur]],
+      [this.mcSmokePipeline,     this.smokeCombine[this._velCur][this._smokeCur]],
+    ]) {
       const pass = encoder.beginComputePass();
-      pass.setPipeline(this.advectSmokePipeline);
-      pass.setBindGroup(0, this.advectSmoke[this._velCur][this._smokeCur]);
+      pass.setPipeline(pipeline);
+      pass.setBindGroup(0, group);
       pass.dispatchWorkgroups(dx, dy, 1);
       pass.end();
     }
 
     device.queue.submit([encoder.finish()]);
 
-    // Advance the rotation. Advection wrote into the next slot.
+    // Advance the rotation. Velocity advection wrote one slot ahead; the smoke
+    // combine wrote two slots ahead.
     this._velCur   = (this._velCur + 1) % 3;
-    this._smokeCur = (this._smokeCur + 1) % 3;
+    this._smokeCur = (this._smokeCur + 2) % 3;
   }
 
   /**
@@ -371,9 +437,7 @@ export class FluidSolver {
    */
   setParams(overrides) {
     Object.assign(this.params, overrides);
-    this.writeParams();
-    this._writeParamsTo(this.uniformBufRed, 0);
-    this._writeParamsTo(this.uniformBufBlack, 1);
+    this._writeAllParams();
   }
 
   /** Resets the rotation so the next step reads pair 0. Call after uploading fields. */
