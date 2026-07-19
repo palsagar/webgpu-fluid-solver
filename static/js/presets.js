@@ -20,7 +20,9 @@ export const PRESETS = {
   },
   karmanVortex: {
     name: 'Kármán Vortex',
-    // Higher iteration count and smaller timestep for resolving vortex shedding
+    // Higher iteration count and smaller timestep for resolving vortex shedding.
+    // Iteration count measured against divergence convergence after the
+    // projection fix; see docs/ROADMAP.md step 0.
     numIters: 80, dt: 1/120, omega: 1.9, inVel: 1.0,
     // Small obstacle to trigger periodic vortex shedding
     obstacle: { shape: 'circle', x: 0.3, y: 0.5, radius: 0.06 },

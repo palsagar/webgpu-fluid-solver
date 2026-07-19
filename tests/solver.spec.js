@@ -21,11 +21,15 @@ async function boot(page) {
 /**
  * Steps the solver `steps` times, returning the summed |divergence| over fluid
  * cells after each step. Divergence matches pressure.wgsl:58 exactly.
+ *
+ * `iters` overrides the pressure iteration count used for each step; defaults
+ * to the UI's current setting (`ui.numIters`).
  */
-function readDivergenceSeries(page, steps) {
-  return page.evaluate(async (steps) => {
+function readDivergenceSeries(page, steps, iters) {
+  return page.evaluate(async ({ steps, iters }) => {
     const { solver, device, ui } = window.__flowlab;
     solver.paused = true; // stop the render loop from stepping too
+    const numIters = iters ?? ui.numIters;
 
     const n = solver.numY, numX = solver.numX;
     const size = numX * n * 4;
@@ -48,7 +52,7 @@ function readDivergenceSeries(page, steps) {
     const series = [];
 
     for (let k = 0; k < steps; k++) {
-      solver.step(ui.numIters);
+      solver.step(numIters);
       const { u, v } = solver.velocityBuffers;
       const uD = await readBuf(u);
       const vD = await readBuf(v);
@@ -65,7 +69,7 @@ function readDivergenceSeries(page, steps) {
       series.push(sum);
     }
     return series;
-  }, steps);
+  }, { steps, iters });
 }
 
 test('projection is applied every step, not every other step', async ({ page }) => {
