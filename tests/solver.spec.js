@@ -1234,3 +1234,213 @@ test('smoke advection dispatches the bind groups for the live velocity slot, not
   // And the step advanced both counters by 2, from (0, 1).
   expect(dispatched.advanced).toEqual({ vc: 2, sc: 0 });
 });
+
+// ---------------------------------------------------------------------------
+// Taylor-Green calibration: the scheme's own numerical viscosity.
+//
+// A single Taylor-Green mode is an exact STEADY solution of the 2D Euler
+// equations (vorticity is a linear function of the streamfunction), so with
+// physical viscosity off the exact answer is "nothing happens". Every bit of
+// kinetic energy the solver loses is therefore its own numerical dissipation,
+// and fitting log(KE) against time gives that dissipation as a viscosity:
+// the mode decays as exp(-2 nu k^2 t), so KE decays as exp(-4 nu k^2 t).
+//
+// Geometry. The mode must not push fluid through the walls, which pins both
+// the phase and the domain. u = A sin(kX) cos(kY), v = -A cos(kX) sin(kY) with
+// X = x - h, Y = y - h and k = pi/L vanishes in the wall-normal direction on
+// all four walls of the square box of side L. The box is therefore the SQUARE
+// sub-grid (cells 1..numY-2 in both axes), not the full rectangular grid --
+// the grid is ~2.2:1, so using its full width would leave sin(k x) nonzero at
+// the right wall and drive flow straight into it. (Swapping the sin/cos phase,
+// as the task brief's snippet does, puts the full amplitude A on all four
+// walls; it is divergence-free but it is not a closed-box Taylor-Green.)
+//
+// This choice is also exactly divergence-free on the MAC grid, not merely to
+// truncation order: the u and v difference terms cancel identically because
+// both reduce to 2A cos(k X_v) cos(k Y_u) sin(k h / 2). The test asserts that.
+// ---------------------------------------------------------------------------
+
+/**
+ * Runs the Taylor-Green decay experiment and fits the numerical viscosity.
+ *
+ * Rewrites the complete solver state on every call -- solid mask, all three
+ * velocity slots, all three smoke slots, pressure, and the rotation index --
+ * so repeated calls on one page start from a byte-identical field and cannot
+ * carry state forward from an earlier measurement.
+ *
+ * @param {import('@playwright/test').Page} page
+ * @param {{steps?: number, numIters?: number, sample?: number}} opts
+ * @returns {Promise<Object>} nuNum, r2, and the setup-validity diagnostics
+ */
+function measureNuNum(page, { steps = 300, numIters = 80, sample = 20 } = {}) {
+  return page.evaluate(async ({ steps, numIters, sample }) => {
+    const { solver, device, interaction } = window.__flowlab;
+
+    // A lost device makes every later readback return zeros, which fits a
+    // straight line perfectly and would look like a flawless measurement.
+    let deviceLost = false;
+    device.lost.then((info) => { deviceLost = info.message || 'lost'; });
+
+    const numX = solver.numX, n = solver.numY, h = solver.h;
+    const Nc = n - 2;              // square fluid box: cells i, j in [1, Nc]
+    const L = Nc * h;
+    const k = Math.PI / L;
+    const A = 1.0;
+
+    const sData = new Float32Array(numX * n);
+    const uData = new Float32Array(numX * n);
+    const vData = new Float32Array(numX * n);
+    for (let i = 0; i < numX; i++) {
+      for (let j = 0; j < n; j++) {
+        sData[i * n + j] = (i >= 1 && i <= Nc && j >= 1 && j <= Nc) ? 1 : 0;
+        const Xu = i * h - h,           Yu = j * h + 0.5 * h - h;
+        const Xv = i * h + 0.5 * h - h, Yv = j * h - h;
+        uData[i * n + j] =  A * Math.sin(k * Xu) * Math.cos(k * Yu);
+        vData[i * n + j] = -A * Math.cos(k * Xv) * Math.sin(k * Yv);
+      }
+    }
+
+    // Setup validity, measured on the field before it is uploaded.
+    let cpuMaxDiv = 0, cpuWallMax = 0;
+    for (let i = 1; i <= Nc; i++)
+      for (let j = 1; j <= Nc; j++)
+        cpuMaxDiv = Math.max(cpuMaxDiv, Math.abs(
+          uData[(i + 1) * n + j] - uData[i * n + j] + vData[i * n + j + 1] - vData[i * n + j]));
+    for (let j = 1; j <= Nc; j++)
+      cpuWallMax = Math.max(cpuWallMax, Math.abs(uData[n + j]), Math.abs(uData[(Nc + 1) * n + j]));
+    for (let i = 1; i <= Nc; i++)
+      cpuWallMax = Math.max(cpuWallMax, Math.abs(vData[i * n + 1]), Math.abs(vData[i * n + Nc + 1]));
+
+    interaction.showObstacle = false;
+    solver.paused = true;
+    solver.resetFlipState();
+    // nu is written to the uniform but no viscous pass consumes it yet, so this
+    // is the only regime available -- and the one this measurement wants.
+    solver.setParams({ nu: 0, dt: 1 / 120, omega: 1.9, density: 1000 });
+    solver.writeSolidMask(sData);
+    solver.writeVelocityU(uData);
+    solver.writeVelocityV(vData);
+    solver.writeSmoke(new Float32Array(numX * n).fill(1));
+    device.queue.writeBuffer(solver.pressureBuffer, 0, new Float32Array(numX * n));
+
+    const size = numX * n * 4;
+    const readBuf = async (src) => {
+      const st = device.createBuffer({ size, usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST });
+      const e = device.createCommandEncoder();
+      e.copyBufferToBuffer(src, 0, st, 0, size);
+      device.queue.submit([e.finish()]);
+      await st.mapAsync(GPUMapMode.READ);
+      const out = new Float32Array(st.getMappedRange().slice(0));
+      st.unmap(); st.destroy();
+      return out;
+    };
+
+    // KE over the fluid box only. The surrounding solid ring is excluded: the
+    // boundary shader writes extrapolated values there that are not part of the
+    // flow, and including them would add a spurious constant to the fit.
+    const probe = async () => {
+      const { u, v } = solver.velocityBuffers;
+      const uD = await readBuf(u), vD = await readBuf(v);
+      let e = 0, nBad = 0;
+      for (let i = 1; i <= Nc; i++)
+        for (let j = 1; j <= Nc; j++) {
+          const a = uD[i * n + j], b = vD[i * n + j];
+          if (!Number.isFinite(a) || !Number.isFinite(b)) { nBad++; continue; }
+          e += a * a + b * b;
+        }
+      return { ke: e, nBad };
+    };
+
+    // Mean of sin^2 cos^2 over a full period is 1/4 per component, so the
+    // initial KE is Nc^2 / 2 exactly. Checking it makes a zeroed buffer or a
+    // dead device impossible to mistake for a physical decay.
+    const keAnalytic = (Nc * Nc) / 2;
+    const p0 = await probe();
+    const ke0Rel = Math.abs(p0.ke - keAnalytic) / keAnalytic;
+
+    const dt = solver.params.dt;
+    const ts = [], ys = [];
+    for (let s = 0; s <= steps; s++) {
+      if (s % sample === 0) {
+        const p = s === 0 ? p0 : await probe();
+        if (p.nBad > 0) throw new Error(`non-finite velocity at step ${s}: ${p.nBad} cells`);
+        if (!(p.ke > 0)) throw new Error(`kinetic energy collapsed to ${p.ke} at step ${s}`);
+        ts.push(s * dt); ys.push(Math.log(p.ke));
+      }
+      if (s < steps) {
+        solver.step(numIters);
+        // Draining the queue each step keeps a single submit under the GPU
+        // watchdog. Without it, high iteration counts at the large tiers lose
+        // the device outright. Purely a scheduling change: fitted values are
+        // bit-identical with and without.
+        await device.queue.onSubmittedWorkDone();
+      }
+    }
+    if (deviceLost) throw new Error('GPU device lost mid-run: ' + deviceLost);
+
+    const nP = ts.length;
+    const mt = ts.reduce((a, b) => a + b, 0) / nP;
+    const my = ys.reduce((a, b) => a + b, 0) / nP;
+    let num = 0, den = 0;
+    for (let q = 0; q < nP; q++) { num += (ts[q] - mt) * (ys[q] - my); den += (ts[q] - mt) ** 2; }
+    const slope = num / den;                        // = -4 nu k^2
+
+    let ssTot = 0, ssRes = 0;
+    for (let q = 0; q < nP; q++) {
+      const pred = my + slope * (ts[q] - mt);
+      ssRes += (ys[q] - pred) ** 2;
+      ssTot += (ys[q] - my) ** 2;
+    }
+
+    return {
+      nuNum: -slope / (4 * k * k),
+      r2: ssTot > 0 ? 1 - ssRes / ssTot : 0,
+      points: nP, logDrop: ys[0] - ys[nP - 1],
+      cpuMaxDiv, cpuWallMax, ke0Rel, k, h, numX, numY: n, Nc, dt, numIters,
+    };
+  }, { steps, numIters, sample });
+}
+
+test('the Taylor-Green initial field is closed-box and divergence-free on the MAC grid', async ({ page }) => {
+  test.setTimeout(120_000);
+  await boot(page);
+  const r = await measureNuNum(page, { steps: 0, sample: 20 });
+
+  // Exact cancellation, not truncation order: 5.96e-8 is float32 rounding on
+  // values of order 1, i.e. the discrete divergence is zero to machine epsilon.
+  expect(r.cpuMaxDiv).toBeLessThan(1e-6);
+  // No flow through any of the four walls of the square box.
+  expect(r.cpuWallMax).toBeLessThan(1e-9);
+  // What the GPU holds after upload matches the analytic KE of the mode.
+  expect(r.ke0Rel).toBeLessThan(1e-6);
+});
+
+test('Taylor-Green decay yields a numerical viscosity', async ({ page }) => {
+  test.setTimeout(120_000);
+  await boot(page);
+
+  // Operating point: the pressure iteration count the Karman preset ships.
+  const op = await measureNuNum(page, { numIters: 80 });
+  console.log(`nu_num(iters=80)   = ${op.nuNum.toExponential(3)}  R^2 = ${op.r2.toFixed(5)}  n = ${op.points}`);
+
+  expect(op.points).toBeGreaterThan(5);
+  expect(op.r2).toBeGreaterThan(0.99);   // a bad fit means the decay is not exponential
+  expect(op.nuNum).toBeGreaterThan(0);   // energy must decay, not grow
+  expect(op.nuNum).toBeLessThan(1e-1);   // sanity ceiling
+
+  // With the projection converged, what is left is the advection scheme's own
+  // dissipation. At 2048 iterations tier 256 is converged to 5 significant
+  // figures (1024 and 2048 agree), and the value is 9.82e-4 -- a third of the
+  // semi-Lagrangian scheme this replaced. That ratio is what Tasks 5-6 bought,
+  // so pin it: a regression in MacCormack shows up here as a rise toward 3e-3.
+  const conv = await measureNuNum(page, { numIters: 2048 });
+  console.log(`nu_num(iters=2048) = ${conv.nuNum.toExponential(3)}  R^2 = ${conv.r2.toFixed(5)}`);
+
+  expect(conv.r2).toBeGreaterThan(0.99);
+  expect(conv.nuNum).toBeGreaterThan(6e-4);
+  expect(conv.nuNum).toBeLessThan(1.5e-3);
+  // Converging the projection must lower the measured viscosity, never raise
+  // it -- the opposite ordering would mean the decay is not projection-limited
+  // and the operating-point number means something else entirely.
+  expect(conv.nuNum).toBeLessThan(op.nuNum);
+});
