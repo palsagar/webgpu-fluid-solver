@@ -1,5 +1,5 @@
 ---
-status: accepted
+status: accepted (not yet implemented — see docs/ROADMAP.md)
 ---
 
 # Honest numerics: MacCormack advection; artificial terms labeled and default-off

@@ -1,6 +1,6 @@
 # GPU Compute & Rendering Pipeline
 
-How the WebGPU compute shaders and 2D canvas renderer work together to simulate and visualize fluid flow. For the numerical algorithms behind each shader, see [Numerical Methods](numerical-methods.md). For how these pieces fit into the overall application, see [Architecture](architecture.md).
+How the WebGPU compute shaders and the renderer work together to simulate and visualize fluid flow. For the numerical algorithms behind each shader, see [Numerical Methods](numerical-methods.md). For how these pieces fit into the overall application, see [Architecture](architecture.md).
 
 ---
 
@@ -133,24 +133,45 @@ The `s` buffer (solid mask: 0.0 = solid, 1.0 = fluid) is rasterized on the CPU v
 
 ## 6. Rendering Pipeline
 
-The renderer (`Renderer` class in `renderer.js`) uses a 2D canvas, not WebGPU render passes. The GPU is used only for compute; visualization is CPU-side via `putImageData`.
+Rendering is split across two stacked, display-resolution canvases (see [ADR-0005](adr/0005-hybrid-gpu-field-rendering.md)):
+
+| Layer | Canvas | Context | Drawn by | Content |
+|-------|--------|---------|----------|---------|
+| Bottom (z-index 0) | `#field-canvas` | `webgpu` | `FieldRenderer` (`field-renderer.js`) | Colormapped scalar field — smoke or pressure |
+| Top (z-index 1) | `#overlay-canvas` | `2d` | `Renderer` (`renderer.js`) | Streamlines, velocity arrows, particles, obstacle |
+
+Both canvases are sized to `container.clientWidth/Height × devicePixelRatio` — display pixels, independent of grid resolution. Neither is resized when the grid changes tier.
+
+### Field Render Pass
+
+`FieldRenderer.draw(fieldBuffer, colormapName, minVal, maxVal)` runs every frame. It writes a 16-byte uniform (`numX`, `numY`, `minVal`, `maxVal`), then records one render pass drawing a 3-vertex fullscreen triangle (`pass.draw(3)`) into the canvas texture.
+
+`render_field.wgsl`:
+
+- **Field sampling:** The field is a `storage, read` buffer, not a texture — `fs_main` does manual bilinear interpolation in cell-center space (cell `(i,j)` centered at `(i+0.5, j+0.5)`). `fluidValue()` substitutes the nearest cell's value for solid neighbors so filtering doesn't bleed stale in-solid values across obstacle edges.
+- **Solid cells:** Tested per-fragment against the `solid` storage buffer at the *nearest* cell (keeps edges crisp) and returned as dark gray `vec4(50, 50, 60)/255` before any sampling. No solid readback is involved.
+- **Colormap:** The normalized value `t = (value - minVal) / (maxVal - minVal)` indexes a 256x1 LUT **texture** via `textureSampleLevel`. `textureSampleLevel` (not `textureSample`) is required — the solid early-return makes the control flow non-uniform.
+
+Pipeline layout is explicit, never `layout: 'auto'` (see [ADR-0002](adr/0002-explicit-bind-group-layouts.md)): group 0 = uniform + field buffer + solid buffer, group 1 = LUT texture + sampler.
+
+### Colormap LUTs
+
+`_loadLuts(['magma', 'coolwarm', 'viridis'])` runs once in the async `FieldRenderer.create()` factory. Each `static/colormaps/<name>.png` is fetched as a blob, decoded with `createImageBitmap()`, and uploaded to a 256x1 `rgba8unorm` texture via `device.queue.copyExternalImageToTexture()`. One bind group is cached per colormap name. Until the textures resolve, `draw()` returns early and skips the frame — there is no grayscale fallback.
+
+**Display ranges:**
+
+- **Smoke mode:** `magma`, fixed range `[0, 1]`. `m = 0` (dye) maps to dark, `m = 1` (clear) to bright. No readback needed.
+- **Pressure mode:** `coolwarm`, auto-ranged symmetrically about the field mean so zero gauge pressure sits at the colormap center. Requires the throttled pressure readback below.
 
 ### Readback Flow
 
-1. **Copy:** `encoder.copyBufferToBuffer()` from the solver's active smoke or pressure buffer to a persistent staging buffer (`MAP_READ | COPY_DST`).
-2. **Map:** `_stagingBuffer.mapAsync(GPUMapMode.READ)` — asynchronous. While pending, the `readbackPending` flag prevents new readback requests, ensuring at most one outstanding map operation.
-3. **Extract:** `new Float32Array(raw.slice(0))` copies the mapped data, then `unmap()` releases the staging buffer for reuse.
+Three independent readbacks feed the CPU side. None of them is needed to draw the field itself.
 
-### Field Visualization
+**1. Pressure (throttled, persistent staging buffer).** Only issued when the pressure view is active and only on `_frameCount % 10 === 1`. `copyBufferToBuffer()` from `solver.pressureBuffer` into `_stagingBuffer` (`MAP_READ | COPY_DST`), then `mapAsync`; the resolved data goes to `_computePressureRange()`, which returns `[mean - range, mean + range]` for the next frames' `minVal`/`maxVal`. The `readbackPending` flag keeps at most one map in flight. Smoke needs no equivalent — its range is fixed.
 
-`_renderField()` converts the float32 field data to RGBA pixels:
+**2. Velocity (throttled, temporary staging buffers).** Every 10 frames, gated on `showStreamlines || showVelocities || showParticles`. Two staging buffers are created and destroyed per cycle for `u` and `v`. On completion `_velDataGen` increments, which is what triggers streamline and arrow geometry to be recomputed.
 
-- **Smoke mode:** Fixed range [0, 1]. Colormap: **magma** (256-entry LUT from `static/colormaps/magma.png`). `m = 0` (dye) maps to dark, `m = 1` (clear) maps to bright.
-- **Pressure mode:** Auto-ranged, centered around the mean for symmetric diverging display. Colormap: **coolwarm** (from `static/colormaps/coolwarm.png`).
-- **Solid cells:** Rendered as dark gray `rgb(50, 50, 60)` by checking the solid mask (`solidData[idx] === 0`).
-- **Fallback:** If colormap PNGs haven't loaded yet, uses grayscale.
-
-Colormaps are loaded at construction time from `static/colormaps/{viridis,coolwarm,magma}.png`. Each PNG is drawn to an offscreen 256x1 canvas and read back as a `Uint8Array` LUT.
+**3. Solid mask (lazy, one-shot staging buffer).** Read once after init and again whenever `invalidateSolid()` marks it stale (preset change, obstacle drag, resize). The Field View no longer needs this — it reads the solid buffer directly on the GPU — but the particle system still needs `solidData` on the CPU to kill particles that enter solids.
 
 ### Device Loss
 
@@ -160,7 +181,7 @@ In `main.js`, `device.lost.then()` displays an error banner (`#device-lost-banne
 
 ## 7. Overlay Rendering
 
-All overlays are drawn on the same 2D canvas using the Canvas 2D API, on top of the field visualization.
+All overlays are drawn with the Canvas 2D API on the transparent `#overlay-canvas`, which sits above the WebGPU field canvas. `Renderer.draw()` clears it to transparent each frame before redrawing. Stroke widths are multiplied by `_overlayScale` (`canvas.height / numY`) so overlays keep their visual weight at display resolution.
 
 ### Velocity Readback
 

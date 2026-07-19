@@ -4,6 +4,8 @@ Real-time 2D incompressible flow simulation in the browser. Users pick a scenari
 
 ## Language
 
+Some entries below are **target-state vocabulary** — decided in [ADR-0006](docs/adr/0006-honest-numerics-maccormack-over-confinement.md) / [ADR-0007](docs/adr/0007-explicit-viscosity-bounded-re.md) but not yet built. They are marked _Not yet implemented_. Use the terms in design discussion; do not assume the feature exists in the code.
+
 ### Simulation
 
 **Grid**:
@@ -63,6 +65,7 @@ A scientific color lookup table (magma, viridis, coolwarm) mapping scalar values
 
 **Confinement (ε)**:
 An explicitly-labeled, default-off control that injects artificial vorticity for visual effect. Always presented as artificial — never silently on.
+_Not yet implemented_ (ADR-0006).
 _Avoid_: swirl boost, turbulence (— it is neither)
 
 **Resolution Tier**:
@@ -75,21 +78,26 @@ Automatic Resolution Tier switching driven by measured frame times: downscale fa
 
 **Blow**:
 The default mouse mode: dragging injects momentum and Smoke at the cursor — a moving momentum source, not a special effect.
+_Not yet implemented_ — the current default mouse mode drags the Obstacle.
 _Avoid_: splat, stir, force brush
 
 **Draw**:
 A mouse mode that rasterizes freehand solid shapes into the Solid Mask (with an eraser counterpart). Mouse modes are always switched by explicit toggle, never by implicit gestures.
+_Not yet implemented_.
 
 ### Diagnostics
 
 **Reynolds Number (Re)**:
 A user-controllable physical parameter (via explicit viscosity), valid only within the grid-resolvable range. Never displayed as a nominal/fake value.
+_Not yet implemented_ (ADR-0007) — a nominal `Re = U·D/h` readout still ships in the Flow Info panel, to be replaced when the viscous pass lands.
 
 **Probe**:
 A fixed sampling point in the flow whose velocity time-series feeds Diagnostics.
+_Not yet implemented_ (ADR-0007).
 
 **Strouhal Number (St)**:
 The dimensionless vortex-shedding frequency, measured live from a Probe — an emergent result, never prescribed.
+_Not yet implemented_ (ADR-0007).
 
 ## Example dialogue
 

@@ -28,7 +28,7 @@ graph TD
     Renderer --> FieldRenderer["field-renderer.js"]
 ```
 
-**Runtime wiring (not static imports):** `main.js` passes `solver`, `renderer`, `interaction`, and `ui` instances into `AdaptiveController` via its constructor. `UI` also receives a reference to `AdaptiveController` (`ui.adaptive = adaptive`). `Interaction` receives a back-reference to `Renderer` at runtime (`interaction._renderer = renderer`). `ParticleSystem` receives a reference to `Renderer` for velocity sampling.
+**Runtime wiring (not static imports):** `main.js` passes `solver`, `renderer`, `interaction`, and `ui` instances into `AdaptiveController` via its constructor. `UI` also receives a reference to `AdaptiveController` (`ui.adaptive = adaptive`). `Interaction` receives a back-reference to `Renderer` at runtime (`interaction._renderer = renderer`). The `ParticleSystem` instance is handed *to* `Renderer` and `Interaction` (`renderer.particleSystem = particles`, `interaction._particleSystem = particles`); it holds no reference back — velocity, grid, and solid data arrive as `step()` arguments from `Renderer.draw()`.
 
 `FluidSolver`, `Interaction`, `Presets`, `ParticleSystem`, `AdaptiveController`, and `FieldRenderer` are leaf modules with no static imports of their own. `Renderer` imports `FieldRenderer`.
 
@@ -57,7 +57,7 @@ sequenceDiagram
     end
 
     Main->>Renderer: renderer.draw()
-    Note right of Renderer: GPU readback (every 10 frames)<br/>+ CPU canvas render
+    Note right of Renderer: GPU render pass for the field (every frame)<br/>+ Canvas 2D overlays<br/>+ throttled readbacks (every 10 frames)
 
     Main->>Main: frameTime = now() - t0
     Main->>Adaptive: adaptive.tick(frameTime)
@@ -124,6 +124,7 @@ stateDiagram-v2
 | 1 | 128 | |
 | 2 | 256 | Yes |
 | 3 | 512 | |
+| 4 | 1024 | |
 
 `numX` is computed from the container's aspect ratio: `Math.round(tier * width / height)`.
 
@@ -131,7 +132,7 @@ stateDiagram-v2
 
 1. `solver.resize(numX, numY, h)` -- reallocates GPU buffers
 2. `ui.reapplyCurrentPreset()` -- re-runs `loadPreset` with the current preset name
-3. `renderer.resize(numX, numY, h)` -- resizes canvas and rendering state
+3. `renderer.resize(numX, numY, h)` -- recreates the staging buffer, clears cached readbacks/overlay geometry, and drops `FieldRenderer`'s stale bind groups. Canvas dimensions are **not** touched: both canvases are display-resolution and independent of grid size.
 4. Resets `frameTimes` and `warmupFrames` so measurement restarts clean
 
 ### Manual Override
@@ -186,8 +187,8 @@ Defined in `static/js/particles.js`. A Lagrangian particle system that visualize
 The `ParticleSystem` class manages emitters and particles with four public methods:
 
 - **`addEmitter(x, y)`** — places a continuous emitter at simulation coordinates (x, y). Maximum 10 emitters.
-- **`step(dt)`** — spawns ~3 particles per emitter per frame, advects all particles using the renderer's velocity readback data (same bilinear interpolation as streamlines), and removes particles that exceed their lifetime.
-- **`draw(ctx, numX, numY, h)`** — renders particle trails on the 2D canvas.
+- **`step(uData, vData, dt, h, numX, numY, solidData)`** — spawns 3 particles per emitter per frame, advects all particles using the velocity readback data passed in by `Renderer.draw()` (same bilinear interpolation as streamlines), and removes particles that aged out, left the domain, or entered a solid cell.
+- **`draw(ctx, numX, numY, h, scale = 1)`** — renders particle trails and emitter markers on the overlay canvas. `scale` is the renderer's `_overlayScale`, applied to stroke widths and marker radius so trails stay legible at display resolution.
 - **`clear()`** — removes all emitters and particles.
 
 ### Mode Switching
