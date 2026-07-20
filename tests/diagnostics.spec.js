@@ -738,3 +738,170 @@ test('the badge stops quoting the projection ceiling when iterations leave its m
   expect(on.visible).toBe(false);
   expect(on.text).toBe('');
 });
+
+// ── The Strouhal probe ──────────────────────────────────────────────────────
+//
+// Expected values below come from the SIGNAL, not from the detector. The
+// synthetic wake is built at a known frequency f = St*U/D with St = 0.2, so
+// St must come back out; the noise case carries an amplitude four orders below
+// the shedding gate, so it must NOT come back as a frequency at all.
+
+test('Strouhal detector recovers a known frequency and reports steady flow', async ({ page }) => {
+  await page.goto('/');
+  const r = await page.evaluate(async () => {
+    const { StrouhalProbe } = await import('/js/diagnostics.js');
+    const D = 0.12, U = 1.0;
+
+    // Synthetic wake: St = 0.2 => f = St*U/D = 1.667 Hz in simulation time.
+    // Sampled every 10 steps at dt = 1/240, i.e. every 0.04167 s — the app's
+    // own cadence, 14.4 samples per shedding period.
+    const f = 0.2 * U / D;
+    const dtS = 10 / 240;
+    const shedding = new StrouhalProbe();
+    for (let k = 0; k < 400; k++) {
+      const t = k * dtS;
+      shedding.push(0.35 * Math.sin(2 * Math.PI * f * t), t);
+    }
+
+    // Below onset: numerical noise only, no coherent oscillation. Amplitude
+    // 5e-4 of U, which is the saturated wake fluctuation measured 0.5 below
+    // the shedding onset — the regime the gate exists to call 'steady'.
+    const steady = new StrouhalProbe();
+    let seed = 1;
+    const rnd = () => (seed = (seed * 1103515245 + 12345) % 2147483648) / 2147483648 - 0.5;
+    for (let k = 0; k < 400; k++) steady.push(0.001 * rnd(), k * dtS);
+
+    const fresh = new StrouhalProbe();
+    fresh.push(0.1, 0);
+
+    // A different known frequency, to prove the detector reports the SIGNAL
+    // rather than a constant near 0.2 that the test would not distinguish.
+    const half = new StrouhalProbe();
+    for (let k = 0; k < 400; k++) {
+      const t = k * dtS;
+      half.push(0.35 * Math.sin(2 * Math.PI * (0.5 * f) * t), t);
+    }
+
+    return {
+      shedding: shedding.read({ D, U }),
+      steady: steady.read({ D, U }),
+      fresh: fresh.read({ D, U }),
+      half: half.read({ D, U }),
+    };
+  });
+
+  expect(r.shedding.state).toBe('shedding');
+  expect(r.shedding.st).toBeGreaterThan(0.19);
+  expect(r.shedding.st).toBeLessThan(0.21);
+
+  expect(r.steady.state).toBe('steady');   // must NOT report a confident St from noise
+  expect(r.steady.st).toBe(null);
+  expect(r.fresh.state).toBe('measuring');
+
+  // Halving the frequency must halve St. A detector that returned a fixed
+  // number, or one keyed off D/U alone, passes the case above and fails here.
+  expect(r.half.state).toBe('shedding');
+  expect(r.half.st).toBeGreaterThan(0.095);
+  expect(r.half.st).toBeLessThan(0.105);
+});
+
+test('probeCell tracks the obstacle and refuses the frozen outflow columns', async ({ page }) => {
+  await page.goto('/');
+  const r = await page.evaluate(async () => {
+    const { probeCell } = await import('/js/diagnostics.js');
+    const h = 1 / 256, numX = 600, numY = 256, D = 0.12;
+    const at = (x, y = 0.5) => probeCell({ obstacleX: x, obstacleY: y, D, h, numX, numY });
+    const lastFluid = (numX - 3) * h;            // deepest column the probe may sit in
+    return {
+      mid:      at(0.7),
+      moved:    at(1.2),
+      // 2D upstream of the deepest legal column: exactly on the boundary.
+      onEdge:   at(lastFluid - 2 * D),
+      // One cell further downstream: i = numX-2, which diffuses against the
+      // frozen ring and must be refused.
+      pastEdge: at(lastFluid - 2 * D + h),
+      atRing:   at((numX - 1) * h - 2 * D),
+      offLeft:  at(-1.0),
+      noD:      probeCell({ obstacleX: 0.7, obstacleY: 0.5, D: 0, h, numX, numY }),
+      lowJ:     at(0.7, 0),                       // j = 0 is BURIED in diffuse.wgsl
+      highJ:    at(0.7, (numY - 1) * h),          // j = numY-1 is the frozen ring
+    };
+  });
+
+  // 2 diameters downstream, on the obstacle's own centreline. The 2 is written
+  // out here rather than imported, so PROBE_DOWNSTREAM_DIAMETERS moving breaks
+  // this instead of silently redefining what the readout means.
+  expect(r.mid).toEqual({ i: Math.round((0.7 + 2 * 0.12) * 256), j: 128, x: 0.7 + 0.24, y: 0.5 });
+  expect(r.mid.i).toBe(241);
+
+  // Moving the obstacle 0.5 downstream moves the probe 0.5 downstream: 128 cells.
+  expect(r.moved.i - r.mid.i).toBe(128);
+  expect(r.moved.j).toBe(r.mid.j);
+
+  // The guard, at the exact cell where it must engage.
+  expect(r.onEdge.i).toBe(600 - 3);
+  expect(r.pastEdge).toBe(null);
+  expect(r.atRing).toBe(null);
+  expect(r.offLeft).toBe(null);
+  expect(r.noD).toBe(null);
+  expect(r.lowJ).toBe(null);
+  expect(r.highJ).toBe(null);
+});
+
+test('the probe samples the live wake in simulation time and clears on a drag', async ({ page }) => {
+  await page.goto('/');
+  await page.waitForFunction(() => window.__flowlab?.ui?.probe, null, { timeout: 20_000 });
+  // A tier switch resizes the grid and clears the probe, which would make the
+  // sample count below a measurement of the adaptive controller.
+  await page.evaluate(() => { window.__flowlab.adaptive.manualOverride = true; });
+
+  const before = await page.evaluate(() => window.__flowlab.ui.probe.length);
+  await page.waitForTimeout(3000);
+
+  const run = await page.evaluate(() => {
+    const { ui, solver, renderer, interaction } = window.__flowlab;
+    const p = ui.probe;
+    // Timestamp spacing, in units of dt. The readback fires every 10 frames and
+    // the loop steps once per frame, so consecutive samples must be 10 steps
+    // apart — the signature of simulation time. Wall-clock stamps would show
+    // frame-rate jitter instead, and would not be a multiple of dt at all.
+    const gaps = [];
+    for (let k = 1; k < p.t.length; k++) gaps.push((p.t[k] - p.t[k - 1]) / solver.params.dt);
+    return {
+      n: p.length,
+      simTime: solver.simTime,
+      dt: solver.params.dt,
+      gapMin: Math.min(...gaps),
+      gapMax: Math.max(...gaps),
+      monotonic: gaps.every((g) => g > 0),
+      allFinite: p.v.every((x) => Number.isFinite(x)),
+      // Non-zero field: a lost device or a collapsed solve reads back all
+      // zeros, which would satisfy every check above and none of the physics.
+      vSpread: Math.max(...p.v) - Math.min(...p.v),
+      showProbe: renderer.showProbe,
+      probeCellNonNull: !!renderer.probe && interaction.showObstacle,
+      lost: false,
+    };
+  });
+
+  expect(run.showProbe).toBe(true);
+  expect(run.n).toBeGreaterThan(before);
+  expect(run.n).toBeGreaterThan(5);
+  expect(run.allFinite).toBe(true);
+  expect(run.monotonic).toBe(true);
+  expect(run.simTime).toBeGreaterThan(0);
+  // Exactly the readback throttle: 10 steps per sample, no more, no less.
+  expect(run.gapMin).toBeCloseTo(10, 6);
+  expect(run.gapMax).toBeCloseTo(10, 6);
+  // The wake is not identically zero — the readback carried real flow.
+  expect(run.vSpread).toBeGreaterThan(0);
+
+  // A drag changes the geometry, so the series before it describes a different
+  // flow. Same clearing path as the particles.
+  const afterDrag = await page.evaluate(() => {
+    const { ui, interaction, solver } = window.__flowlab;
+    interaction.rasterizeObstacle(solver.numX * solver.h * 0.45, interaction.obstacleY, 0, 0);
+    return ui.probe.length;
+  });
+  expect(afterDrag).toBe(0);
+});

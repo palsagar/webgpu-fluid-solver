@@ -2,6 +2,7 @@ import { loadPreset, PRESETS } from './presets.js';
 import {
     honestWindow, windowState, fmtRe, reFromSliderPos,
     nuNumConverged, NU_NUM_ITERS256, NU_NUM_ITERS256_DT, PROJECTION_ITERS_MEASURED,
+    StrouhalProbe, probeCell,
 } from './diagnostics.js';
 
 // How close the live dt must sit to NU_NUM_ITERS256_DT for that table to be
@@ -34,6 +35,15 @@ export class UI {
         this.solver = solver;
         this.renderer = renderer;
         this.interaction = interaction;
+
+        // Downstream wake probe. Owned here, but referenced by the renderer so
+        // it is cleared by the same invalidateSolid()/resize() calls that clear
+        // the particles — obstacle drag, shape switch, preset load, tier change.
+        this.probe = new StrouhalProbe();
+        renderer.probe = this.probe;
+        // Last velocity readback generation fed to the probe, so each readback
+        // contributes exactly one sample no matter how many frames it survives.
+        this._probeVelGen = -1;
 
         // Initial preset
         this.currentPreset = 'karmanVortex';
@@ -248,6 +258,72 @@ export class UI {
         badge.textContent = st.ok ? '' : st.reason;
         badge.classList.toggle('visible', !st.ok);
         badge.classList.toggle('empty', st.code === 'empty-grid' || st.code === 'empty-iters');
+    }
+
+    /**
+     * Per-frame hook, called from the rAF loop: feed the wake probe from the
+     * latest velocity readback and repaint its readout.
+     *
+     * Lives on the frame loop rather than on a slider handler because the probe
+     * is a MEASUREMENT — it accumulates while the flow evolves, and nothing the
+     * user does marks the moment it becomes valid.
+     */
+    tick() {
+        this._sampleProbe();
+        this._updateStrouhal();
+    }
+
+    /**
+     * Push one transverse-velocity sample per velocity readback.
+     *
+     * Skipped while paused: `readbackVelocity` keeps firing every 10 frames on
+     * a frozen field, and the identical samples it would deliver are not 10
+     * steps of flow — they would pad the window with a flat line, drag the RMS
+     * under the shedding gate, and turn a shedding wake into 'steady' just by
+     * leaving the app paused.
+     */
+    _sampleProbe() {
+        const { renderer, solver, interaction } = this;
+        if (solver.paused) return;
+        if (renderer._velDataGen === this._probeVelGen) return;
+        if (!renderer.vData || !interaction.showObstacle) return;
+        this._probeVelGen = renderer._velDataGen;
+
+        const cell = probeCell({
+            obstacleX: interaction.obstacleX,
+            obstacleY: interaction.obstacleY,
+            D: 2 * interaction.obstacleRadius,
+            h: solver.h,
+            numX: solver.numX,
+            numY: solver.numY,
+        });
+        if (!cell) return;
+
+        // v, not u: on the centreline the streamwise component dips once per
+        // shed vortex from EITHER side and so carries 2f. See StrouhalProbe.
+        this.probe.push(renderer.vData[cell.i * solver.numY + cell.j], solver.simTime);
+    }
+
+    /**
+     * Write the probe's verdict into the readout — a number only when the wake
+     * is actually shedding.
+     *
+     * D and U are read HERE rather than cached at push time, so dragging the
+     * obstacle to a new size or moving the inflow slider rescales St to the
+     * geometry the flow currently has. (Both of those also clear the series, so
+     * in practice this re-reads a window that already belongs to them.)
+     */
+    _updateStrouhal() {
+        const el = document.getElementById('val-st');
+        if (!el) return;
+        if (!this.interaction.showObstacle) { el.textContent = '--'; return; }
+
+        const D = 2 * this.interaction.obstacleRadius;
+        const U = this._inflowVelocity();
+        const { state, st } = this.probe.read({ D, U });
+        el.textContent = state === 'shedding' ? st.toFixed(2)
+                       : state === 'steady'   ? 'steady — no shedding'
+                       : 'measuring…';
     }
 
     /** Update the flow-info overlay text with the preset-specific physics description. */

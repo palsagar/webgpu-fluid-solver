@@ -147,6 +147,8 @@ async function init() {
             }
         }
         renderer.draw();
+        // After draw(), so a readback landing this frame is sampled this frame.
+        ui.tick();
 
         // The first frame, and the first after a hidden tab, have no interval
         // to report — measure from the next one rather than invent this one.

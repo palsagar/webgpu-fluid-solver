@@ -39,6 +39,18 @@ export class FluidSolver {
 
     this.params = { numX, numY, h, dt: 1 / 60, omega: 1.9, density: 1000, color: 0, nu: 0 };
 
+    /**
+     * Simulation time elapsed: accumulated steps * dt, in the same seconds the
+     * timestep is expressed in.
+     *
+     * Any measurement of a FREQUENCY must be timestamped from here, never from
+     * wall time. The loop takes exactly one step per displayed frame and
+     * `adaptive` changes the grid tier under load, so wall time and simulation
+     * time run at a ratio that is neither fixed nor 1 — at dt = 1/240 and
+     * 60 fps it is a quarter, and it moves whenever the frame rate does.
+     */
+    this.simTime = 0;
+
     /** Viscous substeps dispatched by the last step(). 0 when nu == 0. */
     this.viscSubsteps = 0;
     /** True when the last step() saturated nu at `viscNuMax`. The field is
@@ -623,6 +635,8 @@ export class FluidSolver {
     // is exactly why the smoke bind groups are a [velCur][smokeCur] table.
     this._velCur   = velNext;
     this._smokeCur = (this._smokeCur + 2) % 3;
+
+    this.simTime += this.params.dt;
   }
 
   /**
@@ -659,13 +673,17 @@ export class FluidSolver {
 
   /** Resets the rotation so the next step reads pair 0. Call after uploading fields.
    *  Also clears the viscous report, which otherwise describes the previous
-   *  run's last step until the next one lands. */
+   *  run's last step until the next one lands, and the simulation clock — the
+   *  fields are being replaced, so the run this clock was counting is over.
+   *  Anything holding a timestamped series across this must clear it too, or a
+   *  fresh sample will land BEFORE the samples already in the window. */
   resetFlipState() {
     this._velCur = 0;
     this._smokeCur = 0;
     this.viscSubsteps = 0;
     this.viscClamped = false;
     this.viscNuEff = 0;
+    this.simTime = 0;
   }
 
   writeSolidMask(data) { this.device.queue.writeBuffer(this.s, 0, data); }

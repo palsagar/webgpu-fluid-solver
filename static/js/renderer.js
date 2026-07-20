@@ -1,4 +1,5 @@
 import { FieldRenderer, backingSize } from './field-renderer.js';
+import { probeCell } from './diagnostics.js';
 
 /**
  * Renderer for the 2D flow simulation.
@@ -29,6 +30,12 @@ export class Renderer {
     this.interaction = null;
     this.particleSystem = null;
     this.showParticles = true;
+    /** Strouhal probe, assigned by the UI. Cleared here alongside particles. */
+    this.probe = null;
+    /** Gates the velocity readback the Strouhal probe feeds on, and its marker.
+     *  Without this in the readback condition below the probe never receives a
+     *  sample and its readout sits at `measuring...` forever. */
+    this.showProbe = true;
 
     this.readbackPending = false;
     this.solidData = null;
@@ -171,7 +178,7 @@ export class Renderer {
 
     // Velocity readback every 10 frames (not every frame) to reduce GPU stalls.
     // Needed for streamlines, arrows, and particle advection.
-    if (this._frameCount % 10 === 0 && (this.showStreamlines || this.showVelocities || this.showParticles)) {
+    if (this._frameCount % 10 === 0 && (this.showStreamlines || this.showVelocities || this.showParticles || this.showProbe)) {
       this.readbackVelocity();
     }
 
@@ -202,6 +209,7 @@ export class Renderer {
     }
     if (this.interaction && this.interaction.showObstacle) {
       this.drawObstacle(this._ctx, this.interaction);
+      this.drawProbe(this._ctx, this.interaction);
     }
   }
 
@@ -217,6 +225,11 @@ export class Renderer {
     this._solidReadbackDone = false;
     this._solidGen++;
     if (this.particleSystem) this.particleSystem.clear();
+    // The solid mask only changes when the geometry does — an obstacle drag, a
+    // shape switch, or a preset load. A Strouhal series spanning such a change
+    // is a frequency fitted across two different flows, so it is discarded for
+    // exactly the same reason and in exactly the same place as the particles.
+    if (this.probe) this.probe.clear();
   }
 
   /**
@@ -327,6 +340,49 @@ export class Renderer {
       ctx.stroke();
       ctx.restore();
     }
+  }
+
+  /**
+   * Draws the Strouhal probe as a ringed dot at the cell it actually samples.
+   *
+   * Drawn from `probeCell` — the same function `ui.js` samples through — and at
+   * the CELL CENTRE rather than the ideal 2D-downstream point, so the marker
+   * shows where the number comes from rather than where it was asked for. When
+   * `probeCell` returns null (obstacle dragged too close to the outflow) there
+   * is no marker, which is what makes the readout dropping to `measuring...`
+   * legible instead of mysterious.
+   *
+   * @param {CanvasRenderingContext2D} ctx - Canvas 2D context
+   * @param {Object} interaction - Interaction state with obstacle position and radius
+   */
+  drawProbe(ctx, interaction) {
+    if (!this.showProbe) return;
+    const { numX, numY, h } = this;
+    const cell = probeCell({
+      obstacleX: interaction.obstacleX,
+      obstacleY: interaction.obstacleY,
+      D: 2 * interaction.obstacleRadius,
+      h, numX, numY,
+    });
+    if (!cell) return;
+
+    const px = ((cell.i + 0.5) * h) / (numX * h) * this._canvas.width;
+    const py = (1 - ((cell.j + 0.5) * h) / (numY * h)) * this._canvas.height;
+    const scale = this._overlayScale;
+
+    ctx.save();
+    // Spring green: absent from both the magma field ramp and the ice-blue
+    // particle trails, so the marker stays findable over either.
+    ctx.strokeStyle = 'rgba(120, 255, 170, 0.95)';
+    ctx.fillStyle = 'rgba(120, 255, 170, 0.95)';
+    ctx.lineWidth = 1.5 * scale;
+    ctx.beginPath();
+    ctx.arc(px, py, 5 * scale, 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.arc(px, py, 1.5 * scale, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.restore();
   }
 
   /**
@@ -655,5 +711,8 @@ export class Renderer {
     this._cachedStreamlines = null;
     this._cachedArrows = null;
     if (this.particleSystem) this.particleSystem.clear();
+    // h changed, so the probe cell moved and the flow is about to be reloaded
+    // onto a different grid — the series describes neither.
+    if (this.probe) this.probe.clear();
   }
 }

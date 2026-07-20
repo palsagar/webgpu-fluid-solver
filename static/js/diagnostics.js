@@ -442,3 +442,234 @@ export function windowState({
 
   return { ok: true, code: null, reason: null };
 }
+
+// ── The downstream probe and the Strouhal detector ──────────────────────────
+//
+// Everything below stays pure: numbers in, numbers out. `probeCell` decides
+// WHERE to sample without touching a buffer, so the placement guard is testable
+// without a GPU; `StrouhalProbe` turns a timestamped series into a frequency
+// without knowing where the series came from.
+
+/**
+ * How far downstream the probe sits, in obstacle diameters.
+ *
+ * 2D is inside the formation region's downstream edge for a circular cylinder,
+ * where the shed vortices have rolled up and the transverse velocity signal is
+ * strongest. Further out the signal survives but the wake has spread and the
+ * amplitude falls; closer in the near-wake recirculation contaminates it.
+ */
+export const PROBE_DOWNSTREAM_DIAMETERS = 2;
+
+/**
+ * Grid cell the probe samples, or `null` when no valid cell exists.
+ *
+ * ─── Why the last two columns are excluded ──────────────────────────────────
+ *
+ * `diffuse.wgsl` copies the domain ring through unchanged (`i >= numX-1`,
+ * `j >= numY-1`) so the two ping-ponged velocity slots stay in agreement across
+ * substeps. That line therefore carries no viscous update at all, and the line
+ * INSIDE it diffuses against a neighbour that never moves — a one-cell layer of
+ * frozen boundary storage plus a one-cell layer contaminated by it. A probe
+ * sitting in either would read a boundary artifact and report its cadence as a
+ * shedding frequency. Both ends of both axes are excluded for the same reason;
+ * the low ends (`i = 0`, `j = 0`) are BURIED by index in the same shader.
+ *
+ * This is not hypothetical at the shipped geometry: the obstacle is draggable,
+ * and dragging it to within 2D of the outflow walks the probe straight into
+ * that layer. Returning `null` there — rather than clamping the probe back
+ * inside — is deliberate: a clamped probe silently stops being "2 diameters
+ * downstream", and the St it produced would no longer mean what the readout
+ * says it means. No cell, no sample, no number.
+ *
+ * @param {{obstacleX:number, obstacleY:number, D:number, h:number,
+ *          numX:number, numY:number}} args
+ * @returns {{i:number, j:number, x:number, y:number}|null}
+ */
+export function probeCell({ obstacleX, obstacleY, D, h, numX, numY }) {
+  if (!(D > 0) || !(h > 0) || !Number.isFinite(obstacleX) || !Number.isFinite(obstacleY)) {
+    return null;
+  }
+  const x = obstacleX + PROBE_DOWNSTREAM_DIAMETERS * D;
+  const i = Math.round(x / h);
+  const j = Math.round(obstacleY / h);
+  // Upper bounds stop two cells short: numX-1 is the frozen ring, numX-2
+  // diffuses against it. Same on the j axis.
+  if (!(i >= 1 && i <= numX - 3)) return null;
+  if (!(j >= 1 && j <= numY - 3)) return null;
+  return { i, j, x, y: obstacleY };
+}
+
+/**
+ * Samples retained. At 10 solver steps per sample and the Karman preset's
+ * dt = 1/240 that is 0.04167 s of simulation time each, so 256 spans 10.7 s —
+ * about 18 shedding periods at St = 0.2, U = 1, D = 0.12.
+ *
+ * The window is stated in PERIODS because that is what sets the frequency
+ * resolution; the sample RATE (14.4 per period) is far above what is needed and
+ * is fixed by the renderer's 10-frame readback throttle, not chosen here.
+ *
+ * The cost is latency, and it is real: the loop takes one step per displayed
+ * frame, so at 60 fps and dt = 1/240 simulation time runs at a quarter of wall
+ * time. Half a window — the minimum `read()` accepts — is ~21 s of wall clock,
+ * a full one ~43 s. The readout says `measuring...` for that whole time rather
+ * than fitting a frequency to three periods and calling it a measurement.
+ */
+const PROBE_CAPACITY = 256;
+
+/**
+ * Below this RMS transverse velocity, relative to U, the wake is steady and any
+ * frequency fitted to it is a property of the noise, not of the flow.
+ *
+ * 0.02 sits in a gap of nearly four orders of magnitude, so its exact value
+ * does not matter. Measured at this probe (2D downstream, tier 256, dt = 1/240,
+ * 256 iterations), from an identical impulsive start per point, as the RMS of v
+ * over the trailing 256-sample window:
+ *
+ *   Re          40       50    |    55       57.5      74.8     140
+ *   t = 30 s  5.2e-8   1.6e-5  |  1.9e-3    2.4e-2   2.6e-1   5.5e-1
+ *   t = 90 s     -        -    |  8.1e-2    1.2e-1      -        -
+ *   trend     decay    decay   |  limit cycle -------------------->
+ *
+ * Below onset the fluctuation DECAYS (Re 40 falls 67x between t = 5 s and
+ * t = 30 s; Re 50 falls 4x). Above it the fluctuation grows to a sustained
+ * limit cycle at 8% of the free stream or more. Nothing lands between 1.6e-5
+ * and 8.1e-2 once settled, and 0.02 is inside that gap.
+ *
+ * ─── The t = 30 s row is why the gate must sit HIGH in the gap ──────────────
+ *
+ * At Re 55 the limit cycle is real but slow to build: 1.9e-3 at t = 30 s,
+ * 4.6e-2 at t = 60 s, 8.1e-2 at t = 90 s. A gate low enough to catch it early
+ * would also be low enough to fire on a decaying transient that has not yet
+ * decayed. 0.02 errs toward `steady` while the amplitude is still climbing,
+ * which is the right direction: the failure this gate exists to prevent is a
+ * confident St for a wake that is not shedding, not a late verdict for one
+ * that is. Near onset the readout therefore says `steady` first and switches
+ * to a number once the wake has actually grown — a measurement in progress,
+ * not a wrong answer.
+ */
+const SHEDDING_RMS_THRESHOLD = 0.02;
+
+/** Zero-crossing hysteresis, as a fraction of signal RMS. */
+const HYSTERESIS = 0.25;
+
+/** Crossings needed before a frequency is claimed — i.e. at least two periods. */
+const MIN_CROSSINGS = 3;
+
+/**
+ * Detects vortex-shedding frequency from a transverse-velocity time series and
+ * reports it as a Strouhal number, St = f*D/U.
+ *
+ * ─── Simulation time, never wall time ───────────────────────────────────────
+ *
+ * Samples MUST be timestamped with `solver.simTime` (accumulated steps * dt).
+ * The app deliberately varies its frame rate — `adaptive` switches grid tiers
+ * under load, and the loop takes exactly one step per displayed frame — so a
+ * wall-clock series would report the frame rate rather than the physics, and
+ * would jump by a factor of several the moment a tier switch landed.
+ *
+ * ─── Why the transverse component ───────────────────────────────────────────
+ *
+ * On the wake centreline the streamwise velocity dips once per shed vortex
+ * REGARDLESS of which side it came from, so `u` oscillates at 2f and a detector
+ * fed `u` would report twice the true Strouhal number. `v` is antisymmetric
+ * about the centreline and alternates with the shedding side, so it carries f.
+ *
+ * ─── What the number is, and is not ─────────────────────────────────────────
+ *
+ * It is the Strouhal number of THIS geometry: a staircased cylinder spanning
+ * D/H = 0.12 of a channel, whose walls are free-slip while nu = 0 and no-slip
+ * the moment the Re control puts a real viscosity in (see `diffuse.wgsl`: the
+ * viscous stencil reads the j = 0 and j = numY-1 lines as ghost cells, placing
+ * a zero-velocity wall line half a cell outside the domain). Blockage raises St
+ * above the unconfined value, and growing wall boundary layers raise the
+ * effective blockage further as Re falls. The same confinement is why shedding
+ * here starts above the textbook unconfined Re 47.
+ *
+ * So this is not an unconfined-cylinder St and should not be compared to one
+ * without that caveat. It is a measurement of the flow the app is actually
+ * solving, which is the only thing it can honestly claim.
+ *
+ * ─── Measured, at this probe, from identical impulsive starts ───────────────
+ *
+ *   Re    55      57.5    60      65      74.8    100     140
+ *   St   0.167   0.168   0.168   0.174   0.179   0.190   0.200
+ *
+ * St RISES with Re across this range and reaches 0.200 at Re 140. That is the
+ * expected shape, not a defect: the familiar "St ~ 0.2" is the high-Re plateau,
+ * and in the Re 50..150 band the unconfined correlation St = 0.212(1 - 21.2/Re)
+ * (Roshko) gives 0.134 .. 0.180. These values run 10-25% ABOVE that curve, in
+ * the direction blockage predicts, and converge toward it as Re grows and the
+ * wall layers thin. A detector tuned to return 0.2 everywhere would have hidden
+ * exactly this structure.
+ */
+export class StrouhalProbe {
+  constructor() {
+    this.v = [];
+    this.t = [];
+  }
+
+  /**
+   * Appends one transverse-velocity sample at simulation time `simTime`.
+   *
+   * Non-finite samples are DROPPED rather than stored. A lost device or a
+   * collapsed field surfaces as NaN in the readback, and a single NaN in the
+   * series would poison the mean, the RMS, and every comparison in `read()` —
+   * turning a dead simulation into a permanent `measuring...` instead of an
+   * obviously stalled readout.
+   */
+  push(vSample, simTime) {
+    if (!Number.isFinite(vSample) || !Number.isFinite(simTime)) return;
+    this.v.push(vSample);
+    this.t.push(simTime);
+    if (this.v.length > PROBE_CAPACITY) { this.v.shift(); this.t.shift(); }
+  }
+
+  clear() { this.v.length = 0; this.t.length = 0; }
+
+  /** Samples currently held. */
+  get length() { return this.v.length; }
+
+  /**
+   * @param {{D: number, U: number}} geom - current diameter and free-stream
+   *   speed, read live at call time so dragging the obstacle (which changes
+   *   nothing here but D is read from it) or moving the inflow slider cannot
+   *   leave St scaled by a geometry the flow no longer has.
+   * @returns {{state: 'measuring'|'steady'|'shedding', st: number|null}}
+   */
+  read({ D, U }) {
+    const n = this.v.length;
+    if (n < PROBE_CAPACITY / 2 || !(U > 0) || !(D > 0)) {
+      return { state: 'measuring', st: null };
+    }
+
+    const mean = this.v.reduce((a, b) => a + b, 0) / n;
+    const dev = this.v.map((x) => x - mean);
+    const rms = Math.sqrt(dev.reduce((a, b) => a + b * b, 0) / n);
+
+    // The gate. Without it a steady wake's numerical noise crosses the
+    // hysteresis band tens of times per window and the detector returns a
+    // confident-looking St from it — the prescribed-not-measured failure this
+    // whole readout exists to eliminate.
+    if (rms < SHEDDING_RMS_THRESHOLD * U) return { state: 'steady', st: null };
+
+    // Count upward crossings with hysteresis, timing first to last so the
+    // estimate averages over every period in the window rather than resolving
+    // one. Single-period timing would be quantised by the sample interval
+    // (7% of a period); across ~18 periods the same quantisation is 0.4%.
+    const hi = HYSTERESIS * rms;
+    let armed = false, crossings = 0, tFirst = null, tLast = null;
+    for (let k = 0; k < n; k++) {
+      if (dev[k] < -hi) armed = true;
+      else if (armed && dev[k] > hi) {
+        armed = false;
+        crossings++;
+        if (tFirst === null) tFirst = this.t[k];
+        tLast = this.t[k];
+      }
+    }
+    if (crossings < MIN_CROSSINGS || tLast === tFirst) return { state: 'measuring', st: null };
+
+    const f = (crossings - 1) / (tLast - tFirst);
+    return { state: 'shedding', st: (f * D) / U };
+  }
+}

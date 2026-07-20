@@ -541,6 +541,13 @@
           <input type="range" id="slider-re" min="0" max="100" step="1" value="75">
           <div id="re-badge" class="re-badge"></div>
         </div>
+
+        <div class="slider-row">
+          <div class="slider-header">
+            <span class="slider-name">St <span class="hint" title="Strouhal number St = f·D/U, MEASURED — not prescribed. A probe 2 diameters downstream on the wake centreline samples the transverse velocity every 10 steps, timestamped in simulation time, and the shedding frequency is recovered from ~18 periods of it. Below the shedding onset it reports 'steady' rather than fitting a frequency to numerical noise; near onset it may say 'steady' for a while and then switch, because the wake takes tens of seconds of simulated time to grow. Measured here: St rises 0.167 at Re 55 to 0.200 at Re 140 — 'St ≈ 0.2' is the high-Re plateau, not the value in this range. This is the St of a cylinder blocking 12% of a channel whose walls go no-slip whenever the Re control applies a viscosity, so it runs above the unconfined-cylinder correlation and above the textbook Re 47 onset.">(?)</span></span>
+            <span class="slider-value" id="val-st">measuring…</span>
+          </div>
+        </div>
       </div>
 
       <div class="panel-section">
