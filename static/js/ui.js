@@ -1,7 +1,7 @@
 import { loadPreset, PRESETS } from './presets.js';
 import {
     honestWindow, windowState, fmtRe, reFromSliderPos,
-    nuNumConverged, NU_NUM_ITERS80,
+    nuNumConverged, NU_NUM_ITERS256,
 } from './diagnostics.js';
 
 // Map kebab-case data-preset attribute values to PRESETS object keys
@@ -188,15 +188,21 @@ export class UI {
 
         // The operating-point ceiling is measured at PROJECTION_ITERS_MEASURED
         // iterations. It is stated as such in the badge text rather than
-        // rescaled to the live iteration count: nu_num's dependence on numIters
-        // was measured at tier 256 only, and interpolating a surface from one
-        // slice would be inventing the number this branch exists to measure.
+        // rescaled to the live iteration count. Two slices through that surface
+        // are measured — nu_num across numIters at tier 256, and across tiers at
+        // 256 iterations — but not the surface itself, and interpolating one
+        // from two lines would be inventing the number this branch exists to
+        // measure. The iterations slider can therefore move the true ceiling
+        // without moving the badge.
         //
         // It is likewise NOT rescaled to the live dt — unlike the converged
         // ceiling above — because the operating-point value is not linear in dt
-        // (NU_NUM_ITERS80's header gives the measured ratios). On the dt = 1/60
-        // presets this ceiling is therefore optimistic by an unmeasured factor.
-        const nuProjection = NU_NUM_ITERS80[this.solver.numY];
+        // (NU_NUM_ITERS256's header gives the measured ratios).
+        //
+        // So on `windTunnel` (dt = 1/60, 40 iters) and `backwardStep` (dt = 1/60,
+        // 60 iters) this ceiling is optimistic on BOTH counts, by an unmeasured
+        // factor. Only the Karman preset is quoted at its own operating point.
+        const nuProjection = NU_NUM_ITERS256[this.solver.numY];
         const reMaxProjection = nuProjection ? (U * D) / nuProjection : Infinity;
 
         // Saturation must be read from `viscNuMax`, a getter that is always

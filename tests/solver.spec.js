@@ -1482,14 +1482,20 @@ test('Taylor-Green decay yields a numerical viscosity', async ({ page }) => {
   const d = await page.evaluate(() => import('/js/diagnostics.js').then((m) => ({
     perDt: m.NU_NUM_PER_DT,
     converged: m.nuNumConverged(1 / 240),
-    iters80_256: m.NU_NUM_ITERS80[256],
-    iters80Dt: m.NU_NUM_ITERS80_DT,
+    opIters: m.PROJECTION_ITERS_MEASURED,
+    op_256: m.NU_NUM_ITERS256[256],
+    opDt: m.NU_NUM_ITERS256_DT,
   })));
-  expect(d.iters80Dt).toBeCloseTo(DT, 10);
+  expect(d.opDt).toBeCloseTo(DT, 10);
 
-  // Operating point: the pressure iteration count the Karman preset ships.
-  const op = await measureNuNum(page, { numIters: 80, dt: DT, steps: STEPS, sample: SAMPLE });
-  console.log(`nu_num(iters=80)   = ${op.nuNum.toExponential(4)}  R^2 = ${op.r2.toFixed(5)}  n = ${op.points}`);
+  // Operating point: the pressure iteration count the Karman preset ships, read
+  // from the preset rather than hard-coded, so the measurement follows the app.
+  const shippedIters = await page.evaluate(() =>
+    import('/js/presets.js').then((m) => m.PRESETS.karmanVortex.numIters));
+  expect(shippedIters).toBe(d.opIters);
+
+  const op = await measureNuNum(page, { numIters: shippedIters, dt: DT, steps: STEPS, sample: SAMPLE });
+  console.log(`nu_num(iters=${shippedIters})  = ${op.nuNum.toExponential(4)}  R^2 = ${op.r2.toFixed(5)}  n = ${op.points}`);
 
   expect(op.points).toBeGreaterThan(5);
   expect(op.r2).toBeGreaterThan(0.99);   // a bad fit means the decay is not exponential
@@ -1497,11 +1503,16 @@ test('Taylor-Green decay yields a numerical viscosity', async ({ page }) => {
   expect(op.nuNum).toBeLessThan(1e-1);   // sanity ceiling
 
   // THE tie between the GPU and the shipped table. diagnostics.js drives a real
-  // ceiling off NU_NUM_ITERS80[256]; if the solver drifts away from it, the
+  // ceiling off NU_NUM_ITERS256[256]; if the solver drifts away from it, the
   // badge starts lying and only this assertion notices. 5% covers the fit's own
   // scatter and nothing like a scheme regression.
-  expect(op.nuNum).toBeGreaterThan(0.95 * d.iters80_256);
-  expect(op.nuNum).toBeLessThan(1.05 * d.iters80_256);
+  expect(op.nuNum).toBeGreaterThan(0.95 * d.op_256);
+  expect(op.nuNum).toBeLessThan(1.05 * d.op_256);
+
+  // The escalation must actually have bought something: 256 iterations has to
+  // sit well below the 80-iteration value this table replaced (2.0324e-3), or
+  // the frame-rate cost was paid for nothing. Measured 7.7808e-4, a 2.6x drop.
+  expect(op.nuNum).toBeLessThan(0.6 * 2.0324e-3);
 
   // With the projection converged, what is left is the advection scheme's own
   // dissipation. At 2048 iterations tier 256 is converged to 5 significant

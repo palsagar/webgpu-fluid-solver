@@ -9,7 +9,7 @@ import { test, expect } from '@playwright/test';
  *
  *   Floor    Re_min = U*D / (N_MAX * 1/4 * h^2 / dt)      [solver.viscNuMax]
  *   Ceiling  Re_max = U*D / nuNumConverged(dt)            [NU_NUM_PER_DT * dt]
- *   Ceiling' Re_max = U*D / NU_NUM_ITERS80[tier]          [under-converged projection]
+ *   Ceiling' Re_max = U*D / NU_NUM_ITERS256[tier]         [projection at 256 iters]
  *
  * With the Karman reference (U = 1.0, D = 0.12, dt = 1/240, N_MAX = 32) that
  * gives, per tier:
@@ -17,11 +17,16 @@ import { test, expect } from '@playwright/test';
  *   tier      64      128      256      512     1024
  *   floor    0.256   1.024    4.096   16.384   65.536
  *   ceil    237.32  237.32   237.32   237.32   237.32
- *   ceil'   236.12  184.50    59.04    19.15     7.77
+ *   ceil'   236.22  236.33   154.23    48.91    16.51
  *
  * The floors are exactly half their dt = 1/120 values (floor scales with dt) and
  * the ceiling is 1.94x its old one (nu_num is linear in dt) — the halving of dt
- * opened the window from BOTH sides, which is the whole point of the change.
+ * opened the window from BOTH sides.
+ *
+ * `ceil'` is the row that moved when the Karman preset went from 80 to 256
+ * pressure iterations. At 80 it read 236.12 / 184.50 / 59.04 / 19.15 / 7.77.
+ * The startup tier gained 2.6x, which is what put the shipped default INSIDE
+ * the window, and the two coarse tiers converged onto the scheme ceiling.
  */
 
 // Karman reference, matching the measurement conditions exactly.
@@ -38,8 +43,8 @@ async function loadDiagnostics(page) {
     nuNumAt240: m.nuNumConverged(1 / 240),
     nuNumAt120: m.nuNumConverged(1 / 120),
     nuNumAt60: m.nuNumConverged(1 / 60),
-    NU_NUM_ITERS80: m.NU_NUM_ITERS80,
-    NU_NUM_ITERS80_DT: m.NU_NUM_ITERS80_DT,
+    NU_NUM_ITERS256: m.NU_NUM_ITERS256,
+    NU_NUM_ITERS256_DT: m.NU_NUM_ITERS256_DT,
     PROJECTION_ITERS_MEASURED: m.PROJECTION_ITERS_MEASURED,
     RE_SLIDER_MIN: m.RE_SLIDER_MIN,
     RE_SLIDER_MAX: m.RE_SLIDER_MAX,
@@ -55,7 +60,7 @@ function windowFor(page, numY, extra = {}) {
       h: 1 / numY, dt: REF.dt, D: REF.D, U: REF.U,
       nMax: REF.nMax, nuNum: d.nuNumConverged(REF.dt),
     });
-    const reMaxProjection = (REF.U * REF.D) / d.NU_NUM_ITERS80[numY];
+    const reMaxProjection = (REF.U * REF.D) / d.NU_NUM_ITERS256[numY];
     return { ...w, reMaxProjection, ...extra };
   }, { numY, REF, extra });
 }
@@ -91,29 +96,52 @@ test('the shipped numerical viscosity constants are the measured ones', async ({
   expect(c.nuNumAt120).toBeGreaterThan(9.8230e-4);
   expect(c.nuNumAt120).toBeLessThan(1.05 * 9.8230e-4);
 
-  // Operating point, measured at the shipped numIters = 80 and dt = 1/240.
-  expect(c.PROJECTION_ITERS_MEASURED).toBe(80);
-  expect(c.NU_NUM_ITERS80_DT).toBeCloseTo(1 / 240, 10);
-  expect(c.NU_NUM_ITERS80[64]).toBeCloseTo(5.0821e-4, 8);
-  expect(c.NU_NUM_ITERS80[128]).toBeCloseTo(6.5042e-4, 8);
-  expect(c.NU_NUM_ITERS80[256]).toBeCloseTo(2.0324e-3, 7);
-  expect(c.NU_NUM_ITERS80[512]).toBeCloseTo(6.2658e-3, 7);
-  expect(c.NU_NUM_ITERS80[1024]).toBeCloseTo(1.5446e-2, 6);
+  // Operating point, measured at the shipped numIters = 256 and dt = 1/240.
+  // These are the values the badge divides U*D by, so a stale table here is a
+  // lying badge. The 80-iteration values they replaced were 5.0821e-4 /
+  // 6.5042e-4 / 2.0324e-3 / 6.2658e-3 / 1.5446e-2; every tier below differs
+  // from its old value by more than the tolerance, so a table left un-migrated
+  // fails rather than passing on a near-miss.
+  expect(c.PROJECTION_ITERS_MEASURED).toBe(256);
+  expect(c.NU_NUM_ITERS256_DT).toBeCloseTo(1 / 240, 10);
+  expect(c.NU_NUM_ITERS256[64]).toBeCloseTo(5.0801e-4, 8);
+  expect(c.NU_NUM_ITERS256[128]).toBeCloseTo(5.0777e-4, 8);
+  expect(c.NU_NUM_ITERS256[256]).toBeCloseTo(7.7808e-4, 8);
+  expect(c.NU_NUM_ITERS256[512]).toBeCloseTo(2.4536e-3, 7);
+  expect(c.NU_NUM_ITERS256[1024]).toBeCloseTo(7.2698e-3, 7);
 
-  // The table must be MONOTONE in tier: a fixed iteration count converges
-  // progressively less well as the grid grows. A table accidentally left at the
-  // dt = 1/120 values would still be monotone, hence the exact values above.
+  // The iteration count the table is measured at must match what the Karman
+  // preset actually ships, or the badge quotes a number the solver never ran.
+  const shippedIters = await page.evaluate(() =>
+    import('/js/presets.js').then((m) => m.PRESETS.karmanVortex.numIters));
+  expect(shippedIters).toBe(c.PROJECTION_ITERS_MEASURED);
+
   const tiers = [64, 128, 256, 512, 1024];
-  for (let i = 1; i < tiers.length; i++) {
-    expect(c.NU_NUM_ITERS80[tiers[i]]).toBeGreaterThan(c.NU_NUM_ITERS80[tiers[i - 1]]);
+
+  // At 256 iterations the table is NOT monotone from the first tier, unlike at
+  // 80. Tiers 64 and 128 are both converged — they sit within 0.5% of the
+  // converged constant, and the 0.05% by which 128 falls below 64 is scatter
+  // between two converged fits, not a trend. Asserting bare monotonicity here
+  // would fail on physically correct values; asserting the two regimes
+  // separately is the stronger claim, and still fails on a stale table.
+  for (const tier of [64, 128]) {
+    expect(c.NU_NUM_ITERS256[tier] / c.nuNumAt240).toBeGreaterThan(0.99);
+    expect(c.NU_NUM_ITERS256[tier] / c.nuNumAt240).toBeLessThan(1.01);
+  }
+  // From tier 256 up the projection binds again and the rise resumes, steeply:
+  // each tier is at least 1.5x the one below, so a table that flattened out
+  // (or was silently reused from a converged run) fails.
+  for (const tier of [256, 512, 1024]) {
+    const prev = tiers[tiers.indexOf(tier) - 1];
+    expect(c.NU_NUM_ITERS256[tier]).toBeGreaterThan(1.5 * c.NU_NUM_ITERS256[prev]);
   }
 
   // Every operating-point value must exceed the converged one at the same dt —
   // an under-converged projection can only ADD dissipation.
   for (const tier of tiers) {
-    expect(Number.isFinite(c.NU_NUM_ITERS80[tier])).toBe(true);
-    expect(c.NU_NUM_ITERS80[tier]).toBeGreaterThan(0);
-    expect(c.NU_NUM_ITERS80[tier]).toBeGreaterThanOrEqual(c.nuNumAt240);
+    expect(Number.isFinite(c.NU_NUM_ITERS256[tier])).toBe(true);
+    expect(c.NU_NUM_ITERS256[tier]).toBeGreaterThan(0);
+    expect(c.NU_NUM_ITERS256[tier]).toBeGreaterThanOrEqual(c.nuNumAt240);
   }
 });
 
@@ -133,8 +161,9 @@ test('honest window bounds and badge reasons', async ({ page }) => {
   // value (9.823e-4) gives 122.16, so this fails if the halving was not applied.
   expect(w.reMax).toBeCloseTo(237.322, 2);
 
-  // Operating point at the shipped 80 iterations: U*D / 2.0324e-3 = 59.043.
-  expect(w.reMaxProjection).toBeCloseTo(59.043, 2);
+  // Operating point at the shipped 256 iterations: U*D / 7.7808e-4 = 154.226.
+  // At 80 iterations this read 59.043, so a preset left at 80 fails here.
+  expect(w.reMaxProjection).toBeCloseTo(154.226, 2);
 
   const inside = await stateFor(page, {
     re: 20, reEff: 20, reMin: w.reMin, reMax: w.reMax,
@@ -163,7 +192,8 @@ test('honest window bounds and badge reasons', async ({ page }) => {
   });
   expect(tooLowUnstepped.code).toBe('clamped');
 
-  // Above both ceilings at tier 256 the projection is what binds (59 vs 237).
+  // Above both ceilings at tier 256 the projection is still what binds, even at
+  // 256 iterations: 154 vs 237.
   const tooHigh = await stateFor(page, {
     re: 1e6, reEff: 1e6, reMin: w.reMin, reMax: w.reMax,
     reMaxProjection: w.reMaxProjection, viscClamped: false,
@@ -171,40 +201,47 @@ test('honest window bounds and badge reasons', async ({ page }) => {
   expect(tooHigh.ok).toBe(false);
   expect(tooHigh.code).toBe('projection');
   expect(tooHigh.reason).toMatch(/under-converged/i);
-  expect(tooHigh.reason).toContain('59');   // the binding ceiling
+  expect(tooHigh.reason).toContain('154');  // the binding ceiling
   expect(tooHigh.reason).toContain('237');  // reconciled with the scheme ceiling
+  expect(tooHigh.reason).toContain('256');  // the iteration count it is quoted at
 });
 
 test('the binding ceiling is named by which viscosity actually dominates', async ({ page }) => {
   await page.goto('/');
 
-  // Tier 64: the two ceilings agree to 0.5% (236.12 vs 237.32), well inside
-  // Task 7's ±10% fit-window uncertainty, so the scheme is what binds.
-  const w64 = await windowFor(page, 64);
-  expect(w64.reMaxProjection).toBeCloseTo(236.123, 2);
-  const s64 = await stateFor(page, {
-    re: 400, reEff: 400, reMin: w64.reMin, reMax: w64.reMax,
-    reMaxProjection: w64.reMaxProjection, viscClamped: false,
-  });
-  expect(s64.code).toBe('scheme');
-  expect(s64.reason).toMatch(/under-resolved/i);
-  expect(s64.reason).toContain('237');
+  // Tiers 64 AND 128 are now scheme-limited: at 256 iterations both ceilings
+  // land at 236.2 / 236.3 against the scheme's 237.32, agreeing to 0.5% — well
+  // inside Task 7's ±10% fit-window uncertainty. At 80 iterations tier 128 read
+  // 184.5 and was attributed to the projection, so this pair of assertions is
+  // what records that raising iterations MOVED the attribution boundary.
+  for (const [tier, ceil] of [[64, 236.216], [128, 236.327]]) {
+    const w = await windowFor(page, tier);
+    expect(w.reMaxProjection).toBeCloseTo(ceil, 2);
+    const s = await stateFor(page, {
+      re: 400, reEff: 400, reMin: w.reMin, reMax: w.reMax,
+      reMaxProjection: w.reMaxProjection, viscClamped: false,
+    });
+    expect(s.code, `tier ${tier} must blame the scheme, not the projection`).toBe('scheme');
+    expect(s.reason).toMatch(/under-resolved/i);
+    expect(s.reason).toContain('237');
+  }
 
-  // Tier 128: 184.5 vs 237.3 — a 22% gap, outside the measurement scatter, so
-  // the under-converged projection is the honest ceiling.
-  const w128 = await windowFor(page, 128);
-  expect(w128.reMaxProjection).toBeCloseTo(184.496, 2);
-  const s128 = await stateFor(page, {
-    re: 400, reEff: 400, reMin: w128.reMin, reMax: w128.reMax,
-    reMaxProjection: w128.reMaxProjection, viscClamped: false,
+  // Tier 256: 154.2 vs 237.3 — a 35% gap, outside the measurement scatter, so
+  // the under-converged projection is the honest ceiling. This is the startup
+  // tier, so it is the attribution the user actually sees.
+  const w256 = await windowFor(page, 256);
+  expect(w256.reMaxProjection).toBeCloseTo(154.226, 2);
+  const s256 = await stateFor(page, {
+    re: 400, reEff: 400, reMin: w256.reMin, reMax: w256.reMax,
+    reMaxProjection: w256.reMaxProjection, viscClamped: false,
   });
-  expect(s128.code).toBe('projection');
+  expect(s256.code).toBe('projection');
 
-  // Between the two ceilings at tier 128 (184.5 < Re < 237.3) the projection
+  // Between the two ceilings at tier 256 (154.2 < Re < 237.3) the projection
   // reason must still fire — this is the range the flat ceiling would hide.
   const between = await stateFor(page, {
-    re: 210, reEff: 210, reMin: w128.reMin, reMax: w128.reMax,
-    reMaxProjection: w128.reMaxProjection, viscClamped: false,
+    re: 200, reEff: 200, reMin: w256.reMin, reMax: w256.reMax,
+    reMaxProjection: w256.reMaxProjection, viscClamped: false,
   });
   expect(between.ok).toBe(false);
   expect(between.code).toBe('projection');
@@ -215,14 +252,15 @@ test('the binding ceiling is named by which viscosity actually dominates', async
 test('the honest window is empty only at tier 1024, and for want of iterations', async ({ page }) => {
   await page.goto('/');
 
-  // Tier 1024: floor 65.54 sits above the PROJECTION ceiling 7.77, so no slider
-  // position is honest here. But it sits well BELOW the scheme ceiling 237.32,
-  // so unlike at dt = 1/120 the grid itself is no longer the obstacle — raising
-  // iterations would open a window. The advice must say iterations, not dt.
+  // Tier 1024: floor 65.54 sits above the PROJECTION ceiling 16.51, so no
+  // slider position is honest here — even at 256 iterations, which lifted that
+  // ceiling from 7.77 but nowhere near far enough. It sits well BELOW the
+  // scheme ceiling 237.32, so the grid itself is not the obstacle: more
+  // iterations would still open a window. The advice must say iterations, not dt.
   const w1024 = await windowFor(page, 1024);
   expect(w1024.reMin).toBeCloseTo(65.536, 3);
   expect(w1024.reMax).toBeCloseTo(237.322, 2);
-  expect(w1024.reMaxProjection).toBeCloseTo(7.769, 2);
+  expect(w1024.reMaxProjection).toBeCloseTo(16.507, 2);
   expect(w1024.reMin).toBeLessThan(w1024.reMax);             // grid alone is fine
   expect(w1024.reMin).toBeGreaterThan(w1024.reMaxProjection); // iterations are not
 
@@ -236,16 +274,17 @@ test('the honest window is empty only at tier 1024, and for want of iterations',
     expect(st.reason).toMatch(/no honest Re/i);
     expect(st.reason).toMatch(/iterations/i);
     expect(st.reason).toContain('66');   // the floor
-    expect(st.reason).toContain('7.8');  // the under-converged ceiling
+    expect(st.reason).toContain('17');   // the under-converged ceiling, rounded
   }
 
-  // Tier 512 is NO LONGER empty. At dt = 1/120 its floor (32.77) sat above its
-  // projection ceiling (11.93); halving dt moved the floor to 16.38 and the
-  // ceiling to 19.15, so a narrow but real window opened. Asserting this keeps
-  // a future dt regression from silently re-emptying it.
+  // Tier 512 is NO LONGER empty, and the margin is no longer marginal. At
+  // dt = 1/120 its floor (32.77) sat above its projection ceiling (11.93);
+  // halving dt opened a 16.38 .. 19.15 sliver, and 256 iterations widened that
+  // to 16.38 .. 48.91. Asserting both bounds keeps a dt OR an iteration
+  // regression from silently re-emptying it.
   const w512 = await windowFor(page, 512);
   expect(w512.reMin).toBeCloseTo(16.384, 3);
-  expect(w512.reMaxProjection).toBeCloseTo(19.152, 2);
+  expect(w512.reMaxProjection).toBeCloseTo(48.908, 2);
   expect(w512.reMin).toBeLessThan(w512.reMaxProjection);
 
   const st512 = await stateFor(page, {
@@ -314,14 +353,14 @@ test('the Re slider spans the measured window and its midpoint is honest at the 
   expect(c.RE_SLIDER_MAX).toBeGreaterThan(237.322);
 
   // Log spacing: the midpoint must land inside the honest window at the
-  // startup tier (256: 4.10 .. 59.04 at 80 iterations), so mid-slider is
+  // startup tier (256: 4.10 .. 154.23 at 256 iterations), so mid-slider is
   // badge-free and "absent mid-range" is a real property, not luck.
   const w256 = await windowFor(page, 256);
   expect(mapped.mid).toBeGreaterThan(w256.reMin);
   expect(mapped.mid).toBeLessThan(w256.reMaxProjection);
 });
 
-test('the shipped default sits where the Karman wake actually sheds, and says so', async ({ page }) => {
+test('the shipped default sheds, and now sits inside the honest window', async ({ page }) => {
   await page.goto('/');
   // The badge is written by the UI constructor, which runs after WebGPU init.
   await page.waitForFunction(() => window.__flowlab?.ui, null, { timeout: 20_000 });
@@ -351,37 +390,43 @@ test('the shipped default sits where the Karman wake actually sheds, and says so
   // into the honest window at the cost of the picture.
   expect(shipped.re).toBeGreaterThan(72);
 
-  // It is knowingly outside the honest window, so the app opens badged.
+  // It is INSIDE the honest window, so the app opens un-badged. This is the
+  // assertion the numIters escalation exists to satisfy: at 80 iterations the
+  // ceiling was 59.04 and this same position was 1.27x outside it.
   const w = await windowFor(page, 256);
-  expect(shipped.re).toBeGreaterThan(w.reMaxProjection);
+  expect(shipped.re).toBeLessThanOrEqual(w.reMaxProjection);
+  expect(shipped.re).toBeLessThanOrEqual(w.reMax);
+  expect(shipped.re).toBeGreaterThan(w.reMin);
 
-  // But only just: the whole point of halving dt was to shrink this gap, which
-  // went from 7.7x (Re 251 vs ceiling 32.8) to 1.27x. Assert the improvement,
-  // so a default that drifts back up fails.
-  expect(shipped.re / w.reMaxProjection).toBeLessThan(1.5);
+  // And inside with MARGIN, not on the cliff edge. The ceiling must sit at
+  // least 1.5x above the default, so a ceiling regression that merely grazes
+  // the default (as 59.04 did) fails here rather than shipping.
+  expect(w.reMaxProjection / shipped.re).toBeGreaterThan(1.5);
 
-  // The overlap that dt bought is real but unreachable: the window now contains
-  // the onset (57.5 < 59.04), yet no slider position lands in that 2.8% band
-  // because the log step is 7.9%. Asserting it keeps the rationale honest — if
-  // a future change makes a position land there, this fails and gets revisited.
+  // The band that is both honest and shedding is now wide enough to CHOOSE
+  // within rather than merely land in: at 80 iterations it was Re 57.5 .. 59.0,
+  // a 2.8% band against a 7.9% log step, so no slider position lived there. It
+  // must now hold several, and the shipped default must be one of them.
   expect(ONSET).toBeLessThan(w.reMaxProjection);
-  const anyBoth = await page.evaluate(async ({ ONSET, ceiling }) => {
+  const both = await page.evaluate(async ({ ONSET, ceiling }) => {
     const d = await import('/js/diagnostics.js');
+    const hits = [];
     for (let p = 0; p <= d.RE_SLIDER_STEPS; p++) {
       const re = d.reFromSliderPos(p);
-      if (re > ONSET && re <= ceiling) return p;
+      if (re > ONSET && re <= ceiling) hits.push(p);
     }
-    return null;
+    return hits;
   }, { ONSET, ceiling: w.reMaxProjection });
-  expect(anyBoth).toBeNull();
+  expect(both.length).toBeGreaterThan(5);
+  expect(both).toContain(shipped.documented);
 
   const badge = await page.evaluate(() => ({
     visible: document.getElementById('re-badge').classList.contains('visible'),
     text: document.getElementById('re-badge').textContent,
     valRe: document.getElementById('val-re').textContent,
   }));
-  expect(badge.visible).toBe(true);
-  expect(badge.text).toMatch(/under-converged/i);
+  expect(badge.visible).toBe(false);
+  expect(badge.text).toBe('');
   expect(badge.valRe).toBe('75');
 });
 

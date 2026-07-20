@@ -80,54 +80,76 @@ export function nuNumConverged(dt) {
   return NU_NUM_PER_DT * dt;
 }
 
-/** Pressure iteration count at which NU_NUM_ITERS80 was measured. */
-export const PROJECTION_ITERS_MEASURED = 80;
+/** Pressure iteration count at which NU_NUM_ITERS256 was measured. */
+export const PROJECTION_ITERS_MEASURED = 256;
 
-/** The timestep NU_NUM_ITERS80 was measured at. See the caveat below. */
-export const NU_NUM_ITERS80_DT = 1 / 240;
+/** The timestep NU_NUM_ITERS256 was measured at. See the caveat below. */
+export const NU_NUM_ITERS256_DT = 1 / 240;
 
 /**
  * Numerical viscosity at the OPERATING POINT the app actually ships:
- * `numIters = 80`, where the red-black SOR projection is badly under-converged
- * and its residual, not the advection scheme, dominates the error.
+ * `numIters = 256`, where the red-black SOR projection is converged at the two
+ * coarse tiers and still under-converged at the three finer ones.
  *
- * This is why a flat 237 is not the whole truth — at 80 iterations it
- * understates the error by up to 31x at tier 1024. Keyed by tier (numY),
- * measured at dt = 1/240:
+ * Keyed by tier (numY), measured at dt = 1/240 by the same Taylor-Green decay
+ * fit as the converged constant above:
  *
- *   tier      64      128      256      512     1024
- *   nu_num  5.08e-4  6.50e-4  2.03e-3  6.27e-3  1.54e-2
- *   Re_max   236.1    184.5     59.1     19.2      7.8
+ *   tier       64       128      256       512      1024
+ *   nu_num  5.080e-4 5.078e-4 7.781e-4  2.454e-3  7.270e-3
+ *   Re_max    236.2    236.3    154.2      48.9      16.5
  *
- * Unlike the converged constant this one DOES rise with resolution, because a
- * fixed iteration count converges progressively less well as the grid grows.
+ * ─── Why this is no longer monotonic from the first tier ────────────────────
+ *
+ * At the shipped 80 iterations it rose at every tier, because the projection
+ * residual dominated everywhere. At 256 it does not: tiers 64 and 128 both land
+ * at 5.08e-4, which IS the converged value (5.0564e-4) to within 0.5% — the
+ * projection has stopped binding there and the advection scheme's own splitting
+ * error is all that is left. The 0.05% by which 128 sits below 64 is fit
+ * scatter between two converged measurements, not a trend. The rise resumes
+ * from tier 256 up, where a fixed iteration count again converges progressively
+ * less well as the grid grows.
+ *
+ * `windowState` reads this correctly without special-casing: at the converged
+ * tiers `reMaxProjection ~ reMax`, so `CEILING_AGREEMENT_TOL` attributes the
+ * ceiling to the scheme rather than blaming the projection for it.
+ *
+ * ─── Fit quality ───────────────────────────────────────────────────────────
+ *
+ * r^2 = 0.99994 / 0.99994 / 0.99986 / 0.99860 / 0.98926 across the tiers. The
+ * 1024 fit is the weakest of the set: the decay is fast enough there (0.71 in
+ * log-KE over the window, against 0.05 at tier 64) that the departure from a
+ * pure exponential is visible. The value is reproducible to all six digits
+ * across fresh page loads, so the scatter is not noise — but 1024's ceiling
+ * carries more model error than the rest, and it is the one tier where the
+ * window is empty anyway.
  *
  * ─── Why this table is NOT scaled by dt, unlike the converged constant ──────
  *
- * Because it is not linear in dt, and the departure grows with the tier. The
- * same table at dt = 1/120 measured 9.8612e-4 / 1.2551e-3 / 3.6638e-3 /
- * 1.0062e-2 / 2.3718e-2, so the ratio under a halving of dt runs
+ * Because it is not linear in dt, and the departure grows with the tier. At the
+ * shipped 80 iterations the ratio under a halving of dt ran 1.94 / 1.93 / 1.80
+ * / 1.61 / 1.54 across the tiers — 2x only where the splitting error still
+ * dominates, falling away as the projection residual takes over, which is
+ * exactly the part that does not care about dt. A single `per-dt` coefficient
+ * would therefore be a fiction here.
  *
- *   tier    64     128     256     512    1024
- *   ratio  1.94    1.93    1.80    1.61    1.54
- *
- * — 2x only where the splitting error still dominates, falling away as the
- * projection residual takes over, which is exactly the part that does not care
- * about dt. A single `per-dt` coefficient would therefore be a fiction here.
- *
- * CONSEQUENCE, stated plainly: this table is only valid at dt = 1/240. The
- * `windTunnel` and `backwardStep` presets run dt = 1/60 and are given the same
- * numbers, where the true values are HIGHER and so the real projection ceiling
- * is LOWER than the badge claims. On those two presets the projection ceiling
- * is optimistic by an unmeasured factor. The converged ceiling above is scaled
- * correctly for them; this one is not.
+ * CONSEQUENCE, stated plainly, and it got WORSE with this change: this table is
+ * valid at dt = 1/240 AND at numIters = 256, which is the Karman preset and
+ * only the Karman preset. `windTunnel` runs dt = 1/60 at 40 iterations and
+ * `backwardStep` dt = 1/60 at 60 iterations, and both are given these numbers.
+ * On both counts the true nu_num there is HIGHER and the real projection
+ * ceiling LOWER than the badge claims. That mismatch was already present when
+ * this table was measured at 80 iterations; raising Karman to 256 widened it
+ * from ~1.5x to ~4-6x in iteration count alone. The badge does disclose the
+ * count it is quoting (`windowState` prints PROJECTION_ITERS_MEASURED), but on
+ * those two presets the number behind it is optimistic by an unmeasured factor.
+ * Measuring this table at their operating points is the next thing to do.
  */
-export const NU_NUM_ITERS80 = {
-  64:   5.0821e-4,
-  128:  6.5042e-4,
-  256:  2.0324e-3,
-  512:  6.2658e-3,
-  1024: 1.5446e-2,
+export const NU_NUM_ITERS256 = {
+  64:   5.0801e-4,
+  128:  5.0777e-4,
+  256:  7.7808e-4,
+  512:  2.4536e-3,
+  1024: 7.2698e-3,
 };
 
 /**
@@ -136,8 +158,17 @@ export const NU_NUM_ITERS80 = {
  * Task 7 reports a ~10% systematic uncertainty on `nu_num` from the choice of
  * fit window (1.02e-3 / 9.87e-4 / 9.36e-4 at 120 / 300 / 600 steps). Below that
  * separation the two measurements are the same number and the honest attribution
- * is the scheme; above it the projection genuinely dominates. At tier 64 the
- * ratio is 0.995 (scheme); at tier 128 it is 0.78 (projection).
+ * is the scheme; above it the projection genuinely dominates.
+ *
+ * At the shipped 256 iterations the ratio `reMaxProjection / reMax` runs
+ *
+ *   tier    64      128     256     512    1024
+ *   ratio  0.995   0.996   0.650   0.206   0.070
+ *
+ * so the two coarse tiers are attributed to the scheme and the three fine ones
+ * to the projection. The split moved with the iteration count — at 80 only tier
+ * 64 was scheme-limited — which is the point: raising iterations converts a
+ * projection ceiling into a scheme ceiling, and the badge now says so.
  */
 export const CEILING_AGREEMENT_TOL = 0.9;
 
@@ -159,19 +190,24 @@ export const CEILING_AGREEMENT_TOL = 0.9;
 //                          the window is empty and both ends must badge.
 //
 // Their geometric mean is 11.2, which lands inside the startup tier's honest
-// window (256 at 80 iterations: 4.10 .. 59.05) — so mid-slider is badge-free by
-// construction rather than by luck.
+// window (256 at 256 iterations: 4.10 .. 154.23) — so mid-slider is badge-free
+// by construction rather than by luck.
 
 export const RE_SLIDER_MIN = 0.25;
 export const RE_SLIDER_MAX = 500;
 export const RE_SLIDER_STEPS = 100;
 
 /**
- * Where the control ships (mirrored by index.html's `value` attribute) — Re 75.
+ * Where the control ships (mirrored by index.html's `value` attribute) — Re 74.8.
  *
- * Still OUTSIDE the honest window, so the app still opens badged — but at 1.27x
- * the ceiling instead of Task 9's 7.7x. The reasoning is entirely re-measured,
- * because Task 9's onset number turned out to be an artifact.
+ * INSIDE the honest window, so the app opens un-badged on a visible vortex
+ * street. That is what raising `numIters` 80 -> 256 bought: the position did not
+ * move, the window grew out past it. At the startup tier the window is now
+ * 4.10 .. 154.23, and Re 74.8 sits 1.30x above the measured shedding onset
+ * (57.5) and 2.06x below the ceiling.
+ *
+ * The reasoning below is entirely re-measured, because Task 9's onset number
+ * turned out to be an artifact.
  *
  * ─── Task 9's Re ~126 onset was measuring a transient ───────────────────────
  *
@@ -204,25 +240,26 @@ export const RE_SLIDER_STEPS = 100;
  * cylinder. Any story in which the onset is "inflated by numerical viscosity"
  * is wrong, and Task 9's 126 was method, not physics.
  *
- * ─── Why the default is still outside the window ───────────────────────────
+ * ─── Why pos 75 specifically ───────────────────────────────────────────────
  *
- * The window DOES now contain the onset — the tier-256 ceiling rose 32.8 -> 59.0
- * while the onset stayed at 57.5, so Re 57.5 .. 59.0 is both honest AND
- * shedding, where at dt = 1/120 no such Re existed. But that overlap is 2.8%
- * wide and the slider's log step is 7.9%, so NO slider position lands in it:
- * pos 71 is Re 55.2 (honest, below onset, no street) and pos 72 is Re 59.5
- * (sheds, just over the ceiling). Widening the slider to reach it would not
- * help either — the limit-cycle amplitude 2% above onset is ~1e-3 of the mean
- * flow and takes tens of seconds of simulated time to appear. It is a vortex
- * street only in the sense that a thermometer reads a fever at 37.1 C.
+ * Halving dt first made the overlap exist at all: the tier-256 ceiling rose
+ * 32.8 -> 59.0 while the onset stayed at 57.5. But 57.5 .. 59.0 is a 2.8% band
+ * and the slider's log step is 7.9%, so no position landed in it, and widening
+ * the slider would not have helped — the limit-cycle amplitude 2% above onset
+ * is ~1e-3 of the mean flow and takes tens of seconds of simulated time to
+ * appear. It is a vortex street only in the sense that a thermometer reads a
+ * fever at 37.1 C.
  *
- * So the choice remains Task 9's, on much better numbers: pos 75 -> Re 74.8,
- * where the saturated fluctuation is ~0.9 of the mean flow — an unmistakable
- * street — and the badge states the honest ceiling is 59. What the dt change
- * bought is that the gap between "advertised" and "honest" fell from a factor
- * of 7.7 to a factor of 1.27.
+ * Raising numIters 80 -> 256 lifted that ceiling to 154.23, which is what made
+ * the band wide enough to choose within rather than merely land in. pos 75 is
+ * kept because the street there is already unmistakable — the saturated wake
+ * fluctuation is ~0.9 of the mean flow — and because moving higher would spend
+ * the new margin for no visual gain. Neighbouring positions are both honest
+ * too (pos 74 -> Re 69.2, pos 76 -> Re 80.8), so the default no longer sits on
+ * a cliff edge the way it did when the ceiling was 59.
  *
- * The badge remains absent mid-slider: positions up to 71 (Re 55) are silent.
+ * The badge is now silent from pos 0 up to pos 84 (Re 148) at the startup tier;
+ * pos 85 (Re 160) is the first that trips it.
  */
 export const RE_SLIDER_DEFAULT_POS = 75;
 

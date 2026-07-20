@@ -92,7 +92,7 @@ Defined in `static/js/presets.js`. The `PRESETS` object holds configuration and 
 | Preset | `numIters` | `dt` | `inVel` | `omega` | Obstacle | Boundary Type |
 |--------|-----------|------|---------|---------|----------|---------------|
 | **Wind Tunnel** | 40 | 1/60 | 2.0 | 1.9 | Circle, r=0.15 at (0.4, 0.5) | `windTunnel` |
-| **Karman Vortex** | 80 | 1/120 | 1.0 | 1.9 | Circle, r=0.06 at (0.3, 0.5) | `windTunnel` |
+| **Karman Vortex** | 256 | 1/240 | 1.0 | 1.9 | Circle, r=0.06 at (0.3, 0.5) | `windTunnel` |
 | **Backward Step** | 60 | 1/60 | 1.5 | 1.9 | None | `backwardStep` (step block x<0.3, y<0.5) |
 
 All presets use `density = 1000`. Smoke inlet is a narrow central band of dark dye (`m = 0`) at the left edge.

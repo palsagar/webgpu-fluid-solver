@@ -509,7 +509,10 @@
             <span class="slider-name">Iterations</span>
             <span class="slider-value" id="val-iters">40</span>
           </div>
-          <input type="range" id="slider-iters" min="10" max="200" step="1" value="40">
+          <!-- max must reach the Karman preset's 256, or _syncSliders() sets a
+               value the range input silently clamps and the next drag snaps the
+               solver down to the clamp. -->
+          <input type="range" id="slider-iters" min="10" max="320" step="1" value="40">
         </div>
 
         <div class="slider-row">

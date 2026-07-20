@@ -35,16 +35,37 @@ export const PRESETS = {
     // simulated time; frame rate is unaffected, since the loop steps once per
     // frame either way.
     //
-    // numIters left at 80 (see docs/ROADMAP.md step 0) — NOT a clean
-    // convergence measurement. The original 20/40/60/80/120 divergence sweep
-    // sampled all counts sequentially on one solver instance and mistook
-    // vortex-shedding phase drift for iteration convergence. A controlled
-    // re-measurement confirms mean|div| still falls with more iterations,
-    // far more mildly than first reported. max|div| near the obstacle rises
-    // too — a normalisation effect (same relative accuracy on a stronger,
-    // correctly-developed flow), not a solver defect. Raising numIters
-    // remains an open question.
-    numIters: 80, dt: 1/240, omega: 1.9, inVel: 1.0,
+    // numIters raised 80 -> 256, which is what finally puts the shipped default
+    // INSIDE the honest window instead of 1.27x outside it.
+    //
+    // At 80 the projection, not the advection scheme, set the ceiling: Re 59.0
+    // against a scheme ceiling of 237. The measured shedding onset is Re 57.5,
+    // so the honest window barely reached the onset and no slider position
+    // landed in the 2.8% band between them. Re-measuring the Taylor-Green decay
+    // across iteration counts at this tier and dt gives
+    //
+    //   numIters    80      128     160     192     256
+    //   nu_num   2.03e-3  1.34e-3 1.11e-3 9.61e-4 7.78e-4
+    //   Re_max     59.0     89.2   107.8   124.9   154.2
+    //
+    // so 256 buys a 2.6x ceiling and clears the onset by 2.7x. Above 256 the
+    // returns are small (512 was measured at Re 216 against the converged 237)
+    // and the frame cost is not.
+    //
+    // THE COST, measured as true wall-clock rAF deltas at the startup tier 256
+    // — NOT the perf HUD, which times CPU encode only and reads 0.2-0.5 ms for
+    // every configuration below:
+    //
+    //   numIters    80      128     160     192     256
+    //   ms/frame   8.33     8.33    9.15   10.97   14.42
+    //   fps         120      120     109      91      69 (median 60)
+    //
+    // 256 costs 14.34 ms of GPU work per step against a 16.67 ms budget, so it
+    // holds 60 fps with ~14% headroom on the dev machine. That is the decision
+    // rule: the highest count that still holds 60 fps at the startup tier.
+    // 128 is the conservative fallback — it fits inside a 120 Hz frame with
+    // zero dropped frames and still clears the onset by 1.55x.
+    numIters: 256, dt: 1/240, omega: 1.9, inVel: 1.0,
     // Small obstacle to trigger periodic vortex shedding
     obstacle: { shape: 'circle', x: 0.3, y: 0.5, radius: 0.06 },
     boundaryType: 'windTunnel',

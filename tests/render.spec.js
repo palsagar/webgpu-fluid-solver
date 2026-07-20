@@ -69,7 +69,15 @@ async function showPressure(page) {
 
 test('field renders a non-uniform image', async ({ page }) => {
   await boot(page);
-  const unique = new Set((await sampleGrid(page)).map((c) => c.join(',')));
+  // Sampled at 40x40, NOT the default 10x10 the ratio-based tests below use.
+  // At 120 frames the dye has crossed only ~a quarter of the domain, so a 9x9
+  // grid puts 78 of its 81 samples on clear background and the whole assertion
+  // rested on whichever single pixel happened to land on the plume edge: it
+  // returned exactly 4 colours at numIters = 80 and exactly 3 at 256, having
+  // never measured the renderer at all. 1521 samples cover the plume and its
+  // magma gradient properly and return 18, so the threshold below is now a
+  // statement about the render path rather than a coin flip.
+  const unique = new Set((await sampleGrid(page, 40)).map((c) => c.join(',')));
   // A black canvas (broken shader or empty LUT) collapses to a single color
   expect(unique.size).toBeGreaterThan(3);
 });
