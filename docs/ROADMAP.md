@@ -6,7 +6,7 @@ Decided 2026-07-06 (see ADRs 0005–0007 for the load-bearing decisions).
 
 1. ~~**GPU field rendering + 1024 tier**~~ ✅ done (2026-07-06, measured ~58 ms/frame wall-clock (~17 fps) on dev machine) — WebGPU render pass for the Field View (bilinear, colormap LUT texture, solids in-shader); overlays stay Canvas 2D on top. Add 1024 to adaptive tiers; keep red-black Gauss-Seidel, tune iterations by measurement. No multigrid unless 1024 can't hold 60 fps. [ADR-0005]
 2. **MacCormack advection** — second-order, min/max limited. Visible payoff requires step 1. [ADR-0006]
-3. **Viscosity + Re slider + Strouhal readout** — explicit diffusion pass; Re capped to resolvable regime (~10–5000); live St from a downstream Probe on the Kármán preset. Flagship demo: vortex street dies near Re ≈ 47. [ADR-0007]
+3. **Viscosity + Re slider + Strouhal readout** — explicit diffusion pass; Re capped to the measured honest window (slider 0.25–500; at the startup tier, 4.1 – 154 at the shipped 256 pressure iterations); live St from a downstream Probe on the Kármán preset — still open. Flagship demo: vortex street dies below the **measured** onset Re ≈ 57.5, above the textbook unconfined 47 because the channel blockage is `D/H = 0.12`. [ADR-0007]
 4. **Blow mode** — default mouse mode: drag injects momentum + Smoke at the cursor (write both ping-pong buffers).
 5. **Freehand Draw mode + ε slider** — rasterize drawn solids into the Solid Mask (needs new invalidation path, eraser); Confinement exposed as labeled-artificial, default-off. [ADR-0006]
 

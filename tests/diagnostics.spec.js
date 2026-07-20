@@ -275,6 +275,16 @@ test('the honest window is empty only at tier 1024, and for want of iterations',
     expect(st.reason).toMatch(/iterations/i);
     expect(st.reason).toContain('66');   // the floor
     expect(st.reason).toContain('17');   // the under-converged ceiling, rounded
+
+    // The advice must be one the app can actually honour. Closing 65.5 vs 16.5
+    // is a factor of 4 in nu_num; the 80 -> 256 escalation was 3.2x in
+    // iterations and bought 2.1x, and the control stops at 320 (a further
+    // 1.25x). So "raise iterations" is not a fix here — and it would be
+    // invisible anyway, since NU_NUM_ITERS256 is pinned at 256. Resolution and
+    // dt both move the floor directly and are both reachable from the UI.
+    expect(st.reason).not.toMatch(/raise\s+(the\s+)?iterations/i);
+    expect(st.reason).toMatch(/lower the resolution/i);
+    expect(st.reason).toMatch(/\bdt\b/);
   }
 
   // Tier 512 is NO LONGER empty, and the margin is no longer marginal. At
@@ -320,6 +330,105 @@ test('the empty-grid reason still fires when the grid itself is the obstacle', a
   // It must advise dt/resolution, NOT iterations — raising iterations cannot
   // lift a ceiling the scheme itself sets.
   expect(st.reason).not.toMatch(/iterations/i);
+});
+
+// ── The projection ceiling's own validity ───────────────────────────────────
+
+test('a projection ceiling above the converged one is refused, not min()-ed away', async ({ page }) => {
+  await page.goto('/');
+
+  // The `windTunnel` preset's real operating point: U = 2.0, D = 2*0.15,
+  // dt = 1/60, 40 pressure iterations. NU_NUM_ITERS256 is measured at dt =
+  // 1/240 AND 256 iterations, so carrying it here is carrying it off both
+  // axes at once — and it produces a physically impossible pair.
+  const wt = await page.evaluate(async () => {
+    const d = await import('/js/diagnostics.js');
+    const U = 2.0, D = 0.30, dt = 1 / 60;
+    const w = d.honestWindow({ h: 1 / 256, dt, D, U, nMax: 32, nuNum: d.nuNumConverged(dt) });
+    return { ...w, carried: (U * D) / d.NU_NUM_ITERS256[256] };
+  });
+
+  // The impossible pair, stated in numbers: an under-converged solve cannot
+  // dissipate LESS than a converged one, so a projection ceiling of 771
+  // against a converged ceiling of 297 is not a measurement of this point.
+  expect(wt.reMax).toBeCloseTo(296.65, 1);
+  expect(wt.carried).toBeCloseTo(771.13, 1);
+  expect(wt.carried).toBeGreaterThan(wt.reMax);
+
+  // Inside the grid's own window but with no valid projection ceiling: the
+  // honest answer is that the ceiling here is unmeasured. Taking min() of the
+  // two — what shipped before — reported `ok` and quoted 297 against a true
+  // ceiling lower by an unmeasured multiple.
+  const st = await stateFor(page, {
+    re: 100, reEff: 100, reMin: wt.reMin, reMax: wt.reMax,
+    reMaxProjection: wt.carried, viscClamped: false,
+  });
+  expect(st.ok).toBe(false);
+  expect(st.code).toBe('unmeasured');
+  expect(st.reason).toMatch(/unmeasured/i);
+  expect(st.reason).toContain('256');    // the iteration count it WAS measured at
+  expect(st.reason).toContain('240');    // and the dt
+  expect(st.reason).toContain('297');    // the bound that IS known
+  expect(st.reason).not.toContain('771'); // the number it must never quote
+
+  // An omitted projection ceiling means the same thing: no number is not a
+  // number to reason from, so it must not silently pass as honest.
+  const omitted = await stateFor(page, {
+    re: 100, reEff: 100, reMin: wt.reMin, reMax: wt.reMax, viscClamped: false,
+  });
+  expect(omitted.code).toBe('unmeasured');
+
+  // Above the scheme ceiling the attribution must be the SCHEME, never the
+  // projection — a ceiling that violated the invariant cannot be blamed for
+  // anything. This is the branch `min()` would have gotten backwards.
+  const above = await stateFor(page, {
+    re: 400, reEff: 400, reMin: wt.reMin, reMax: wt.reMax,
+    reMaxProjection: wt.carried, viscClamped: false,
+  });
+  expect(above.code).toBe('scheme');
+  expect(above.reason).toContain('297');
+  expect(above.reason).not.toContain('771');
+
+  // Below the floor the solver's own saturation is measured ground truth and
+  // still outranks the unmeasured ceiling.
+  const below = await stateFor(page, {
+    re: 1, reEff: wt.reMin, reMin: wt.reMin, reMax: wt.reMax,
+    reMaxProjection: wt.carried, viscClamped: true,
+  });
+  expect(below.code).toBe('clamped');
+
+  // And the invariant must hold at the point the table IS measured at, or the
+  // guard above would be firing on the Karman preset too.
+  const karman = await windowFor(page, 256);
+  expect(karman.reMaxProjection).toBeLessThanOrEqual(karman.reMax);
+});
+
+test('honestWindow floors on the nuMax it is handed, not a private copy', async ({ page }) => {
+  await page.goto('/');
+  await page.waitForFunction(() => window.__flowlab?.solver, null, { timeout: 20_000 });
+
+  const r = await page.evaluate(async () => {
+    const d = await import('/js/diagnostics.js');
+    const { solver } = window.__flowlab;
+    const args = { h: solver.h, dt: solver.params.dt, D: 0.12, U: 1.0, nMax: 32 };
+    const nuNum = d.nuNumConverged(args.dt);
+    return {
+      solverNuMax: solver.viscNuMax,
+      derived: d.honestWindow({ ...args, nuNum }),
+      passed: d.honestWindow({ ...args, nuNum, nuMax: solver.viscNuMax }),
+      doubled: d.honestWindow({ ...args, nuNum, nuMax: 2 * solver.viscNuMax }),
+    };
+  });
+
+  // The module's default and the solver's getter are the same formula today —
+  // that is the duplication, and this is the assertion that catches it drifting.
+  expect(r.derived.nuMax).toBeCloseTo(r.solverNuMax, 12);
+  expect(r.passed.reMin).toBeCloseTo(r.derived.reMin, 9);
+
+  // And the parameter must actually be USED, not accepted and ignored: double
+  // the saturation limit and the floor must halve.
+  expect(r.doubled.nuMax).toBeCloseTo(2 * r.solverNuMax, 12);
+  expect(r.doubled.reMin).toBeCloseTo(r.derived.reMin / 2, 9);
 });
 
 // ── The slider mapping ──────────────────────────────────────────────────────
@@ -530,4 +639,102 @@ test('the Re badge reports the live solver window and updates on tier change wit
   expect(back.numY).toBe(64);
   expect(back.sliderPos).toBe(before.sliderPos);
   expect(back.visible).toBe(false);
+});
+
+/** Drives one of the advanced-panel sliders the way a user would. */
+function setSlider(page, id, value) {
+  return page.evaluate(({ id, value }) => {
+    const el = document.getElementById(id);
+    el.value = String(value);
+    el.dispatchEvent(new Event('input', { bubbles: true }));
+    return parseFloat(el.value);   // what the range input actually snapped to
+  }, { id, value });
+}
+
+test('the badge follows the dt slider, which both of its bounds depend on', async ({ page }) => {
+  await page.goto('/');
+  await page.waitForFunction(() => window.__flowlab?.ui, null, { timeout: 20_000 });
+  await page.evaluate(() => { window.__flowlab.solver.paused = true; });
+
+  // The shipped default at the shipped dt: inside the window, no badge.
+  const start = await readBadge(page);
+  expect(start.visible).toBe(false);
+
+  // dt sets BOTH bounds — the ceiling through nuNumConverged(dt), the floor
+  // through viscNuMax, which divides by dt — so a dt move that leaves the
+  // badge untouched is a badge describing the previous timestep.
+  const midDt = await setSlider(page, 'slider-dt', 0.0102);
+  const mid = await page.evaluate(() => ({
+    ...(() => {
+      const b = document.getElementById('re-badge');
+      return { text: b.textContent, visible: b.classList.contains('visible') };
+    })(),
+    dt: window.__flowlab.solver.params.dt,
+  }));
+  expect(mid.dt).toBeCloseTo(midDt, 12);          // the slider reached the solver
+  expect(mid.dt).toBeGreaterThan(1 / 240);
+  // 2.4x the anchor dt, so the measured projection table no longer applies:
+  // the floor rose 4.10 -> 10.0 and the scheme ceiling fell 237 -> 97, and the
+  // badge must now say the ceiling here is unmeasured rather than keep quoting
+  // 154 from a run at dt = 1/240.
+  expect(mid.visible).toBe(true);
+  expect(mid.text).toMatch(/unmeasured/i);
+  expect(mid.text).toContain('97');
+
+  // Far enough up and the window closes entirely: at dt ~ 0.033 the floor
+  // (32.4) passes the scheme ceiling (30.0), which is empty-grid, not
+  // empty-iters — no iteration count can lift a ceiling the scheme sets.
+  await setSlider(page, 'slider-dt', 0.033);
+  const high = await page.evaluate(() => ({
+    text: document.getElementById('re-badge').textContent,
+    empty: document.getElementById('re-badge').classList.contains('empty'),
+  }));
+  expect(high.text).toMatch(/no honest Re/i);
+  expect(high.text).not.toMatch(/iterations/i);
+  expect(high.empty).toBe(true);
+
+  // Back to the bottom of the slider. Two things must hold: the badge clears,
+  // and the solver returns to the preset's dt rather than a snapped neighbour.
+  // The range input's min IS 1/240 now — with min 0.004 / step 1e-4 the nearest
+  // position was 0.0042, so this round trip used to leave the solver running a
+  // dt 0.8% away from the preset while the readout claimed otherwise.
+  const bottom = await setSlider(page, 'slider-dt', 0.001);   // clamps to min
+  const restored = await page.evaluate(() => ({
+    dt: window.__flowlab.solver.params.dt,
+    visible: document.getElementById('re-badge').classList.contains('visible'),
+    text: document.getElementById('re-badge').textContent,
+  }));
+  expect(bottom).toBeCloseTo(1 / 240, 6);
+  expect(Math.abs(restored.dt - 1 / 240) / (1 / 240)).toBeLessThan(1e-4);
+  expect(restored.visible).toBe(false);
+  expect(restored.text).toBe('');
+});
+
+test('the badge stops quoting the projection ceiling when iterations leave its measured point', async ({ page }) => {
+  await page.goto('/');
+  await page.waitForFunction(() => window.__flowlab?.ui, null, { timeout: 20_000 });
+  await page.evaluate(() => { window.__flowlab.solver.paused = true; });
+
+  expect((await readBadge(page)).visible).toBe(false);
+
+  // NU_NUM_ITERS256 is one slice: 256 iterations. At any other count the true
+  // ceiling has moved and nothing has measured where to — so the badge must
+  // stop quoting 154 rather than keep it while the solver runs 200.
+  await setSlider(page, 'slider-iters', 200);
+  const off = await page.evaluate(() => ({
+    numIters: window.__flowlab.ui.numIters,
+    visible: document.getElementById('re-badge').classList.contains('visible'),
+    text: document.getElementById('re-badge').textContent,
+  }));
+  expect(off.numIters).toBe(200);
+  expect(off.visible).toBe(true);
+  expect(off.text).toMatch(/unmeasured/i);
+  expect(off.text).toContain('237');    // the scheme ceiling, which still holds
+  expect(off.text).not.toContain('154'); // the ceiling it may no longer claim
+
+  // Back at the measured count the claim returns.
+  await setSlider(page, 'slider-iters', 256);
+  const on = await readBadge(page);
+  expect(on.visible).toBe(false);
+  expect(on.text).toBe('');
 });

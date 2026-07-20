@@ -112,12 +112,26 @@ async function init() {
     let hudCounter = 0;
     const perfHud = document.getElementById('perf-hud');
 
+    // Wall-clock frame time comes from successive rAF timestamps, NOT from a
+    // performance.now() bracket around the step+draw calls. Those calls only
+    // ENCODE GPU work; the GPU runs it asynchronously, so the bracket measured
+    // ~0.4 ms at every tier — the HUD read ~2600 fps while the display was
+    // delivering 56, and `adaptive` saw a number that could never cross either
+    // of its thresholds in the useful direction. The rAF delta is the interval
+    // the user actually sees.
+    let lastFrameTs = 0;
+
+    // A hidden tab stops rAF entirely, so the first timestamp after it returns
+    // carries the whole gap. Dropping one sample beats feeding `adaptive` a
+    // multi-second "frame" that would downscale the grid on tab focus.
+    document.addEventListener('visibilitychange', () => { lastFrameTs = 0; });
+
     /**
      * Main simulation loop — called once per display frame via requestAnimationFrame.
      * Sequence: re-apply boundary conditions, solver step, render, update HUD.
+     * @param {number} ts - rAF timestamp (ms), the start of this display frame
      */
-    function frame() {
-        const t0 = performance.now();
+    function frame(ts) {
         if (!solver.paused) {
             // Re-apply smoke inlet BEFORE step (so advection picks it up)
             if (ui.smokeInletData) {
@@ -133,18 +147,29 @@ async function init() {
             }
         }
         renderer.draw();
-        const frameTime = performance.now() - t0;
-        adaptive.tick(frameTime);
 
-        // EMA smoothing (alpha = 0.1) to dampen frame-to-frame jitter in the HUD
-        frameTimeSmoothed = frameTimeSmoothed * 0.9 + frameTime * 0.1;
-        hudCounter++;
-        if (hudCounter % 10 === 0) {
-            perfHud.textContent =
-                frameTimeSmoothed.toFixed(1) + ' ms/frame | ' +
-                Math.round(1000 / frameTimeSmoothed) + ' fps\n' +
-                'grid: ' + solver.numX + '×' + solver.numY +
-                ' | iters: ' + ui.numIters;
+        // The first frame, and the first after a hidden tab, have no interval
+        // to report — measure from the next one rather than invent this one.
+        const frameTime = lastFrameTs ? ts - lastFrameTs : 0;
+        lastFrameTs = ts;
+
+        if (frameTime > 0) {
+            adaptive.tick(frameTime);
+
+            // EMA smoothing (alpha = 0.1) to dampen frame-to-frame jitter in the
+            // HUD, seeded from the first real sample so the readout does not
+            // climb out of a fictitious zero over its first second.
+            frameTimeSmoothed = frameTimeSmoothed > 0
+                ? frameTimeSmoothed * 0.9 + frameTime * 0.1
+                : frameTime;
+            hudCounter++;
+            if (hudCounter % 10 === 0) {
+                perfHud.textContent =
+                    frameTimeSmoothed.toFixed(1) + ' ms/frame | ' +
+                    Math.round(1000 / frameTimeSmoothed) + ' fps\n' +
+                    'grid: ' + solver.numX + '×' + solver.numY +
+                    ' | iters: ' + ui.numIters;
+            }
         }
 
         rafId = requestAnimationFrame(frame);

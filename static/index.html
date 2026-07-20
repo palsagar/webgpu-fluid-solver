@@ -490,10 +490,16 @@
             <span class="slider-name">dt</span>
             <span class="slider-value" id="val-dt">0.0167</span>
           </div>
-          <!-- step 1e-4, not 1e-3: the Karman preset ships dt = 1/240 =
-               0.004167, which is not on a 1e-3 grid, so the thumb would snap to
-               0.004 while the readout showed 0.0042. -->
-          <input type="range" id="slider-dt" min="0.004" max="0.033" step="0.0001" value="0.0042">
+          <!-- min IS the Karman preset's dt (1/240 = 0.00416666..., to the 8e-6
+               a 7-digit attribute allows), because a range input snaps to
+               min + k*step and 1/240 is on no round grid at all. With min 0.004
+               and step 1e-4 the nearest position was 0.0042: the readout showed
+               a value the solver was not running, and the next drag snapped the
+               solver by 0.8%. Now position 0 IS the preset, and the residual
+               8e-6 is four orders below the tolerance the badge treats as the
+               measured operating point. The readout still rounds to 4 decimals
+               ("0.0042"); that is display precision, not a solver mismatch. -->
+          <input type="range" id="slider-dt" min="0.0041667" max="0.033" step="0.0001" value="0.0041667">
         </div>
 
         <div class="slider-row">

@@ -100,8 +100,9 @@ export const NU_NUM_ITERS256_DT = 1 / 240;
  *
  * ─── Why this is no longer monotonic from the first tier ────────────────────
  *
- * At the shipped 80 iterations it rose at every tier, because the projection
- * residual dominated everywhere. At 256 it does not: tiers 64 and 128 both land
+ * At the 80 iterations this preset shipped before Task 9 it rose at every tier,
+ * because the projection residual dominated everywhere. At 256 it does not:
+ * tiers 64 and 128 both land
  * at 5.08e-4, which IS the converged value (5.0564e-4) to within 0.5% — the
  * projection has stopped binding there and the advection scheme's own splitting
  * error is all that is left. The 0.05% by which 128 sits below 64 is fit
@@ -126,23 +127,29 @@ export const NU_NUM_ITERS256_DT = 1 / 240;
  * ─── Why this table is NOT scaled by dt, unlike the converged constant ──────
  *
  * Because it is not linear in dt, and the departure grows with the tier. At the
- * shipped 80 iterations the ratio under a halving of dt ran 1.94 / 1.93 / 1.80
- * / 1.61 / 1.54 across the tiers — 2x only where the splitting error still
+ * 80 iterations that preceded this table the ratio under a halving of dt ran
+ * 1.94 / 1.93 / 1.80 / 1.61 / 1.54 across the tiers — 2x only where the
+ * splitting error still
  * dominates, falling away as the projection residual takes over, which is
  * exactly the part that does not care about dt. A single `per-dt` coefficient
  * would therefore be a fiction here.
  *
- * CONSEQUENCE, stated plainly, and it got WORSE with this change: this table is
- * valid at dt = 1/240 AND at numIters = 256, which is the Karman preset and
- * only the Karman preset. `windTunnel` runs dt = 1/60 at 40 iterations and
- * `backwardStep` dt = 1/60 at 60 iterations, and both are given these numbers.
- * On both counts the true nu_num there is HIGHER and the real projection
- * ceiling LOWER than the badge claims. That mismatch was already present when
- * this table was measured at 80 iterations; raising Karman to 256 widened it
- * from ~1.5x to ~4-6x in iteration count alone. The badge does disclose the
- * count it is quoting (`windowState` prints PROJECTION_ITERS_MEASURED), but on
- * those two presets the number behind it is optimistic by an unmeasured factor.
- * Measuring this table at their operating points is the next thing to do.
+ * ─── Where this table is VALID, and what happens outside it ────────────────
+ *
+ * At dt = 1/240 AND numIters = 256 — which is the Karman preset and only the
+ * Karman preset. `windTunnel` runs dt = 1/60 at 40 iterations and
+ * `backwardStep` dt = 1/60 at 60 iterations, so on both counts the true nu_num
+ * there is HIGHER and the real projection ceiling LOWER than this table.
+ *
+ * These numbers used to be quoted on those presets anyway, with only a prose
+ * caveat. They no longer are. The carry produced a physically impossible pair:
+ * on `windTunnel` it gave a projection ceiling of Re 771 against a converged
+ * scheme ceiling of Re 297 — an under-converged solve dissipating LESS than a
+ * converged one. `windowState` now checks exactly that (`reMaxProjection <=
+ * reMax`) and refuses to claim a ceiling it has not measured, and `ui.js` only
+ * supplies this table at the operating point it was measured at. Measuring the
+ * table at each preset's own operating point is the way to close it; until
+ * then the badge says "unmeasured" rather than quoting the wrong grid.
  */
 export const NU_NUM_ITERS256 = {
   64:   5.0801e-4,
@@ -293,11 +300,18 @@ export function fmtRe(re) {
  * estimated — pass `nuNumConverged(dt)`, which scales the measured coefficient
  * by the caller's own timestep rather than assuming the anchor's.
  *
- * @param {{h:number, dt:number, D:number, U:number, nMax:number, nuNum:number}} args
+ * `nuMax` is optional and defaults to that same formula. Pass the solver's own
+ * `viscNuMax` getter when one is at hand: the two expressions are identical
+ * today (`fluid-solver.js`), and a duplicated formula is a formula that can
+ * drift. Keeping the default means this module stays pure and testable with no
+ * solver instance, while the app runs off the number the solver actually
+ * saturates at rather than a copy of it.
+ *
+ * @param {{h:number, dt:number, D:number, U:number, nMax:number, nuNum:number,
+ *          nuMax?:number}} args
  * @returns {{reMin:number, reMax:number, nuMax:number}}
  */
-export function honestWindow({ h, dt, D, U, nMax, nuNum }) {
-  const nuMax = nMax * 0.25 * h * h / dt;
+export function honestWindow({ h, dt, D, U, nMax, nuNum, nuMax = nMax * 0.25 * h * h / dt }) {
   return {
     reMin: (U * D) / nuMax,
     reMax: (U * D) / nuNum,
@@ -314,6 +328,15 @@ export function honestWindow({ h, dt, D, U, nMax, nuNum }) {
  * lower of the two, and `code` names which mechanism set it — so the badge
  * carries a single number with an attribution, not two contradictory ones.
  *
+ * `reMaxProjection` must satisfy `reMaxProjection <= reMax`: an under-converged
+ * projection can only ADD dissipation, so its ceiling can never sit ABOVE the
+ * converged one. A pair that violates the invariant is not a measurement of
+ * this operating point — it is a measurement of a different one, carried here.
+ * Rather than take `min()` and quote a plausible-looking number, this reports
+ * `'unmeasured'`: the ceiling here is known only to be at or below `reMax`.
+ * That is also what an omitted `reMaxProjection` means, hence the `Infinity`
+ * default — no number is not a number to reason from.
+ *
  * Codes:
  *   null            inside the window
  *   'clamped'       below the floor — nu saturated, effective Re is HIGHER
@@ -321,11 +344,15 @@ export function honestWindow({ h, dt, D, U, nMax, nuNum }) {
  *                   is what set that ceiling (fixable: raise iterations)
  *   'scheme'        above the ceiling set by the scheme's own splitting error
  *                   (not fixable by iterations or by refining the grid)
+ *   'unmeasured'    the projection ceiling was not measured at this operating
+ *                   point, so no ceiling below `reMax` is claimed
  *   'empty-grid'    floor > scheme ceiling: NO honest Re exists at this grid,
  *                   at any iteration count. Only a coarser grid or a smaller
  *                   dt opens it.
  *   'empty-iters'   floor > projection ceiling, but the grid alone would leave
- *                   a window. Raising iterations opens it.
+ *                   a window. The iteration count is what emptied it — but see
+ *                   the reason text: at the one tier that reaches this state
+ *                   the gap is far too wide for the iterations control to close.
  *
  * @param {{re:number, reEff?:number, reMin:number, reMax:number,
  *          reMaxProjection?:number, viscClamped?:boolean}} args
@@ -334,7 +361,8 @@ export function honestWindow({ h, dt, D, U, nMax, nuNum }) {
 export function windowState({
   re, reEff = re, reMin, reMax, reMaxProjection = Infinity, viscClamped = false,
 }) {
-  const ceiling = Math.min(reMax, reMaxProjection);
+  const projectionKnown = reMaxProjection <= reMax;
+  const ceiling = projectionKnown ? Math.min(reMax, reMaxProjection) : reMax;
 
   // Empty window first: no slider position is honest, so reporting anything
   // the user could "fix" by moving the control would be a lie.
@@ -347,12 +375,22 @@ export function windowState({
               + `ceiling (Re ${fmtRe(reMax)}). Lower the resolution, or reduce dt.`,
       };
     }
+    // The advice is deliberately NOT "raise iterations", even though the
+    // iteration count is what emptied this window. Tier 1024 is the only
+    // shipped tier that reaches this state, and there the gap is 65.5 vs 16.5 —
+    // a factor of 4 in nu_num. The 80 -> 256 escalation was 3.2x in iterations
+    // and bought 2.1x (1.5446e-2 -> 7.2698e-3), and the iterations control
+    // stops at 320, a further 1.25x. So no setting the control offers closes
+    // it, and telling the user to raise iterations would be advice the app can
+    // neither reflect on screen (the table is pinned at 256) nor honour.
+    // Resolution and dt both move the floor directly, and both are available.
     return {
       ok: false,
       code: 'empty-iters',
       reason: `No honest Re at this grid with ${PROJECTION_ITERS_MEASURED} pressure iterations — the `
             + `viscous floor (Re ${fmtRe(reMin)}) sits above the under-converged ceiling `
-            + `(Re ${fmtRe(reMaxProjection)}). Raise iterations, or lower the resolution.`,
+            + `(Re ${fmtRe(reMaxProjection)}), by more than the iterations control can close. `
+            + `Lower the resolution, or reduce dt.`,
     };
   }
 
@@ -383,6 +421,22 @@ export function windowState({
       code: 'scheme',
       reason: `Under-resolved above Re ${fmtRe(reMax)} — the scheme's own numerical viscosity `
             + `exceeds the physical one here, so the true Re stays near ${fmtRe(reMax)}.`,
+    };
+  }
+
+  // Below the scheme ceiling, but with no projection ceiling measured at this
+  // operating point there is nothing to certify the request against. Say that,
+  // rather than pass it as honest or invent a bound for it.
+  if (!projectionKnown) {
+    const anchor = Math.round(1 / NU_NUM_ITERS256_DT);
+    return {
+      ok: false,
+      code: 'unmeasured',
+      reason: `Ceiling unmeasured at this configuration — the projection ceiling is only measured `
+            + `at ${PROJECTION_ITERS_MEASURED} pressure iterations and dt = 1/${anchor}, and does `
+            + `not carry to this timestep and iteration count. The advection scheme alone allows `
+            + `Re ${fmtRe(reMax)}; an under-converged pressure solve can only lower that, by an `
+            + `amount nothing here has measured.`,
     };
   }
 

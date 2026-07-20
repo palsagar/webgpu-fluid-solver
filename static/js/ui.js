@@ -1,8 +1,17 @@
 import { loadPreset, PRESETS } from './presets.js';
 import {
     honestWindow, windowState, fmtRe, reFromSliderPos,
-    nuNumConverged, NU_NUM_ITERS256,
+    nuNumConverged, NU_NUM_ITERS256, NU_NUM_ITERS256_DT, PROJECTION_ITERS_MEASURED,
 } from './diagnostics.js';
+
+// How close the live dt must sit to NU_NUM_ITERS256_DT for that table to be
+// the right one to quote. `nu_num` is linear in dt, so a relative dt error
+// carries straight into a relative nu error — 0.1% is four orders of magnitude
+// below the ±10% fit-window uncertainty the table already carries, while the
+// dt slider's own step near 1/240 is a 2.4% jump, so no neighbouring slider
+// position sneaks through. This exists so a slider dragged back to the bottom
+// (0.0041667, the preset's dt to within 8e-6) still counts as the anchor.
+const ANCHOR_DT_REL_TOL = 1e-3;
 
 // Map kebab-case data-preset attribute values to PRESETS object keys
 const PRESET_KEY_MAP = {
@@ -184,25 +193,31 @@ export class UI {
             // the presets do not share one. Karman runs 1/240, the other two
             // 1/60, where a fixed constant made the ceiling ~2x optimistic.
             nuNum: nuNumConverged(this.solver.params.dt),
+            // The solver's own saturation limit rather than a re-derivation of
+            // it. Identical formula today; passing it keeps the floor tied to
+            // the number the solver actually clamps at if that ever moves.
+            nuMax: this.solver.viscNuMax,
         });
 
-        // The operating-point ceiling is measured at PROJECTION_ITERS_MEASURED
-        // iterations. It is stated as such in the badge text rather than
-        // rescaled to the live iteration count. Two slices through that surface
-        // are measured — nu_num across numIters at tier 256, and across tiers at
-        // 256 iterations — but not the surface itself, and interpolating one
-        // from two lines would be inventing the number this branch exists to
-        // measure. The iterations slider can therefore move the true ceiling
-        // without moving the badge.
+        // The operating-point ceiling is measured on ONE slice: dt = 1/240 at
+        // PROJECTION_ITERS_MEASURED iterations, across the tiers. It is neither
+        // rescaled to the live iteration count nor to the live dt — two slices
+        // through the (tier x numIters x dt) surface are measured, not the
+        // surface, and interpolating one from two lines would be inventing the
+        // number this branch exists to measure.
         //
-        // It is likewise NOT rescaled to the live dt — unlike the converged
-        // ceiling above — because the operating-point value is not linear in dt
-        // (NU_NUM_ITERS256's header gives the measured ratios).
-        //
-        // So on `windTunnel` (dt = 1/60, 40 iters) and `backwardStep` (dt = 1/60,
-        // 60 iters) this ceiling is optimistic on BOTH counts, by an unmeasured
-        // factor. Only the Karman preset is quoted at its own operating point.
-        const nuProjection = NU_NUM_ITERS256[this.solver.numY];
+        // So it is quoted ONLY where it was measured. Off that slice — the
+        // other two presets (dt = 1/60 at 40 and 60 iters), or any move of the
+        // dt / iterations sliders — no projection ceiling is supplied, and
+        // `windowState` reports the ceiling as unmeasured instead. Carrying it
+        // off-slice used to produce an impossible pair: on `windTunnel` a
+        // projection ceiling of Re 771 against a converged ceiling of Re 297,
+        // i.e. an under-converged solve dissipating less than a converged one.
+        const atMeasuredPoint =
+            Math.abs(this.solver.params.dt - NU_NUM_ITERS256_DT)
+                <= ANCHOR_DT_REL_TOL * NU_NUM_ITERS256_DT
+            && this.numIters === PROJECTION_ITERS_MEASURED;
+        const nuProjection = atMeasuredPoint ? NU_NUM_ITERS256[this.solver.numY] : undefined;
         const reMaxProjection = nuProjection ? (U * D) / nuProjection : Infinity;
 
         // Saturation must be read from `viscNuMax`, a getter that is always
@@ -393,9 +408,20 @@ export class UI {
             });
         };
 
-        bind('slider-dt',      'val-dt',      4, v => this.solver.setParams({ dt:      parseFloat(v) }));
+        // dt and numIters both move the honest window, so both must repaint the
+        // badge. dt sets BOTH bounds — the ceiling through nuNumConverged(dt)
+        // and the floor through viscNuMax, which divides by dt — and numIters
+        // decides whether the measured projection ceiling applies at all.
+        // Without these the badge silently describes the previous timestep.
+        bind('slider-dt',      'val-dt',      4, v => {
+            this.solver.setParams({ dt: parseFloat(v) });
+            this._updateReBadge();
+        });
         bind('slider-omega',   'val-omega',   2, v => this.solver.setParams({ omega:   parseFloat(v) }));
-        bind('slider-iters',   'val-iters',   0, v => { this.numIters = parseInt(v); });
+        bind('slider-iters',   'val-iters',   0, v => {
+            this.numIters = parseInt(v);
+            this._updateReBadge();
+        });
 
         // The Re slider carries a log-spaced position, so val-re is written by
         // _updateReBadge() rather than by bind()'s generic formatter.
