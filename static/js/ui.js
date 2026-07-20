@@ -1,4 +1,8 @@
 import { loadPreset, PRESETS } from './presets.js';
+import {
+    honestWindow, windowState, fmtRe, reFromSliderPos,
+    NU_NUM_CONVERGED, NU_NUM_ITERS80,
+} from './diagnostics.js';
 
 // Map kebab-case data-preset attribute values to PRESETS object keys
 const PRESET_KEY_MAP = {
@@ -122,30 +126,102 @@ export class UI {
             });
         }
 
-        this._updateRe(inVel);
+        this._updateReBadge();
+    }
+
+    /** The inflow velocity currently driving the flow — the live slider, not the preset default. */
+    _inflowVelocity() {
+        const el = document.getElementById('slider-invel');
+        const fromSlider = el ? parseFloat(el.value) : NaN;
+        return Number.isFinite(fromSlider) ? fromSlider : (PRESETS[this.currentPreset]?.inVel ?? 0);
     }
 
     /**
-     * Compute and display the Reynolds number based on inflow velocity and obstacle diameter.
-     * Re = U * D / h, where D = 2 * obstacleRadius and h is the cell size.
-     * @param {number} inVel - Inflow velocity magnitude
+     * Push the Re slider into the solver as a real viscosity (nu = U*D/Re), then
+     * report whether this grid can actually deliver that Re.
+     *
+     * Both bounds are measured (see diagnostics.js): the floor is the solver's
+     * own `viscNuMax`, the ceiling is the Taylor-Green calibration. Nothing here
+     * falls back to an estimate — if a tier has no measured operating-point
+     * viscosity the projection ceiling is simply not claimed.
      */
-    _updateRe(inVel) {
+    _updateReBadge() {
         const el = document.getElementById('val-re');
-        if (!el) return;
-        const h = this.solver.h;
+        const badge = document.getElementById('re-badge');
+        const slider = document.getElementById('slider-re');
+        if (!el || !slider) return;
+
+        const hideBadge = () => {
+            if (badge) {
+                badge.textContent = '';
+                badge.classList.remove('visible', 'empty');
+            }
+        };
+
+        const re = reFromSliderPos(parseFloat(slider.value));
         const D = 2 * this.interaction.obstacleRadius;
-        if (inVel === 0 || D === 0) {
+        const U = this._inflowVelocity();
+        el.textContent = fmtRe(re);
+        this._updateFlowInfo();
+
+        // No obstacle or no free stream — Re is undefined, so claim nothing.
+        if (!(D > 0) || !(U > 0)) {
+            this.solver.setParams({ nu: 0 });
             el.textContent = '--';
-            this._updateFlowInfo();
+            hideBadge();
             return;
         }
-        const Re = inVel * D / h;
-        el.textContent = Re.toFixed(0);
-        this._updateFlowInfo();
+
+        const nuReq = (U * D) / re;
+        this.solver.setParams({ nu: nuReq });
+
+        const w = honestWindow({
+            h: this.solver.h,
+            dt: this.solver.params.dt,
+            D, U,
+            nMax: this.solver.constructor.N_MAX,
+            nuNum: NU_NUM_CONVERGED,
+        });
+
+        // The operating-point ceiling is measured at PROJECTION_ITERS_MEASURED
+        // iterations. It is stated as such in the badge text rather than
+        // rescaled to the live iteration count: nu_num's dependence on numIters
+        // was measured at tier 256 only, and interpolating a surface from one
+        // slice would be inventing the number this branch exists to measure.
+        const nuProjection = NU_NUM_ITERS80[this.solver.numY];
+        const reMaxProjection = nuProjection ? (U * D) / nuProjection : Infinity;
+
+        // Saturation must be read from `viscNuMax`, a getter that is always
+        // current, NOT from `solver.viscClamped` — that flag describes the last
+        // step, so between a slider move and the next frame it reports the
+        // previous request. Trusting it made the badge claim "substep budget
+        // saturated" while the slider sat at the top of its range.
+        const nuMaxNow = this.solver.viscNuMax;
+        const clamped = nuReq > nuMaxNow;
+
+        // The Re the solver is actually running, from the viscosity it applied
+        // — not from params.nu, which differs exactly when saturated. Same
+        // staleness caveat, so viscNuEff is only used once it matches what this
+        // request implies; until the next step it would describe the old one.
+        const nuExpected = Math.min(nuReq, nuMaxNow);
+        const nuEff = Math.abs(this.solver.viscNuEff - nuExpected) <= 1e-9 * nuExpected
+            ? this.solver.viscNuEff
+            : nuExpected;
+        const reEff = nuEff > 0 ? (U * D) / nuEff : re;
+
+        const st = windowState({
+            re, reEff,
+            reMin: w.reMin, reMax: w.reMax, reMaxProjection,
+            viscClamped: clamped,
+        });
+
+        if (!badge) return;
+        badge.textContent = st.ok ? '' : st.reason;
+        badge.classList.toggle('visible', !st.ok);
+        badge.classList.toggle('empty', st.code === 'empty-grid' || st.code === 'empty-iters');
     }
 
-    /** Update the flow-info overlay text with preset-specific physics description and Re. */
+    /** Update the flow-info overlay text with the preset-specific physics description. */
     _updateFlowInfo() {
         const el = document.getElementById('flow-info');
         if (!el) return;
@@ -154,10 +230,7 @@ export class UI {
             karmanVortex:  'Periodic vortex shedding behind a small cylinder',
             backwardStep:  'Sudden expansion — recirculation and flow reattachment',
         };
-        const reEl = document.getElementById('val-re');
-        const re = reEl ? reEl.textContent : '--';
-        const desc = info[this.currentPreset] || '';
-        el.textContent = desc + (re !== '--' ? `  · Re ≈ ${re}` : '');
+        el.textContent = info[this.currentPreset] || '';
     }
 
     /** Attach click handlers to preset buttons, mapping kebab-case attributes to preset keys. */
@@ -310,6 +383,10 @@ export class UI {
         bind('slider-omega',   'val-omega',   2, v => this.solver.setParams({ omega:   parseFloat(v) }));
         bind('slider-iters',   'val-iters',   0, v => { this.numIters = parseInt(v); });
 
+        // The Re slider carries a log-spaced position, so val-re is written by
+        // _updateReBadge() rather than by bind()'s generic formatter.
+        document.getElementById('slider-re')
+            ?.addEventListener('input', () => this._updateReBadge());
 
         const invelEl  = document.getElementById('slider-invel');
         const invelVal = document.getElementById('val-invel');
@@ -318,7 +395,8 @@ export class UI {
                 const inVel = parseFloat(invelEl.value);
                 if (invelVal) invelVal.textContent = inVel.toFixed(2);
                 this._setInflowVelocity(inVel);
-                this._updateRe(inVel);
+                // U changed, so nu = U*D/Re and both window bounds move with it.
+                this._updateReBadge();
             });
         }
 

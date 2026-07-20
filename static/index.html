@@ -523,9 +523,11 @@
 
         <div class="slider-row">
           <div class="slider-header">
-            <span class="slider-name">Re <span class="hint" title="Reynolds number Re ≈ U·D/h. No explicit viscosity — numerical diffusion from advection acts as implicit viscosity proportional to grid spacing. Higher resolution → less diffusion → higher effective Re.">(?)</span></span>
+            <span class="slider-name">Re <span class="hint" title="Reynolds number Re = U·D/ν, set by a real explicit viscous term. The slider is log-spaced from 0.5 to 500. The badge below reports when the current grid cannot deliver the requested Re — either the viscous substep budget saturates (low Re) or the solver's own numerical viscosity exceeds the physical one (high Re). Both bounds come from measured numbers, not estimates.">(?)</span></span>
             <span class="slider-value" id="val-re">--</span>
           </div>
+          <input type="range" id="slider-re" min="0" max="100" step="1" value="90">
+          <div id="re-badge" class="re-badge"></div>
         </div>
       </div>
 

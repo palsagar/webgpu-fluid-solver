@@ -178,6 +178,12 @@ test('_velCur and _smokeCur each advance by 2, visiting all three slots', async 
   const { velSeq, smokeSeq } = await page.evaluate(() => {
     const { solver, ui } = window.__flowlab;
     solver.paused = true; // stop the render loop from stepping too
+    // The +2 rotation below is the INVISCID invariant. Task 9's Re control
+    // gives nu a nonzero default, and an odd substep count deliberately leaves
+    // the result on the hat pair instead (+1) -- that case is pinned by
+    // 'an odd substep count leaves the result on the hat pair'. State the
+    // precondition rather than let the default viscosity decide which is tested.
+    solver.setParams({ nu: 0 });
     solver.resetFlipState(); // deterministic start: slot 0
     const numIters = ui.numIters;
 
@@ -495,6 +501,7 @@ test('the velocity limiter holds the wall BC on fluid faces right of a dragged o
     // f64 disagreement in the floor. If every u in that 4x4 box exceeds vx by a
     // margin then lo > vx at that face, so an unseeded clamp MUST move it.
     const h = solver.h, dt = solver.params.dt;
+    const dragSet = new Set(dragFaces);
     let guarded = 0, minMargin = Infinity;
     for (const k of dragFaces) {
       const fi = Math.floor(k / n), fj = k % n;
@@ -511,7 +518,11 @@ test('the velocity limiter holds the wall BC on fluid faces right of a dragged o
       let clean = true, lo = Infinity;
       for (let i = i0 - 1; i <= i0 + 2 && clean; i++) {
         for (let j = j0 - 1; j <= j0 + 2; j++) {
-          if (sMask[i * n + j] === 0) { clean = false; break; }
+          // A solid cell holds vx itself. So does another drag face -- the
+          // block above wrote vx into every one of them -- and it is fluid, so
+          // the mask test alone does not catch it. Either bracket vx for the
+          // same uninteresting reason, so both are excluded.
+          if (sMask[i * n + j] === 0 || dragSet.has(i * n + j)) { clean = false; break; }
           lo = Math.min(lo, uBefore[i * n + j]);
         }
       }
@@ -1186,6 +1197,10 @@ test('smoke advection dispatches the bind groups for the live velocity slot, not
   const dispatched = await page.evaluate(() => {
     const { solver, ui } = window.__flowlab;
     solver.paused = true;
+    // The split must be the forced one below, not one the default viscosity's
+    // substep parity happens to introduce -- otherwise the expected counter
+    // advance depends on where the Re slider sits.
+    solver.setParams({ nu: 0 });
     solver.resetFlipState();
 
     // Force velCur and smokeCur apart. Under normal operation the two counters
