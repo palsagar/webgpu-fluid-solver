@@ -1444,3 +1444,235 @@ test('Taylor-Green decay yields a numerical viscosity', async ({ page }) => {
   // and the operating-point number means something else entirely.
   expect(conv.nuNum).toBeLessThan(op.nuNum);
 });
+
+test('viscous substep count follows the stability limit and clamps', async ({ page }) => {
+  await boot(page);
+  const rows = await page.evaluate(async () => {
+    const { solver, ui } = window.__flowlab;
+    solver.paused = true;
+    const h = solver.h, dt = solver.params.dt;
+    const out = [];
+    for (const nu of [0, 1e-5, 1e-3, 1e-1]) {
+      solver.setParams({ nu });
+      solver.step(ui.numIters);
+      out.push({
+        nu,
+        used: solver.viscSubsteps,
+        clamped: solver.viscClamped,
+        want: nu === 0 ? 0 : Math.ceil(nu * dt / (0.25 * h * h)),
+        nMax: solver.constructor.N_MAX,
+      });
+    }
+    return out;
+  });
+
+  for (const r of rows) {
+    if (r.nu === 0) {
+      expect(r.used).toBe(0);          // no viscosity, no dispatches
+      expect(r.clamped).toBe(false);
+      continue;
+    }
+    expect(r.used).toBe(Math.max(1, Math.min(r.nMax, r.want)));
+    expect(r.clamped).toBe(r.want > r.nMax);
+  }
+
+  // Guard: at least one case must actually clamp, or the clamp assertion is vacuous
+  expect(rows.some((r) => r.clamped)).toBe(true);
+});
+
+/**
+ * Both viscous behaviour tests below compare an inviscid run against a viscous
+ * one from the SAME developed field. This is a shedding wake, so running one
+ * branch after the other and sampling at different physical times would compare
+ * vortex phase, not viscosity -- hence the snapshot/restore in each.
+ */
+test('viscosity grows a no-slip boundary layer without damping the free stream', async ({ page }) => {
+  test.setTimeout(120_000);
+  await boot(page);
+  const r = await page.evaluate(async () => {
+    const { solver, device, ui, interaction } = window.__flowlab;
+    solver.paused = true;
+
+    // A lost device returns zeros from every later readback. A zero field has
+    // zero near-wall velocity, which would read as a perfect boundary layer.
+    let deviceLost = false;
+    device.lost.then((info) => { deviceLost = info.message || 'lost'; });
+
+    const n = solver.numY, numX = solver.numX, h = solver.h;
+    const size = numX * n * 4;
+    const readBuf = async (src) => {
+      const st = device.createBuffer({ size, usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST });
+      const e = device.createCommandEncoder();
+      e.copyBufferToBuffer(src, 0, st, 0, size);
+      device.queue.submit([e.finish()]);
+      await st.mapAsync(GPUMapMode.READ);
+      const out = new Float32Array(st.getMappedRange().slice(0));
+      st.unmap(); st.destroy();
+      return out;
+    };
+
+    const sMask = await readBuf(solver.solidBuffer);
+    const snapU = await readBuf(solver.velocityBuffers.u);
+    const snapV = await readBuf(solver.velocityBuffers.v);
+    const snapP = await readBuf(solver.pressureBuffer);
+
+    const iC = Math.round(interaction.obstacleX / h);
+    const jC = Math.round(interaction.obstacleY / h);
+    const rC = Math.ceil(interaction.obstacleRadius / h);
+    // Same face classification diffuse.wgsl uses.
+    const fluidF = (i, j) => sMask[i * n + j] !== 0 && sMask[(i - 1) * n + j] !== 0;
+    const buried = (i, j) => sMask[i * n + j] === 0 && sMask[(i - 1) * n + j] === 0;
+
+    // Mean |u| on the first fluid u-face off a no-slip surface, split by
+    // surface, plus the undisturbed free stream well upstream of the cylinder.
+    const metrics = (u) => {
+      let cyl = 0, cylN = 0, dom = 0, domN = 0, far = 0, farN = 0, nBad = 0;
+      for (let i = 1; i < numX - 1; i++)
+        for (let j = 1; j < n - 1; j++) {
+          if (!fluidF(i, j)) continue;
+          const a = Math.abs(u[i * n + j]);
+          if (!Number.isFinite(a)) { nBad++; continue; }
+          const atWall = buried(i, j - 1) || buried(i, j + 1);
+          const nearCyl = Math.abs(i - iC) <= 2 * rC && Math.abs(j - jC) <= 2 * rC;
+          if (atWall && nearCyl) { cyl += a; cylN++; }
+          else if (atWall) { dom += a; domN++; }
+          if (i > 20 && i < iC - 3 * rC && j > 0.3 * n && j < 0.7 * n) { far += a; farN++; }
+        }
+      return { cyl: cyl / cylN, cylN, dom: dom / domN, domN, far: far / farN, farN, nBad };
+    };
+
+    const run = async (nu) => {
+      solver.writeVelocityU(snapU);
+      solver.writeVelocityV(snapV);
+      device.queue.writeBuffer(solver.pressureBuffer, 0, snapP);
+      solver.resetFlipState();
+      solver.setParams({ nu });
+      for (let k = 0; k < 60; k++) solver.step(ui.numIters);
+      return metrics(await readBuf(solver.velocityBuffers.u));
+    };
+
+    const inviscid = await run(0);
+    const viscous = await run(2.5e-3);   // Re = U*D/nu ~ 48
+    if (deviceLost) throw new Error('GPU device lost mid-run: ' + deviceLost);
+    return { inviscid, viscous, substeps: solver.viscSubsteps, clamped: solver.viscClamped };
+  });
+
+  // Guards: a dead device, a collapsed field, or an empty face set would make
+  // every ratio below meaningless.
+  expect(r.inviscid.nBad + r.viscous.nBad).toBe(0);
+  expect(r.inviscid.cylN).toBeGreaterThan(10);
+  expect(r.inviscid.domN).toBeGreaterThan(100);
+  expect(r.inviscid.far).toBeGreaterThan(0.5);   // free stream is really flowing
+  expect(r.substeps).toBeGreaterThan(1);
+  expect(r.clamped).toBe(false);                 // this nu must resolve, not clamp
+
+  // (1) No-slip takes hold: the first fluid face off a wall loses almost all of
+  // its velocity. Inviscid, the walls are free-slip and it keeps the free
+  // stream. This is the assertion that dies if u_neighbor stops returning
+  // -center for a buried face -- skipping those faces leaves the ratio near 1.
+  expect(r.viscous.dom).toBeLessThan(r.inviscid.dom * 0.5);
+  expect(r.viscous.cyl).toBeLessThan(r.inviscid.cyl * 0.85);
+
+  // (2) It is a boundary LAYER, not global damping: the free stream upstream of
+  // the cylinder is untouched. Without this, a shader that simply scaled the
+  // whole field down would satisfy (1).
+  expect(r.viscous.far).toBeGreaterThan(r.inviscid.far * 0.9);
+});
+
+test('the viscous stencil cannot read the stale i=0 / j=0 ring', async ({ page }) => {
+  test.setTimeout(120_000);
+  await boot(page);
+  const r = await page.evaluate(async () => {
+    const { solver, device, ui } = window.__flowlab;
+    solver.paused = true;
+
+    let deviceLost = false;
+    device.lost.then((info) => { deviceLost = info.message || 'lost'; });
+
+    const n = solver.numY, numX = solver.numX;
+    const size = numX * n * 4;
+    const readBuf = async (src) => {
+      const st = device.createBuffer({ size, usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST });
+      const e = device.createCommandEncoder();
+      e.copyBufferToBuffer(src, 0, st, 0, size);
+      device.queue.submit([e.finish()]);
+      await st.mapAsync(GPUMapMode.READ);
+      const out = new Float32Array(st.getMappedRange().slice(0));
+      st.unmap(); st.destroy();
+      return out;
+    };
+
+    const snapU = await readBuf(solver.velocityBuffers.u);
+    const snapV = await readBuf(solver.velocityBuffers.v);
+    const snapP = await readBuf(solver.pressureBuffer);
+
+    // advect_velocity and maccormack_velocity both return for i < 1 or j < 1,
+    // so the i=0 column and the j=0 row are never written by advection: the slot
+    // that goes live after advection carries a ring three steps old. A diffusion
+    // stencil reads its neighbours, so it is the first pass that would march
+    // that ring inward -- up to N_MAX times per frame.
+    //
+    // Poison u's i=0 column and v's j=0 row. These two lines are provably dead
+    // to the rest of the solver: u_stencil clamps i0 >= 1 and v_stencil clamps
+    // j0 >= 1, so neither advection sample ever loads them; u_departure and
+    // v_departure reach only v[i-1] and u[j-1], which boundary.wgsl rewrites;
+    // and pressure.wgsl weights both by a solid neighbour's s = 0. The
+    // inviscid control below asserts exactly that. So any difference this
+    // produces is attributable to the viscous pass alone.
+    const poison = (u, v) => {
+      const pu = new Float32Array(u), pv = new Float32Array(v);
+      for (let j = 0; j < n; j++) pu[j] = 1e6;           // u at i = 0
+      for (let i = 0; i < numX; i++) pv[i * n] = 1e6;    // v at j = 0
+      return { pu, pv };
+    };
+
+    const run = async (poisoned, nu) => {
+      const { pu, pv } = poisoned ? poison(snapU, snapV) : { pu: snapU, pv: snapV };
+      solver.writeVelocityU(pu);
+      solver.writeVelocityV(pv);
+      device.queue.writeBuffer(solver.pressureBuffer, 0, snapP);
+      solver.resetFlipState();
+      solver.setParams({ nu });
+      for (let k = 0; k < 12; k++) solver.step(ui.numIters);
+      return { u: await readBuf(solver.velocityBuffers.u), sub: solver.viscSubsteps };
+    };
+
+    const diff = (a, b) => {
+      let m = 0, mag = 0, nBad = 0;
+      for (let i = 1; i < numX - 1; i++)
+        for (let j = 1; j < n - 1; j++) {
+          const x = a[i * n + j], y = b[i * n + j];
+          if (!Number.isFinite(x) || !Number.isFinite(y)) { nBad++; continue; }
+          m = Math.max(m, Math.abs(x - y));
+          mag = Math.max(mag, Math.abs(x));
+        }
+      return { m, mag, nBad };
+    };
+
+    const cleanVisc = await run(false, 2.5e-3);
+    const dirtyVisc = await run(true, 2.5e-3);
+    const cleanInv = await run(false, 0);
+    const dirtyInv = await run(true, 0);
+
+    if (deviceLost) throw new Error('GPU device lost mid-run: ' + deviceLost);
+    return {
+      visc: diff(cleanVisc.u, dirtyVisc.u),
+      inviscid: diff(cleanInv.u, dirtyInv.u),
+      substeps: cleanVisc.sub,
+    };
+  });
+
+  expect(r.visc.nBad + r.inviscid.nBad).toBe(0);
+  expect(r.substeps).toBeGreaterThan(1);       // guard: one substep barely exercises it
+  expect(r.visc.mag).toBeGreaterThan(0.1);     // guard: a collapsed field diffs to 0 trivially
+
+  // Control: without the viscous pass these two lines reach nothing. If this
+  // ever becomes non-zero the poison is no longer isolating the viscous pass
+  // and the assertion below stops meaning what it says.
+  expect(r.inviscid.m).toBe(0);
+
+  // The payload: turning viscosity on must not open a path to them. Bit-exact,
+  // because diffuse.wgsl classifies i == 0 and j == 0 as BURIED by index and
+  // substitutes a ghost, so the poisoned entries are never loaded.
+  expect(r.visc.m).toBe(0);
+});
