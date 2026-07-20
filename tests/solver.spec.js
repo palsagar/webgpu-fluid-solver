@@ -1312,12 +1312,18 @@ test('smoke advection dispatches the bind groups for the live velocity slot, not
  * measured directly (see the one-step difference test), and nu > 0 is used here
  * only to drive the solver at a viscosity and assert the field survives it.
  *
+ * `dt` is a parameter, not a constant, because `nu_num` is LINEAR in it (Task 7)
+ * -- so the fit has to be re-run whenever a preset's timestep changes. The
+ * fitted value is converted to physical time via `solver.params.dt`, so a run at
+ * half the timestep and twice the steps covers the same simulated interval.
+ *
  * @param {import('@playwright/test').Page} page
- * @param {{steps?: number, numIters?: number, sample?: number, nu?: number}} opts
+ * @param {{steps?: number, numIters?: number, sample?: number, nu?: number,
+ *          dt?: number}} opts
  * @returns {Promise<Object>} nuNum, r2, and the setup-validity diagnostics
  */
-function measureNuNum(page, { steps = 300, numIters = 80, sample = 20, nu = 0 } = {}) {
-  return page.evaluate(async ({ steps, numIters, sample, nu }) => {
+function measureNuNum(page, { steps = 300, numIters = 80, sample = 20, nu = 0, dt = 1 / 120 } = {}) {
+  return page.evaluate(async ({ steps, numIters, sample, nu, dt }) => {
     const { solver, device, interaction } = window.__flowlab;
 
     // A lost device makes every later readback return zeros, which fits a
@@ -1360,7 +1366,7 @@ function measureNuNum(page, { steps = 300, numIters = 80, sample = 20, nu = 0 } 
     solver.resetFlipState();
     // nu = 0 measures the scheme's own dissipation; nu > 0 measures that plus
     // the viscous pass, which is what makes the two runs differenceable.
-    solver.setParams({ nu, dt: 1 / 120, omega: 1.9, density: 1000 });
+    solver.setParams({ nu, dt, omega: 1.9, density: 1000 });
     solver.writeSolidMask(sData);
     solver.writeVelocityU(uData);
     solver.writeVelocityV(vData);
@@ -1403,14 +1409,16 @@ function measureNuNum(page, { steps = 300, numIters = 80, sample = 20, nu = 0 } 
     const p0 = await probe();
     const ke0Rel = Math.abs(p0.ke - keAnalytic) / keAnalytic;
 
-    const dt = solver.params.dt;
+    // Read back from the solver rather than reusing the argument: this is the
+    // dt the run actually used, so the time axis cannot drift from it.
+    const dtUsed = solver.params.dt;
     const ts = [], ys = [];
     for (let s = 0; s <= steps; s++) {
       if (s % sample === 0) {
         const p = s === 0 ? p0 : await probe();
         if (p.nBad > 0) throw new Error(`non-finite velocity at step ${s}: ${p.nBad} cells`);
         if (!(p.ke > 0)) throw new Error(`kinetic energy collapsed to ${p.ke} at step ${s}`);
-        ts.push(s * dt); ys.push(Math.log(p.ke));
+        ts.push(s * dtUsed); ys.push(Math.log(p.ke));
       }
       if (s < steps) {
         solver.step(numIters);
@@ -1441,12 +1449,12 @@ function measureNuNum(page, { steps = 300, numIters = 80, sample = 20, nu = 0 } 
       nuNum: -slope / (4 * k * k),
       r2: ssTot > 0 ? 1 - ssRes / ssTot : 0,
       points: nP, logDrop: ys[0] - ys[nP - 1],
-      cpuMaxDiv, cpuWallMax, ke0Rel, k, h, numX, numY: n, Nc, dt, numIters,
+      cpuMaxDiv, cpuWallMax, ke0Rel, k, h, numX, numY: n, Nc, dt: dtUsed, numIters,
       nu,
       substeps: solver.viscSubsteps, clamped: solver.viscClamped,
       nuEff: solver.viscNuEff, nuMax: solver.viscNuMax,
     };
-  }, { steps, numIters, sample, nu });
+  }, { steps, numIters, sample, nu, dt });
 }
 
 test('the Taylor-Green initial field is closed-box and divergence-free on the MAC grid', async ({ page }) => {
@@ -1464,33 +1472,72 @@ test('the Taylor-Green initial field is closed-box and divergence-free on the MA
 });
 
 test('Taylor-Green decay yields a numerical viscosity', async ({ page }) => {
-  test.setTimeout(120_000);
+  test.setTimeout(400_000);
   await boot(page);
 
+  // Every measurement here runs at the Karman preset's dt = 1/240 and 600 steps
+  // -- the same 2.5 s of simulated time the 300-step dt = 1/120 runs covered, so
+  // the fit window is the physical one and not a step count.
+  const DT = 1 / 240, STEPS = 600, SAMPLE = 40;
+  const d = await page.evaluate(() => import('/js/diagnostics.js').then((m) => ({
+    perDt: m.NU_NUM_PER_DT,
+    converged: m.nuNumConverged(1 / 240),
+    iters80_256: m.NU_NUM_ITERS80[256],
+    iters80Dt: m.NU_NUM_ITERS80_DT,
+  })));
+  expect(d.iters80Dt).toBeCloseTo(DT, 10);
+
   // Operating point: the pressure iteration count the Karman preset ships.
-  const op = await measureNuNum(page, { numIters: 80 });
-  console.log(`nu_num(iters=80)   = ${op.nuNum.toExponential(3)}  R^2 = ${op.r2.toFixed(5)}  n = ${op.points}`);
+  const op = await measureNuNum(page, { numIters: 80, dt: DT, steps: STEPS, sample: SAMPLE });
+  console.log(`nu_num(iters=80)   = ${op.nuNum.toExponential(4)}  R^2 = ${op.r2.toFixed(5)}  n = ${op.points}`);
 
   expect(op.points).toBeGreaterThan(5);
   expect(op.r2).toBeGreaterThan(0.99);   // a bad fit means the decay is not exponential
   expect(op.nuNum).toBeGreaterThan(0);   // energy must decay, not grow
   expect(op.nuNum).toBeLessThan(1e-1);   // sanity ceiling
 
+  // THE tie between the GPU and the shipped table. diagnostics.js drives a real
+  // ceiling off NU_NUM_ITERS80[256]; if the solver drifts away from it, the
+  // badge starts lying and only this assertion notices. 5% covers the fit's own
+  // scatter and nothing like a scheme regression.
+  expect(op.nuNum).toBeGreaterThan(0.95 * d.iters80_256);
+  expect(op.nuNum).toBeLessThan(1.05 * d.iters80_256);
+
   // With the projection converged, what is left is the advection scheme's own
   // dissipation. At 2048 iterations tier 256 is converged to 5 significant
-  // figures (1024 and 2048 agree), and the value is 9.82e-4 -- a third of the
-  // semi-Lagrangian scheme this replaced. That ratio is what Tasks 5-6 bought,
-  // so pin it: a regression in MacCormack shows up here as a rise toward 3e-3.
-  const conv = await measureNuNum(page, { numIters: 2048 });
-  console.log(`nu_num(iters=2048) = ${conv.nuNum.toExponential(3)}  R^2 = ${conv.r2.toFixed(5)}`);
+  // figures (2048 and 4096 agree), and the value is 5.06e-4. Pin it against the
+  // shipped coefficient the same way -- a MacCormack regression shows up here
+  // as a rise toward 1.5e-3.
+  const conv = await measureNuNum(page, { numIters: 2048, dt: DT, steps: STEPS, sample: SAMPLE });
+  console.log(`nu_num(iters=2048) = ${conv.nuNum.toExponential(4)}  R^2 = ${conv.r2.toFixed(5)}`);
 
   expect(conv.r2).toBeGreaterThan(0.99);
-  expect(conv.nuNum).toBeGreaterThan(6e-4);
-  expect(conv.nuNum).toBeLessThan(1.5e-3);
+  expect(conv.nuNum).toBeGreaterThan(0.95 * d.converged);
+  expect(conv.nuNum).toBeLessThan(1.05 * d.converged);
   // Converging the projection must lower the measured viscosity, never raise
   // it -- the opposite ordering would mean the decay is not projection-limited
   // and the operating-point number means something else entirely.
   expect(conv.nuNum).toBeLessThan(op.nuNum);
+
+  // LINEARITY IN dt, which is the whole basis for shipping a per-dt coefficient
+  // instead of a constant. Halving dt must roughly halve nu_num. Measured ratio
+  // is 1.943 (9.8230e-4 at dt = 1/120 vs 5.0564e-4 at 1/240); the bounds below
+  // would reject both a flat nu_num (ratio 1.0) and an exact-2.0 assumption
+  // being silently substituted for the measurement.
+  const conv120 = await measureNuNum(page, { numIters: 2048, dt: 1 / 120, steps: 300, sample: 20 });
+  const ratio = conv120.nuNum / conv.nuNum;
+  console.log(`nu_num(dt=1/120)   = ${conv120.nuNum.toExponential(4)}  ratio = ${ratio.toFixed(3)}`);
+
+  expect(conv120.r2).toBeGreaterThan(0.99);
+  expect(ratio).toBeGreaterThan(1.8);
+  expect(ratio).toBeLessThan(2.1);
+
+  // And the shipped coefficient must be anchored at 1/240, not 1/120: anchoring
+  // at the larger dt would make the ceiling OPTIMISTIC at the preset's own dt.
+  // nuNumConverged(1/240) must therefore sit at the 1/240 measurement, not at
+  // half the 1/120 one.
+  expect(d.perDt * DT).toBeCloseTo(d.converged, 12);
+  expect(Math.abs(d.converged - conv.nuNum) / conv.nuNum).toBeLessThan(0.05);
 });
 
 test('the viscous operator delivers the kinematic viscosity it is given', async ({ page }) => {

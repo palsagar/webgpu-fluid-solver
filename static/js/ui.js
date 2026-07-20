@@ -1,7 +1,7 @@
 import { loadPreset, PRESETS } from './presets.js';
 import {
     honestWindow, windowState, fmtRe, reFromSliderPos,
-    NU_NUM_CONVERGED, NU_NUM_ITERS80,
+    nuNumConverged, NU_NUM_ITERS80,
 } from './diagnostics.js';
 
 // Map kebab-case data-preset attribute values to PRESETS object keys
@@ -180,7 +180,10 @@ export class UI {
             dt: this.solver.params.dt,
             D, U,
             nMax: this.solver.constructor.N_MAX,
-            nuNum: NU_NUM_CONVERGED,
+            // Scaled by the LIVE dt, not a constant: nu_num is linear in dt and
+            // the presets do not share one. Karman runs 1/240, the other two
+            // 1/60, where a fixed constant made the ceiling ~2x optimistic.
+            nuNum: nuNumConverged(this.solver.params.dt),
         });
 
         // The operating-point ceiling is measured at PROJECTION_ITERS_MEASURED
@@ -188,6 +191,11 @@ export class UI {
         // rescaled to the live iteration count: nu_num's dependence on numIters
         // was measured at tier 256 only, and interpolating a surface from one
         // slice would be inventing the number this branch exists to measure.
+        //
+        // It is likewise NOT rescaled to the live dt — unlike the converged
+        // ceiling above — because the operating-point value is not linear in dt
+        // (NU_NUM_ITERS80's header gives the measured ratios). On the dt = 1/60
+        // presets this ceiling is therefore optimistic by an unmeasured factor.
         const nuProjection = NU_NUM_ITERS80[this.solver.numY];
         const reMaxProjection = nuProjection ? (U * D) / nuProjection : Infinity;
 

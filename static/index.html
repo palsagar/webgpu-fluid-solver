@@ -490,7 +490,10 @@
             <span class="slider-name">dt</span>
             <span class="slider-value" id="val-dt">0.0167</span>
           </div>
-          <input type="range" id="slider-dt" min="0.004" max="0.033" step="0.001" value="0.0167">
+          <!-- step 1e-4, not 1e-3: the Karman preset ships dt = 1/240 =
+               0.004167, which is not on a 1e-3 grid, so the thumb would snap to
+               0.004 while the readout showed 0.0042. -->
+          <input type="range" id="slider-dt" min="0.004" max="0.033" step="0.0001" value="0.0042">
         </div>
 
         <div class="slider-row">
@@ -523,10 +526,10 @@
 
         <div class="slider-row">
           <div class="slider-header">
-            <span class="slider-name">Re <span class="hint" title="Reynolds number Re = U·D/ν, set by a real explicit viscous term. The slider is log-spaced from 0.5 to 500. The badge below reports when the current grid cannot deliver the requested Re — either the viscous substep budget saturates (low Re) or the solver's own numerical viscosity exceeds the physical one (high Re). Both bounds come from measured numbers, not estimates.">(?)</span></span>
+            <span class="slider-name">Re <span class="hint" title="Reynolds number Re = U·D/ν, set by a real explicit viscous term. The slider is log-spaced from 0.25 to 500. The badge below reports when the current grid cannot deliver the requested Re — either the viscous substep budget saturates (low Re) or the solver's own numerical viscosity exceeds the physical one (high Re). Both bounds come from measured numbers, not estimates.">(?)</span></span>
             <span class="slider-value" id="val-re">--</span>
           </div>
-          <input type="range" id="slider-re" min="0" max="100" step="1" value="90">
+          <input type="range" id="slider-re" min="0" max="100" step="1" value="75">
           <div id="re-badge" class="re-badge"></div>
         </div>
       </div>

@@ -21,6 +21,20 @@ export const PRESETS = {
   karmanVortex: {
     name: 'Kármán Vortex',
     // Higher iteration count and smaller timestep for resolving vortex shedding.
+    //
+    // dt = 1/240, halved from 1/120, to open the honest Reynolds window (see
+    // diagnostics.js). Task 7 measured `nu_num` INDEPENDENT of h but LINEAR in
+    // dt, so halving dt buys the ceiling on both sides at once: the converged
+    // `nu_num` falls 9.823e-4 -> 5.056e-4 (measured, a 1.94x reduction) which
+    // lifts the ceiling Re 122 -> 237, while the viscous floor `U*D*dt/(N_MAX
+    // *h^2/4)` scales with dt and halves, 8.19 -> 4.10 at tier 256. The window
+    // at the startup tier goes from 8.2 .. 32.8 (which excluded the measured
+    // shedding onset, measured at Re 57.5) to 4.1 .. 59.0 (which contains it,
+    // though by too little for any slider position to land there — see
+    // RE_SLIDER_DEFAULT_POS). The cost is 2x the solver steps per second of
+    // simulated time; frame rate is unaffected, since the loop steps once per
+    // frame either way.
+    //
     // numIters left at 80 (see docs/ROADMAP.md step 0) — NOT a clean
     // convergence measurement. The original 20/40/60/80/120 divergence sweep
     // sampled all counts sequentially on one solver instance and mistook
@@ -30,7 +44,7 @@ export const PRESETS = {
     // too — a normalisation effect (same relative accuracy on a stronger,
     // correctly-developed flow), not a solver defect. Raising numIters
     // remains an open question.
-    numIters: 80, dt: 1/120, omega: 1.9, inVel: 1.0,
+    numIters: 80, dt: 1/240, omega: 1.9, inVel: 1.0,
     // Small obstacle to trigger periodic vortex shedding
     obstacle: { shape: 'circle', x: 0.3, y: 0.5, radius: 0.06 },
     boundaryType: 'windTunnel',

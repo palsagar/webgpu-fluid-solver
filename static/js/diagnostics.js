@@ -11,54 +11,123 @@
  * The measurement overturned the model the plan and ADR-0008 assumed:
  *
  *   - With the pressure projection converged, `nu_num` is INDEPENDENT of h
- *     (9.82e-4 at tiers 64 through 512, flat to 0.5% across an 8x refinement)
- *     and LINEAR in dt (ratios 1.72, 1.91, 1.98 -> 2 over a 8x dt sweep).
- *     It is an operator-splitting error in TIME, not grid diffusion.
+ *     (flat to 0.5% across an 8x refinement, at both timesteps measured)
+ *     and LINEAR in dt. It is an operator-splitting error in TIME, not grid
+ *     diffusion.
  *   - So the analytic ceiling `Re <= (D/(k*h))^2`, which RISES with resolution,
  *     is the wrong model. Refining the grid cannot lower `nu_num`. Only
  *     reducing dt can.
  *
- * Hence ONE measured constant and a FLAT ceiling across all tiers. There is no
- * per-tier table for the converged value and no estimated fallback anywhere in
- * this module: an unmeasured number driving a real ceiling is exactly the
+ * Hence ONE measured coefficient and a FLAT ceiling across all tiers. There is
+ * no per-tier table for the converged value and no estimated fallback anywhere
+ * in this module: an unmeasured number driving a real ceiling is exactly the
  * failure this branch exists to prevent.
  */
 
 /**
  * Numerical viscosity of the MacCormack advection + splitting scheme with the
- * projection converged, in domain-units^2/s. Measured at dt = 1/120, amplitude
- * A = 1.0, float32. Tier-independent (see above).
+ * projection converged, PER UNIT dt, in domain-units^2/s^2.
  *
- * Re_max = U*D/NU_NUM_CONVERGED = 0.12/9.823e-4 = 122.2 for the Karman
- * reference (U = 1.0, D = 2 x 0.06).
+ * Stated as a coefficient rather than a bare constant because `nu_num` is
+ * LINEAR in dt, so a flat number is only correct at the one timestep it was
+ * measured at. The three shipped presets do not share a timestep — Karman runs
+ * dt = 1/240, windTunnel and backwardStep run dt = 1/60 — and a 1/120-derived
+ * constant made the ceiling optimistic by ~2x on the latter two.
+ *
+ * ─── The measurement ────────────────────────────────────────────────────────
+ *
+ * Taylor-Green decay, amplitude A = 1.0, float32, projection escalated until
+ * the fit stops moving (2048 and 4096 iterations agree to 5 significant
+ * figures). Anchored at dt = 1/240, tier 256:
+ *
+ *   nu_num(1/240) = 5.0564e-4   r^2 = 0.99994
+ *
+ * so NU_NUM_PER_DT = 5.0564e-4 * 240 = 0.121354.
+ *
+ * h-independence re-confirmed at this dt — tiers 64 / 128 / 256 give
+ * 5.0802e-4 / 5.0675e-4 / 5.0564e-4, a 0.5% spread across a 4x refinement.
+ *
+ * ─── Linearity is close but not exact, and the error is conservative ────────
+ *
+ * Measured at the same tier, dt = 1/120 gives 9.8230e-4 (r^2 = 0.99979) — a
+ * ratio of 1.943 under a halving of dt, not 2.000. So a single linear
+ * coefficient cannot fit both timesteps exactly. Anchoring at 1/240 (the
+ * flagship preset's dt, and the one where the escalation was carried furthest)
+ * makes the model OVERSTATE `nu_num` at larger dt by ~3% at 1/120 — which
+ * UNDERSTATES the ceiling. That is the safe direction for a claim about
+ * honesty, and it is why this anchor was chosen over the 1/120 one.
+ *
+ * ─── What is NOT measured ───────────────────────────────────────────────────
+ *
+ * The AMPLITUDE dependence. Every fit above used A = 1.0, matching Karman's
+ * U = 1.0. `windTunnel` runs U = 2.0 and `backwardStep` U = 1.5, and a
+ * plausible `nu_num ~ A^2 dt` scaling would move the ceiling by up to 4x on
+ * those presets. NOTHING here corrects for that, because nothing measured it.
+ * The ceiling is therefore approximate — and optimistic — for any preset whose
+ * U differs from 1.0. Measuring `nu_num` across A is the next thing to do.
  */
-export const NU_NUM_CONVERGED = 9.823e-4;
+export const NU_NUM_PER_DT = 0.121354;
+
+/** The timestep NU_NUM_PER_DT was anchored at, and the Karman preset's dt. */
+export const NU_NUM_ANCHOR_DT = 1 / 240;
+
+/**
+ * Converged numerical viscosity at a given timestep, in domain-units^2/s.
+ * @param {number} dt
+ * @returns {number}
+ */
+export function nuNumConverged(dt) {
+  return NU_NUM_PER_DT * dt;
+}
 
 /** Pressure iteration count at which NU_NUM_ITERS80 was measured. */
 export const PROJECTION_ITERS_MEASURED = 80;
+
+/** The timestep NU_NUM_ITERS80 was measured at. See the caveat below. */
+export const NU_NUM_ITERS80_DT = 1 / 240;
 
 /**
  * Numerical viscosity at the OPERATING POINT the app actually ships:
  * `numIters = 80`, where the red-black SOR projection is badly under-converged
  * and its residual, not the advection scheme, dominates the error.
  *
- * This is why a flat 122.2 is not the whole truth — at 80 iterations it
- * understates the error by up to 24x at tier 1024. Keyed by tier (numY),
- * MacCormack column of Task 7 §2a.
+ * This is why a flat 237 is not the whole truth — at 80 iterations it
+ * understates the error by up to 31x at tier 1024. Keyed by tier (numY),
+ * measured at dt = 1/240:
+ *
+ *   tier      64      128      256      512     1024
+ *   nu_num  5.08e-4  6.50e-4  2.03e-3  6.27e-3  1.54e-2
+ *   Re_max   236.1    184.5     59.1     19.2      7.8
  *
  * Unlike the converged constant this one DOES rise with resolution, because a
  * fixed iteration count converges progressively less well as the grid grows.
  *
- *   tier      64      128      256      512     1024
- *   nu_num  9.86e-4  1.26e-3  3.66e-3  1.01e-2  2.37e-2
- *   Re_max   121.7     95.6     32.8     11.9      5.1
+ * ─── Why this table is NOT scaled by dt, unlike the converged constant ──────
+ *
+ * Because it is not linear in dt, and the departure grows with the tier. The
+ * same table at dt = 1/120 measured 9.8612e-4 / 1.2551e-3 / 3.6638e-3 /
+ * 1.0062e-2 / 2.3718e-2, so the ratio under a halving of dt runs
+ *
+ *   tier    64     128     256     512    1024
+ *   ratio  1.94    1.93    1.80    1.61    1.54
+ *
+ * — 2x only where the splitting error still dominates, falling away as the
+ * projection residual takes over, which is exactly the part that does not care
+ * about dt. A single `per-dt` coefficient would therefore be a fiction here.
+ *
+ * CONSEQUENCE, stated plainly: this table is only valid at dt = 1/240. The
+ * `windTunnel` and `backwardStep` presets run dt = 1/60 and are given the same
+ * numbers, where the true values are HIGHER and so the real projection ceiling
+ * is LOWER than the badge claims. On those two presets the projection ceiling
+ * is optimistic by an unmeasured factor. The converged ceiling above is scaled
+ * correctly for them; this one is not.
  */
 export const NU_NUM_ITERS80 = {
-  64:   9.8612e-4,
-  128:  1.2551e-3,
-  256:  3.6638e-3,
-  512:  1.0062e-2,
-  1024: 2.3718e-2,
+  64:   5.0821e-4,
+  128:  6.5042e-4,
+  256:  2.0324e-3,
+  512:  6.2658e-3,
+  1024: 1.5446e-2,
 };
 
 /**
@@ -68,7 +137,7 @@ export const NU_NUM_ITERS80 = {
  * fit window (1.02e-3 / 9.87e-4 / 9.36e-4 at 120 / 300 / 600 steps). Below that
  * separation the two measurements are the same number and the honest attribution
  * is the scheme; above it the projection genuinely dominates. At tier 64 the
- * ratio is 0.996 (scheme); at tier 128 it is 0.78 (projection).
+ * ratio is 0.995 (scheme); at tier 128 it is 0.78 (projection).
  */
 export const CEILING_AGREEMENT_TOL = 0.9;
 
@@ -77,44 +146,85 @@ export const CEILING_AGREEMENT_TOL = 0.9;
 // Log-spaced, because Re spans three decades across the tier set and the
 // honest window at any one tier is a narrow slice of it.
 //
-//   RE_SLIDER_MIN = 0.5  — the lowest floor in the tier set (tier 64: 0.512),
+// All bounds below are at the Karman preset's dt = 1/240. Halving dt from
+// 1/120 halved every floor (they scale with dt) and roughly doubled the
+// ceiling, so the whole structure moved and these are re-derived, not inherited.
+//
+//   RE_SLIDER_MIN = 0.25 — the lowest floor in the tier set (tier 64: 0.256),
 //                          so the honest low end is reachable, not cropped.
 //   RE_SLIDER_MAX = 500  — clears both structural bounds with headroom: the
-//                          flat ceiling (122.2) and the highest floor (tier
-//                          1024: 131.1). Every badge regime is therefore
+//                          flat ceiling (237.3) and the highest floor (tier
+//                          1024: 65.5). Every badge regime is therefore
 //                          reachable at every tier, including tier 1024 where
 //                          the window is empty and both ends must badge.
 //
-// Their geometric mean is 15.8, which lands inside the startup tier's honest
-// window (256 at 80 iterations: 8.2 .. 32.8) — so mid-slider is badge-free by
+// Their geometric mean is 11.2, which lands inside the startup tier's honest
+// window (256 at 80 iterations: 4.10 .. 59.05) — so mid-slider is badge-free by
 // construction rather than by luck.
 
-export const RE_SLIDER_MIN = 0.5;
+export const RE_SLIDER_MIN = 0.25;
 export const RE_SLIDER_MAX = 500;
 export const RE_SLIDER_STEPS = 100;
 
 /**
- * Where the control ships (mirrored by index.html's `value` attribute) — Re 251.
+ * Where the control ships (mirrored by index.html's `value` attribute) — Re 75.
  *
- * This is deliberately OUTSIDE the honest window, and the app therefore opens
- * with the badge showing. A slider sweep of the Karman preset at tier 256 (400
- * steps per point) measured the wake's unsteadiness — the RMS change in v down
- * a column at 55% of the channel over 30 frames:
+ * Still OUTSIDE the honest window, so the app still opens badged — but at 1.27x
+ * the ceiling instead of Task 9's 7.7x. The reasoning is entirely re-measured,
+ * because Task 9's onset number turned out to be an artifact.
  *
- *   Re        0.5      16       32       63      126      251      500
- *   unsteady  2.3e-4   3.2e-4   2.0e-4   3.0e-4  6.2e-3   1.1e-1   4.1e-1
+ * ─── Task 9's Re ~126 onset was measuring a transient ───────────────────────
  *
- * The wake is dead steady up to Re ~63 and only sheds above ~126. The honest
- * window at this tier is 8.2 .. 32.8, so there is NO overlap between "the
- * Karman preset shows a vortex street" and "the badge is silent".
+ * It settled 400 steps (3.33 s) and read the wake's unsteadiness. Repeating
+ * that at dt = 1/240 gives a SMOOTH ramp over Re 30..210 with no bifurcation
+ * anywhere in it — because 3.33 s is only ~5 shedding periods (St ~ 0.2,
+ * D = 0.12, U = 1 -> period ~0.6 s) and the growth rate vanishes near onset, so
+ * the amplitude is still climbing when the window opens. A threshold laid
+ * across that ramp reports the settle time, not the physics.
  *
- * Defaulting inside the window would open a preset named "Karman Vortex" on a
- * flow with no vortices — a lie told by the picture instead of by a label.
- * Defaulting here shows the advertised flow and states plainly, in the badge,
- * that the honest ceiling is Re 33 rather than the 251 requested. The badge
- * being absent mid-slider remains a real property: positions 50-60 are silent.
+ * ─── What replaced it ──────────────────────────────────────────────────────
+ *
+ * A bifurcation test: run 30 s (~50 shedding periods) from an identical
+ * impulsive start, and compare the wake fluctuation at t = 5 s against t = 30 s.
+ * Below onset a perturbation decays; above it grows to a limit cycle. The
+ * separation is 4-5 orders of magnitude, so the threshold is unambiguous:
+ *
+ *   dt = 1/240   Re      50      53      55      57      60      72
+ *                growth  0.001   0.005   0.173   0.638  12.2   158.8
+ *                sat.    7e-7    5e-6    2.5e-4  1.0e-3  2.8e-2  8.8e-1
+ *
+ * Onset (growth = 1) is Re 57.5. The same sweep at dt = 1/120 gives Re 56.8.
+ *
+ * ─── The onset did NOT move when nu_num halved ─────────────────────────────
+ *
+ * 56.8 -> 57.5 is a 1.1% shift, and UPWARD. Halving the scheme's numerical
+ * viscosity changed the shedding threshold by nothing. So the onset is NOT set
+ * by nu_num — it is set by the geometry: the channel blockage (D/H = 0.12
+ * raises the critical Re above the textbook unconfined 47) and the staircased
+ * cylinder. Any story in which the onset is "inflated by numerical viscosity"
+ * is wrong, and Task 9's 126 was method, not physics.
+ *
+ * ─── Why the default is still outside the window ───────────────────────────
+ *
+ * The window DOES now contain the onset — the tier-256 ceiling rose 32.8 -> 59.0
+ * while the onset stayed at 57.5, so Re 57.5 .. 59.0 is both honest AND
+ * shedding, where at dt = 1/120 no such Re existed. But that overlap is 2.8%
+ * wide and the slider's log step is 7.9%, so NO slider position lands in it:
+ * pos 71 is Re 55.2 (honest, below onset, no street) and pos 72 is Re 59.5
+ * (sheds, just over the ceiling). Widening the slider to reach it would not
+ * help either — the limit-cycle amplitude 2% above onset is ~1e-3 of the mean
+ * flow and takes tens of seconds of simulated time to appear. It is a vortex
+ * street only in the sense that a thermometer reads a fever at 37.1 C.
+ *
+ * So the choice remains Task 9's, on much better numbers: pos 75 -> Re 74.8,
+ * where the saturated fluctuation is ~0.9 of the mean flow — an unmistakable
+ * street — and the badge states the honest ceiling is 59. What the dt change
+ * bought is that the gap between "advertised" and "honest" fell from a factor
+ * of 7.7 to a factor of 1.27.
+ *
+ * The badge remains absent mid-slider: positions up to 71 (Re 55) are silent.
  */
-export const RE_SLIDER_DEFAULT_POS = 90;
+export const RE_SLIDER_DEFAULT_POS = 75;
 
 /** Slider position (0 .. RE_SLIDER_STEPS) to Reynolds number, log-spaced. */
 export function reFromSliderPos(pos) {
@@ -143,7 +253,8 @@ export function fmtRe(re) {
  *
  * Ceiling: above the Re where the physical viscosity falls below the scheme's
  * own numerical viscosity, the label would be a lie. `nuNum` is measured, never
- * estimated — pass NU_NUM_CONVERGED.
+ * estimated — pass `nuNumConverged(dt)`, which scales the measured coefficient
+ * by the caller's own timestep rather than assuming the anchor's.
  *
  * @param {{h:number, dt:number, D:number, U:number, nMax:number, nuNum:number}} args
  * @returns {{reMin:number, reMax:number, nuMax:number}}
