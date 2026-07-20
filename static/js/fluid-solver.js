@@ -8,9 +8,20 @@
  * rotations diverge.
  */
 export class FluidSolver {
-  /** Maximum viscous substeps per frame. Beyond this the pass is clamped and
-   *  `viscClamped` reports it: the coefficient then exceeds the 1/4 stability
-   *  limit, so the UI must surface it rather than silently under-resolving. */
+  /** Maximum viscous substeps per frame.
+   *
+   *  Beyond this the requested viscosity is SATURATED at `viscNuMax` rather
+   *  than the substep count being truncated. Truncating the count while
+   *  keeping `dt_sub = dt / N` leaves the explicit coefficient above the 1/4
+   *  five-point limit by the factor `want / N_MAX`, and the worst mode then
+   *  amplifies by `|1 - 8*coeff|` per substep -- at tier 256, nu = 0.1 that is
+   *  ~12.7^32, i.e. Inf then NaN inside a single frame, propagated everywhere
+   *  by the next pressure solve and unrecoverable without a preset reload.
+   *
+   *  Saturating nu instead keeps the coefficient at exactly 1/4: stable and
+   *  bounded, under-diffusive rather than divergent. `viscClamped` then means
+   *  "the requested nu was saturated, so the EFFECTIVE Reynolds number is
+   *  HIGHER than the one requested" -- see `viscNuMax` / `viscNuEff`. */
   static N_MAX = 32;
 
   /**
@@ -30,8 +41,12 @@ export class FluidSolver {
 
     /** Viscous substeps dispatched by the last step(). 0 when nu == 0. */
     this.viscSubsteps = 0;
-    /** True when the last step()'s substep count hit N_MAX. */
+    /** True when the last step() saturated nu at `viscNuMax`. The field is
+     *  still stable; the effective viscosity is LOWER (effective Re HIGHER)
+     *  than requested. */
     this.viscClamped = false;
+    /** The nu the last step() actually applied: min(params.nu, viscNuMax). */
+    this.viscNuEff = 0;
 
     this._createBuffers(numX, numY);
   }
@@ -117,11 +132,13 @@ export class FluidSolver {
    * @param {GPUBuffer} buf - Target uniform buffer
    * @param {number} [colorOverride] - If provided, overrides the color field
    * @param {number} [dtOverride] - If provided, overrides dt (negated for MacCormack's backward pass)
+   * @param {number} [nuOverride] - If provided, overrides nu (saturated for the viscous pass)
    */
-  _writeParamsTo(buf, colorOverride, dtOverride) {
+  _writeParamsTo(buf, colorOverride, dtOverride, nuOverride) {
     const p = this.params;
     const color = colorOverride !== undefined ? colorOverride : p.color;
     const dt = dtOverride !== undefined ? dtOverride : p.dt;
+    const nu = nuOverride !== undefined ? nuOverride : (p.nu ?? 0);
     const ab = new ArrayBuffer(32);
     const dv = new DataView(ab);
     dv.setUint32(0,  p.numX,   true);
@@ -131,16 +148,38 @@ export class FluidSolver {
     dv.setFloat32(16, p.omega,  true);
     dv.setFloat32(20, p.density, true);
     dv.setUint32(24, color,    true);
-    dv.setFloat32(28, p.nu ?? 0, true);
+    dv.setFloat32(28, nu,      true);
     this.device.queue.writeBuffer(buf, 0, ab);
   }
 
-  /** Uploads params to every uniform buffer, including the negated-dt variant. */
+  /** Uploads params to every uniform buffer, including the negated-dt variant.
+   *
+   *  uniformBufVisc is seeded here too, even though step() rewrites it with the
+   *  substep dt before dispatching: an unseeded buffer is all zeros, so numX =
+   *  numY = 0 would make every diffuse thread return at the bounds check -- a
+   *  silent no-op rather than a validation error if some future path ever
+   *  dispatches the viscous pass without the per-step write. */
   _writeAllParams() {
     this.writeParams();
     this._writeParamsTo(this.uniformBufRed, 0);
     this._writeParamsTo(this.uniformBufBlack, 1);
     this._writeParamsTo(this.uniformBufNegDt, undefined, -this.params.dt);
+    this._writeParamsTo(this.uniformBufVisc, 0);
+  }
+
+  /**
+   * The largest kinematic viscosity the explicit viscous pass can represent at
+   * the current grid spacing and timestep: N_MAX substeps each sitting exactly
+   * on the 1/4 five-point stability limit.
+   *
+   * Requests above this are saturated here rather than run unstably, so this is
+   * also the honest floor of the achievable Reynolds number: for a body of
+   * diameter D in a free stream U, `Re_min = U * D / viscNuMax`. A UI offering
+   * a Reynolds control must clamp to that floor (or surface it) rather than
+   * accept a value it cannot deliver.
+   */
+  get viscNuMax() {
+    return FluidSolver.N_MAX * 0.25 * this.h * this.h / this.params.dt;
   }
 
   /** Releases all GPU buffers. Must be called before resize or disposal. */
@@ -532,19 +571,33 @@ export class FluidSolver {
     // Diffusion therefore acts on the advected, not-yet-projected field, and
     // the projection that follows removes whatever divergence it introduced.
     const nu = this.params.nu ?? 0;
-    let nSub = 0;
+    let nSub = 0, nuEff = 0;
     if (nu > 0) {
       // Five-point explicit stability limit: nu * dt_sub / h^2 <= 1/4.
-      const want = Math.ceil(nu * this.params.dt / (0.25 * this.h * this.h));
-      nSub = Math.max(1, Math.min(FluidSolver.N_MAX, want));
-      this.viscClamped = want > FluidSolver.N_MAX;
+      //
+      // Past N_MAX substeps we saturate nu rather than truncating N. Truncating
+      // N leaves the coefficient ABOVE 1/4 and the scheme divergent (see N_MAX);
+      // saturating pins it at exactly 1/4, which is stable. The cost is
+      // under-diffusion -- the flow runs at a higher effective Re than asked
+      // for -- which viscClamped reports so the UI can say so.
+      const nuMax = this.viscNuMax;
+      if (nu > nuMax) {
+        nuEff = nuMax;
+        nSub = FluidSolver.N_MAX;
+        this.viscClamped = true;
+      } else {
+        nuEff = nu;
+        nSub = Math.max(1, Math.ceil(nu * this.params.dt / (0.25 * this.h * this.h)));
+        this.viscClamped = false;
+      }
     } else {
       this.viscClamped = false;
     }
     this.viscSubsteps = nSub;
+    this.viscNuEff = nuEff;
 
     if (nSub > 0) {
-      this._writeParamsTo(this.uniformBufVisc, 0, this.params.dt / nSub);
+      this._writeParamsTo(this.uniformBufVisc, 0, this.params.dt / nSub, nuEff);
       // Ping-pong between the combine's output (tilde) and the hat pair, which
       // this step has finished with. Pair _velCur is never touched, so the
       // smoke passes above keep reading the time-n field they were encoded
@@ -604,10 +657,15 @@ export class FluidSolver {
     this._writeAllParams();
   }
 
-  /** Resets the rotation so the next step reads pair 0. Call after uploading fields. */
+  /** Resets the rotation so the next step reads pair 0. Call after uploading fields.
+   *  Also clears the viscous report, which otherwise describes the previous
+   *  run's last step until the next one lands. */
   resetFlipState() {
     this._velCur = 0;
     this._smokeCur = 0;
+    this.viscSubsteps = 0;
+    this.viscClamped = false;
+    this.viscNuEff = 0;
   }
 
   writeSolidMask(data) { this.device.queue.writeBuffer(this.s, 0, data); }

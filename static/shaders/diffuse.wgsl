@@ -2,7 +2,10 @@
 // Explicit Viscous Diffusion — u += nu * dt_sub * laplacian(u)
 //
 // The host splits the frame's dt into N substeps chosen so that
-// nu * dt_sub / h^2 <= 1/4, the 2D five-point stability limit.
+// nu * dt_sub / h^2 <= 1/4, the 2D five-point stability limit. That bound holds
+// UNCONDITIONALLY: when the requested nu would need more than N_MAX substeps
+// the host saturates nu (see FluidSolver.viscNuMax) instead of truncating N, so
+// `coeff` below is never above 1/4 and this update is never divergent.
 //
 // ---------------------------------------------------------------------------
 // FACE CLASSIFICATION — three cases, not two

@@ -982,12 +982,25 @@ test('the duplicated Params and Stencil structs agree across every advection sha
   // (swapping h and dt, say) makes that shader re-trace with wrong values --
   // wrong bounds, still-plausible output, invisible to every behavioural test.
   // `Stencil` is the same hazard for the i0/i1/j0/j1/tx/ty tuple.
-  const files = [
-    'advect.wgsl', 'advect_smoke.wgsl', 'maccormack.wgsl', 'maccormack_velocity.wgsl',
-  ];
-  const srcs = files.map((f) => [f, readShader(f)]);
+  //
+  // diffuse.wgsl carries the same 8-field Params and is the ONLY shader that
+  // reads `nu`, so a field reorder there silently corrupts the Reynolds control
+  // that rides on it -- it would diffuse with `color` reinterpreted as a float
+  // and still produce a smooth, plausible field. It has no Stencil struct (it
+  // is a five-point update, not a semi-Lagrangian trace), so the two structs
+  // check over different file sets.
+  const perStruct = {
+    Params: [
+      'advect.wgsl', 'advect_smoke.wgsl', 'maccormack.wgsl', 'maccormack_velocity.wgsl',
+      'diffuse.wgsl',
+    ],
+    Stencil: [
+      'advect.wgsl', 'advect_smoke.wgsl', 'maccormack.wgsl', 'maccormack_velocity.wgsl',
+    ],
+  };
 
-  for (const struct of ['Params', 'Stencil']) {
+  for (const [struct, files] of Object.entries(perStruct)) {
+    const srcs = files.map((f) => [f, readShader(f)]);
     const ref = extractStruct(srcs[0][1], struct);
     for (const [file, src] of srcs.slice(1)) {
       expect(
@@ -1268,12 +1281,28 @@ test('smoke advection dispatches the bind groups for the live velocity slot, not
  * so repeated calls on one page start from a byte-identical field and cannot
  * carry state forward from an earlier measurement.
  *
+ * With `nu > 0` the same fit measures the TOTAL dissipation, numerical plus
+ * physical, so `nuNum(nu) - nuNum(0)` at a fixed numIters isolates what the
+ * viscous operator actually delivered.
+ *
+ * NOTE the fit is only a clean viscosity measurement at nu = 0. The closed box
+ * is analytically FREE-SLIP -- the mode's wall-normal component vanishes on all
+ * four walls but its TANGENTIAL component does not -- while diffuse.wgsl's
+ * ghost imposes NO-SLIP. With nu > 0 the mismatch grows wall shear layers that
+ * are not part of the mode and that dominate the box's KE budget, so the fitted
+ * value overshoots nu_num + nu by 3-4x. Restricting the fit to an interior
+ * window does not rescue it either: the window is not a closed subsystem, and
+ * the fitted value then swings between 0.25x and 4.2x the true value depending
+ * on the margin and the run length. The operator's accuracy is therefore
+ * measured directly (see the one-step difference test), and nu > 0 is used here
+ * only to drive the solver at a viscosity and assert the field survives it.
+ *
  * @param {import('@playwright/test').Page} page
- * @param {{steps?: number, numIters?: number, sample?: number}} opts
+ * @param {{steps?: number, numIters?: number, sample?: number, nu?: number}} opts
  * @returns {Promise<Object>} nuNum, r2, and the setup-validity diagnostics
  */
-function measureNuNum(page, { steps = 300, numIters = 80, sample = 20 } = {}) {
-  return page.evaluate(async ({ steps, numIters, sample }) => {
+function measureNuNum(page, { steps = 300, numIters = 80, sample = 20, nu = 0 } = {}) {
+  return page.evaluate(async ({ steps, numIters, sample, nu }) => {
     const { solver, device, interaction } = window.__flowlab;
 
     // A lost device makes every later readback return zeros, which fits a
@@ -1314,9 +1343,9 @@ function measureNuNum(page, { steps = 300, numIters = 80, sample = 20 } = {}) {
     interaction.showObstacle = false;
     solver.paused = true;
     solver.resetFlipState();
-    // nu is written to the uniform but no viscous pass consumes it yet, so this
-    // is the only regime available -- and the one this measurement wants.
-    solver.setParams({ nu: 0, dt: 1 / 120, omega: 1.9, density: 1000 });
+    // nu = 0 measures the scheme's own dissipation; nu > 0 measures that plus
+    // the viscous pass, which is what makes the two runs differenceable.
+    solver.setParams({ nu, dt: 1 / 120, omega: 1.9, density: 1000 });
     solver.writeSolidMask(sData);
     solver.writeVelocityU(uData);
     solver.writeVelocityV(vData);
@@ -1338,6 +1367,7 @@ function measureNuNum(page, { steps = 300, numIters = 80, sample = 20 } = {}) {
     // KE over the fluid box only. The surrounding solid ring is excluded: the
     // boundary shader writes extrapolated values there that are not part of the
     // flow, and including them would add a spurious constant to the fit.
+    //
     const probe = async () => {
       const { u, v } = solver.velocityBuffers;
       const uD = await readBuf(u), vD = await readBuf(v);
@@ -1397,8 +1427,11 @@ function measureNuNum(page, { steps = 300, numIters = 80, sample = 20 } = {}) {
       r2: ssTot > 0 ? 1 - ssRes / ssTot : 0,
       points: nP, logDrop: ys[0] - ys[nP - 1],
       cpuMaxDiv, cpuWallMax, ke0Rel, k, h, numX, numY: n, Nc, dt, numIters,
+      nu,
+      substeps: solver.viscSubsteps, clamped: solver.viscClamped,
+      nuEff: solver.viscNuEff, nuMax: solver.viscNuMax,
     };
-  }, { steps, numIters, sample });
+  }, { steps, numIters, sample, nu });
 }
 
 test('the Taylor-Green initial field is closed-box and divergence-free on the MAC grid', async ({ page }) => {
@@ -1445,39 +1478,326 @@ test('Taylor-Green decay yields a numerical viscosity', async ({ page }) => {
   expect(conv.nuNum).toBeLessThan(op.nuNum);
 });
 
-test('viscous substep count follows the stability limit and clamps', async ({ page }) => {
+test('the viscous operator delivers the kinematic viscosity it is given', async ({ page }) => {
+  test.setTimeout(120_000);
+  await boot(page);
+
+  // THE calibration assertion for the viscous pass. Every other viscous test in
+  // this file checks a SHAPE -- a boundary layer forms, a ring is not read, a
+  // substep count is right -- and every one of them passes under a 2x
+  // coefficient error, an h-vs-h/2 error, or a per-step-instead-of-per-substep
+  // dt. Task 9 ships a LABELLED Re = U*D/nu, so the number printed on that
+  // control is honest only if the operator delivers the nu it was handed.
+  //
+  // METHOD, and why it is not the Taylor-Green fit.
+  //
+  // The obvious route is to reuse measureNuNum and check
+  // nu_measured ~ nu_num + nu. It does not work: the closed box is analytically
+  // FREE-SLIP (the mode's wall-normal component vanishes on all four walls, its
+  // tangential component does not), while diffuse.wgsl's ghost imposes NO-SLIP.
+  // With nu > 0 the mismatch grows wall shear layers that are not part of the
+  // mode and that dominate the box's KE budget. Measured over the full box the
+  // fit returns 3.5-4.2x the true nu; restricting it to an interior window does
+  // not rescue it, because the window is not a closed subsystem -- sweeping
+  // margin over {0, 24, 48, 72} and run length over {100, 200} moves the fitted
+  // value between 0.25x and 4.2x. Any single config that happens to land near
+  // 1.0 does so by luck, and shipping it would be fitting the test to the
+  // answer.
+  //
+  // So measure the operator directly instead, which is both exact and stronger.
+  // Diffusion is the LAST thing step() encodes. Two steps from a byte-identical
+  // field, one at nu = 0 and one at nu = NU, therefore share their pressure
+  // solve, extrapolation and advection exactly -- those are the same dispatches
+  // over the same inputs -- and differ by precisely the viscous increment:
+  //
+  //     w      = A(u0)                 (the nu = 0 result)
+  //     w_visc = (I + c*L)^N A(u0)     (the nu = NU result)
+  //     w_visc - w  =  N*c*L*w + O((c*L)^2)  =  nu*dt*lap5(w) + O(...)
+  //
+  // since N * c = N * nu * (dt/N) / h^2 = nu*dt/h^2. The neglected term is
+  // C(N,2)(cL)^2, which for this field is ~0.1% of the first -- far below the
+  // 2x / 4x / Nx errors this is here to catch.
+  const NU = 1.2e-2;   // just under viscNuMax at this tier, and an ODD substep count
+  const MARGIN = 20;   // keeps the no-slip wall layer out of the window; see below
+
+  const r = await page.evaluate(async ({ NU, MARGIN }) => {
+    const { solver, device, interaction, ui } = window.__flowlab;
+    solver.paused = true;
+
+    // A lost device returns zeros from every readback, and zeros give a
+    // perfectly correlated slope of 0/0. Guarded here and asserted below.
+    let deviceLost = false;
+    device.lost.then((info) => { deviceLost = info.message || 'lost'; });
+
+    const numX = solver.numX, n = solver.numY, h = solver.h;
+    const Nc = n - 2;                    // square fluid box, cells 1..Nc
+    const k = Math.PI / (Nc * h), A = 1.0;
+
+    // The Taylor-Green mode from the Task 7 harness: smooth, divergence-free on
+    // the MAC grid, and closed-box, so the projection has almost nothing to do
+    // and the field stays clean enough for a discrete Laplacian to be meaningful.
+    const sData = new Float32Array(numX * n);
+    const uData = new Float32Array(numX * n);
+    const vData = new Float32Array(numX * n);
+    for (let i = 0; i < numX; i++)
+      for (let j = 0; j < n; j++) {
+        sData[i * n + j] = (i >= 1 && i <= Nc && j >= 1 && j <= Nc) ? 1 : 0;
+        const Xu = i * h - h,           Yu = j * h + 0.5 * h - h;
+        const Xv = i * h + 0.5 * h - h, Yv = j * h - h;
+        uData[i * n + j] =  A * Math.sin(k * Xu) * Math.cos(k * Yu);
+        vData[i * n + j] = -A * Math.cos(k * Xv) * Math.sin(k * Yv);
+      }
+
+    const size = numX * n * 4;
+    const readBuf = async (src) => {
+      const st = device.createBuffer({ size, usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST });
+      const e = device.createCommandEncoder();
+      e.copyBufferToBuffer(src, 0, st, 0, size);
+      device.queue.submit([e.finish()]);
+      await st.mapAsync(GPUMapMode.READ);
+      const out = new Float32Array(st.getMappedRange().slice(0));
+      st.unmap(); st.destroy();
+      return out;
+    };
+
+    interaction.showObstacle = false;
+    const oneStep = async (nu) => {
+      solver.resetFlipState();
+      solver.setParams({ nu, dt: 1 / 120, omega: 1.9, density: 1000 });
+      solver.writeSolidMask(sData);
+      solver.writeVelocityU(uData);
+      solver.writeVelocityV(vData);
+      solver.writeSmoke(new Float32Array(numX * n).fill(1));
+      device.queue.writeBuffer(solver.pressureBuffer, 0, new Float32Array(numX * n));
+      solver.step(ui.numIters);
+      await device.queue.onSubmittedWorkDone();
+      const { u, v } = solver.velocityBuffers;
+      return {
+        u: await readBuf(u), v: await readBuf(v),
+        sub: solver.viscSubsteps, clamped: solver.viscClamped,
+        nuEff: solver.viscNuEff, nuMax: solver.viscNuMax,
+      };
+    };
+
+    const base = await oneStep(0);
+    const visc = await oneStep(NU);
+    const dt = solver.params.dt;
+
+    // Least-squares slope through the origin of (actual increment) against
+    // (nu*dt*lap5), over interior faces only.
+    //
+    // The margin is set by the ghost, not by the stencil. Five cells would be
+    // enough for every face and stencil neighbour to be FLUID, but the ghost
+    // makes the box no-slip and a wall layer grows in from each side: measured
+    // at margin 5 it still contributes 65x the bulk increment at the window
+    // edge. The layer's scale is 2*sqrt(nu*dt) = 5.1 cells here, so MARGIN = 20
+    // is ~4 of those and puts the wall contribution below 1e-2 of the signal.
+    let sae = 0, see = 0, saa = 0, nCell = 0, nOut = 0, mag = 0, nBad = 0;
+    const lo = MARGIN, hi = Nc - MARGIN + 1;
+    for (const key of ['u', 'v']) {
+      const w = base[key], wd = visc[key];
+      for (let i = lo; i <= hi; i++)
+        for (let j = lo; j <= hi; j++) {
+          const idx = i * n + j, c = w[idx];
+          const actual = wd[idx] - c;
+          if (!Number.isFinite(actual) || !Number.isFinite(c)) { nBad++; continue; }
+          const lap = (w[idx + n] + w[idx - n] + w[idx + 1] + w[idx - 1] - 4 * c) / (h * h);
+          const expected = NU * dt * lap;
+          sae += actual * expected; see += expected * expected; saa += actual * actual;
+          nCell++; mag = Math.max(mag, Math.abs(c));
+          // Cells where the two disagree by more than 3x. A handful sit on the
+          // mode's node lines, where the substepping's second-order term and
+          // MacCormack's limiter are both most active; a structural error would
+          // instead put most of the window here.
+          if (Math.abs(actual - expected) > 3 * Math.abs(expected) + 1e-5) nOut++;
+        }
+    }
+
+    if (deviceLost) throw new Error('GPU device lost mid-run: ' + deviceLost);
+    return {
+      slope: sae / see,
+      corr: sae / Math.sqrt(saa * see),
+      nCell, nOut, mag, nBad,
+      sub: visc.sub, clamped: visc.clamped, nuEff: visc.nuEff, nuMax: visc.nuMax,
+      baseSub: base.sub,
+    };
+  }, { NU, MARGIN });
+
+  console.log(
+    `nu delivered / nu requested = ${r.slope.toFixed(5)}  corr = ${r.corr.toFixed(6)}  ` +
+    `outliers = ${r.nOut}/${r.nCell}  substeps = ${r.sub}  ` +
+    `nu_max = ${r.nuMax.toExponential(3)}`);
+
+  // Guards. A dead device or a collapsed field would make the slope 0/0.
+  expect(r.nBad).toBe(0);
+  expect(r.nCell).toBeGreaterThan(10000);
+  expect(r.mag).toBeGreaterThan(0.1);
+  expect(r.baseSub).toBe(0);             // the nu = 0 arm really ran without diffusion
+  expect(r.sub).toBeGreaterThan(1);
+  expect(r.sub % 2).toBe(1);             // odd, so this also pins the parity bookkeeping
+  expect(r.clamped).toBe(false);         // a saturated nu is not the nu we asked for
+  expect(r.nuEff).toBeCloseTo(NU, 12);
+  // The increment must be SHAPED like the Laplacian, not merely sized like it.
+  // A shader that scaled the field, or diffused with the wrong stencil, lands
+  // far below this even if its slope happened to come out near 1.
+  expect(r.corr).toBeGreaterThan(0.995);
+  expect(r.nOut / r.nCell).toBeLessThan(0.01);
+
+  // The payload. A 2x coefficient error lands at 2.0 or 0.5; an h vs h/2 error
+  // at 4.0 or 0.25; a per-step rather than per-substep dt at `substeps` = 27x.
+  // None of those survive a +-2% window.
+  expect(r.slope).toBeGreaterThan(0.98);
+  expect(r.slope).toBeLessThan(1.02);
+});
+
+test('the viscous substep schedule never lets the explicit coefficient exceed 1/4', async ({ page }) => {
   await boot(page);
   const rows = await page.evaluate(async () => {
     const { solver, ui } = window.__flowlab;
     solver.paused = true;
     const h = solver.h, dt = solver.params.dt;
+
+    // Count the diffuse dispatches actually encoded, keyed off the pipeline.
+    // Asserting viscSubsteps alone would not notice a loop that reported a
+    // count it never dispatched -- in particular the nu = 0 case, where "0
+    // substeps" has to mean "no dispatches", not "one harmless one".
+    const proto = GPUComputePassEncoder.prototype;
+    const origSetPipeline = proto.setPipeline;
+    let seen = 0;
+    proto.setPipeline = function (pipeline, ...rest) {
+      if (pipeline === solver.diffusePipeline) seen++;
+      return origSetPipeline.call(this, pipeline, ...rest);
+    };
+
     const out = [];
-    for (const nu of [0, 1e-5, 1e-3, 1e-1]) {
-      solver.setParams({ nu });
-      solver.step(ui.numIters);
-      out.push({
-        nu,
-        used: solver.viscSubsteps,
-        clamped: solver.viscClamped,
-        want: nu === 0 ? 0 : Math.ceil(nu * dt / (0.25 * h * h)),
-        nMax: solver.constructor.N_MAX,
-      });
+    try {
+      for (const nu of [0, 1e-5, 1e-3, 1e-1]) {
+        solver.setParams({ nu });
+        seen = 0;
+        solver.step(ui.numIters);
+        out.push({
+          nu,
+          used: solver.viscSubsteps,
+          clamped: solver.viscClamped,
+          nuEff: solver.viscNuEff,
+          nuMax: solver.viscNuMax,
+          dispatched: seen,
+          want: nu === 0 ? 0 : Math.ceil(nu * dt / (0.25 * h * h)),
+          nMax: solver.constructor.N_MAX,
+          h, dt,
+        });
+      }
+    } finally {
+      proto.setPipeline = origSetPipeline;
     }
     return out;
   });
 
   for (const r of rows) {
     if (r.nu === 0) {
-      expect(r.used).toBe(0);          // no viscosity, no dispatches
+      expect(r.used).toBe(0);
+      expect(r.dispatched).toBe(0);      // "no substeps" must mean no dispatches
       expect(r.clamped).toBe(false);
+      expect(r.nuEff).toBe(0);
       continue;
     }
+
+    // Below the ceiling nothing changed: N is whatever the 1/4 limit needs.
+    // At and above it, nu SATURATES at nuMax and N pins to N_MAX -- we do not
+    // truncate N and leave the coefficient above the limit.
+    expect(r.nuMax).toBeCloseTo(r.nMax * 0.25 * r.h * r.h / r.dt, 12);
+    expect(r.clamped).toBe(r.nu > r.nuMax);
+    expect(r.nuEff).toBeCloseTo(Math.min(r.nu, r.nuMax), 12);
     expect(r.used).toBe(Math.max(1, Math.min(r.nMax, r.want)));
-    expect(r.clamped).toBe(r.want > r.nMax);
+    expect(r.dispatched).toBe(r.used);
+
+    // THE assertion this test exists for. The explicit five-point update
+    // amplifies the worst mode by |1 - 8*coeff| per substep, so coeff > 1/4 is
+    // divergence, not under-diffusion. Truncating N while keeping dt_sub = dt/N
+    // -- the scheme this replaced -- overshoots by want/N_MAX: 1.71 at tier 256
+    // with nu = 0.1, i.e. ~12.7^32 growth per frame, Inf then NaN inside one
+    // frame. Saturating nu instead pins coeff at exactly 1/4.
+    const coeff = r.nuEff * (r.dt / r.used) / (r.h * r.h);
+    expect(coeff).toBeLessThanOrEqual(0.25 + 1e-12);
   }
 
-  // Guard: at least one case must actually clamp, or the clamp assertion is vacuous
+  // Guards: both regimes must actually be exercised, or half the assertions
+  // above are vacuous.
   expect(rows.some((r) => r.clamped)).toBe(true);
+  expect(rows.some((r) => r.nu > 0 && !r.clamped)).toBe(true);
+});
+
+test('a saturated viscosity leaves the field finite and bounded', async ({ page }) => {
+  test.setTimeout(120_000);
+  await boot(page);
+
+  // The regression guard for the clamp rewrite. Under the previous scheme --
+  // N = min(N_MAX, want) with dt_sub = dt/N -- this exact configuration ran at
+  // coeff = 1.71 and blew up to Inf, then NaN, inside a single frame, which the
+  // next pressure solve spread over the whole field with no way back short of a
+  // preset reload. The Reynolds control Task 9 ships reaches this regime at
+  // every tier from 256 up, so "clamped" has to mean bounded.
+  const r = await page.evaluate(async () => {
+    const { solver, device, ui } = window.__flowlab;
+    solver.paused = true;
+
+    let deviceLost = false;
+    device.lost.then((info) => { deviceLost = info.message || 'lost'; });
+
+    const numX = solver.numX, n = solver.numY;
+    const size = numX * n * 4;
+    const readBuf = async (src) => {
+      const st = device.createBuffer({ size, usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST });
+      const e = device.createCommandEncoder();
+      e.copyBufferToBuffer(src, 0, st, 0, size);
+      device.queue.submit([e.finish()]);
+      await st.mapAsync(GPUMapMode.READ);
+      const out = new Float32Array(st.getMappedRange().slice(0));
+      st.unmap(); st.destroy();
+      return out;
+    };
+
+    solver.setParams({ nu: 1e-1 });          // ~7x nuMax at this tier
+    for (let k = 0; k < 60; k++) solver.step(ui.numIters);
+    await device.queue.onSubmittedWorkDone();
+
+    const u = await readBuf(solver.velocityBuffers.u);
+    const v = await readBuf(solver.velocityBuffers.v);
+    let nBad = 0, peak = 0, moving = 0;
+    for (let i = 1; i < numX - 1; i++)
+      for (let j = 1; j < n - 1; j++) {
+        const a = u[i * n + j], b = v[i * n + j];
+        if (!Number.isFinite(a) || !Number.isFinite(b)) { nBad++; continue; }
+        peak = Math.max(peak, Math.abs(a), Math.abs(b));
+        if (Math.abs(a) > 0.05) moving++;
+      }
+    if (deviceLost) throw new Error('GPU device lost mid-run: ' + deviceLost);
+    return {
+      nBad, peak, moving,
+      clamped: solver.viscClamped, used: solver.viscSubsteps,
+      nu: solver.params.nu, nuEff: solver.viscNuEff, nuMax: solver.viscNuMax,
+    };
+  });
+
+  // Guards: the configuration really is the saturated one, or this proves
+  // nothing. These are deliberately BEFORE the payload so that a regression in
+  // the clamp is reported as a non-finite field, not as a bookkeeping mismatch.
+  expect(r.clamped).toBe(true);
+  expect(r.used).toBe(32);
+  expect(r.nu).toBeGreaterThan(r.nuMax);
+
+  // THE payload. Finite, and bounded by the free stream rather than merely
+  // "not NaN". Reverting to N = min(N_MAX, want) with dt_sub = dt/N puts the
+  // coefficient at 1.71 here and this reaches Inf within one frame.
+  expect(r.nBad).toBe(0);
+  expect(r.peak).toBeLessThan(5);
+
+  // ...and the saturation is the documented one: nu pinned to nuMax, which is
+  // what makes viscClamped mean "effective Re is higher than requested".
+  expect(r.nuEff).toBeCloseTo(r.nuMax, 12);
+  // And not a dead field: saturation is UNDER-diffusion, so the flow keeps
+  // moving. A field damped to zero would also be finite and bounded.
+  expect(r.moving).toBeGreaterThan(1000);
 });
 
 /**
@@ -1579,6 +1899,104 @@ test('viscosity grows a no-slip boundary layer without damping the free stream',
   expect(r.viscous.far).toBeGreaterThan(r.inviscid.far * 0.9);
 });
 
+test('an odd substep count leaves the result on the hat pair, and step() follows it', async ({ page }) => {
+  test.setTimeout(120_000);
+  await boot(page);
+
+  // Substep parity is the one piece of this task's bookkeeping that no other
+  // test pins with a field assertion. The two behavioural tests both run N = 6,
+  // and the boundary-layer test asserts substeps > 1, so mutating
+  // `velNext = src` to `velNext = dst` passes the entire suite -- and at N = 1,
+  // the HIGH-Re end of Task 9's slider, that mutation makes viscosity a total
+  // no-op: step() would publish the un-diffused combine output instead.
+  //
+  // N = 1 is the sharpest case: it is odd, so the result is on the hat pair
+  // rather than tilde, and it is the only count at which the wrong slot holds a
+  // field that is exactly the inviscid answer.
+  const r = await page.evaluate(async () => {
+    const { solver, device, ui } = window.__flowlab;
+    solver.paused = true;
+
+    let deviceLost = false;
+    device.lost.then((info) => { deviceLost = info.message || 'lost'; });
+
+    const numX = solver.numX, n = solver.numY, h = solver.h;
+    const size = numX * n * 4;
+    const readBuf = async (src) => {
+      const st = device.createBuffer({ size, usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST });
+      const e = device.createCommandEncoder();
+      e.copyBufferToBuffer(src, 0, st, 0, size);
+      device.queue.submit([e.finish()]);
+      await st.mapAsync(GPUMapMode.READ);
+      const out = new Float32Array(st.getMappedRange().slice(0));
+      st.unmap(); st.destroy();
+      return out;
+    };
+
+    const snapU = await readBuf(solver.velocityBuffers.u);
+    const snapV = await readBuf(solver.velocityBuffers.v);
+    const snapP = await readBuf(solver.pressureBuffer);
+
+    // Just under the single-substep ceiling: want = ceil(0.96) = 1, so N = 1
+    // with the coefficient at 0.24 -- as large a one-substep kick as the
+    // stability limit allows, which keeps the field difference well clear of
+    // float32 noise.
+    const NU1 = 0.24 * h * h / solver.params.dt;
+
+    const oneStep = async (nu) => {
+      solver.writeVelocityU(snapU);
+      solver.writeVelocityV(snapV);
+      device.queue.writeBuffer(solver.pressureBuffer, 0, snapP);
+      solver.resetFlipState();                 // _velCur = 0
+      solver.setParams({ nu });
+      solver.step(ui.numIters);
+      await device.queue.onSubmittedWorkDone();
+      return {
+        u: await readBuf(solver.velocityBuffers.u),
+        cur: solver._velCur, sub: solver.viscSubsteps,
+      };
+    };
+
+    const inv = await oneStep(0);
+    const visc = await oneStep(NU1);
+
+    let maxDiff = 0, mag = 0, nBad = 0, changed = 0;
+    for (let i = 1; i < numX - 1; i++)
+      for (let j = 1; j < n - 1; j++) {
+        const a = inv.u[i * n + j], b = visc.u[i * n + j];
+        if (!Number.isFinite(a) || !Number.isFinite(b)) { nBad++; continue; }
+        const d = Math.abs(a - b);
+        maxDiff = Math.max(maxDiff, d);
+        mag = Math.max(mag, Math.abs(a));
+        if (d > 1e-6) changed++;
+      }
+
+    if (deviceLost) throw new Error('GPU device lost mid-run: ' + deviceLost);
+    return {
+      invCur: inv.cur, viscCur: visc.cur, sub: visc.sub, invSub: inv.sub,
+      maxDiff, mag, changed, nBad, NU1,
+    };
+  });
+
+  // The schedule really is the odd one this test is about.
+  expect(r.sub).toBe(1);
+  expect(r.invSub).toBe(0);
+
+  // Slot bookkeeping. From _velCur = 0 the MacCormack combine lands on tilde =
+  // 2, which is where the inviscid step publishes. One diffusion substep reads
+  // tilde and writes hat = 1, so the viscous step must publish slot 1.
+  expect(r.invCur).toBe(2);
+  expect(r.viscCur).toBe(1);
+
+  // The field assertion, which is the half that slot bookkeeping alone does not
+  // give: publishing tilde after an odd count would hand back the untouched
+  // combine output, so the two runs would agree bit for bit.
+  expect(r.nBad).toBe(0);
+  expect(r.mag).toBeGreaterThan(0.1);        // guard: not a collapsed field
+  expect(r.maxDiff).toBeGreaterThan(1e-3);
+  expect(r.changed).toBeGreaterThan(1000);   // and not one lucky cell
+});
+
 test('the viscous stencil cannot read the stale i=0 / j=0 ring', async ({ page }) => {
   test.setTimeout(120_000);
   await boot(page);
@@ -1605,6 +2023,7 @@ test('the viscous stencil cannot read the stale i=0 / j=0 ring', async ({ page }
     const snapU = await readBuf(solver.velocityBuffers.u);
     const snapV = await readBuf(solver.velocityBuffers.v);
     const snapP = await readBuf(solver.pressureBuffer);
+    const EPS = 1e-3;
 
     // advect_velocity and maccormack_velocity both return for i < 1 or j < 1,
     // so the i=0 column and the j=0 row are never written by advection: the slot
@@ -1626,8 +2045,31 @@ test('the viscous stencil cannot read the stale i=0 / j=0 ring', async ({ page }
       return { pu, pv };
     };
 
-    const run = async (poisoned, nu) => {
-      const { pu, pv } = poisoned ? poison(snapU, snapV) : { pu: snapU, pv: snapV };
+    // ALL FOUR ring lines, perturbed rather than overwritten. The other two --
+    // u along j = 0 and v along i = 0 -- are NOT covered by the FLUID predicate:
+    // the u-face at j = 1 has both its flanking cells (i-1, 1) and (i, 1) in the
+    // fluid, so that face IS diffused and its stencil does reach u[i][0]. What
+    // stops it is the index guard in u_face_buried/v_face_buried, with the solid
+    // mask agreeing only because every shipped preset happens to mark those
+    // lines solid. So these two lines need their own probe.
+    //
+    // Additive, and small. A 1e6 overwrite passes through MacCormack's limiter,
+    // which clamps the correction to the local min/max of the forward stencil --
+    // the probe SATURATES, and the small response it produces says nothing about
+    // the gain at realistic ring staleness. EPS = 1e-3 is a perturbation the
+    // limiter does not clip, so response/EPS is an actual gain.
+    const perturb = (u, v, eps) => {
+      const pu = new Float32Array(u), pv = new Float32Array(v);
+      for (let j = 0; j < n; j++)    { pu[j] += eps;         pv[j] += eps; }
+      for (let i = 0; i < numX; i++) { pu[i * n] += eps;     pv[i * n] += eps; }
+      return { pu, pv };
+    };
+
+    const run = async (mode, nu) => {
+      const { pu, pv } =
+        mode === 'poison' ? poison(snapU, snapV) :
+        mode === 'perturb' ? perturb(snapU, snapV, EPS) :
+        { pu: snapU, pv: snapV };
       solver.writeVelocityU(pu);
       solver.writeVelocityV(pv);
       device.queue.writeBuffer(solver.pressureBuffer, 0, snapP);
@@ -1649,15 +2091,22 @@ test('the viscous stencil cannot read the stale i=0 / j=0 ring', async ({ page }
       return { m, mag, nBad };
     };
 
-    const cleanVisc = await run(false, 2.5e-3);
-    const dirtyVisc = await run(true, 2.5e-3);
-    const cleanInv = await run(false, 0);
-    const dirtyInv = await run(true, 0);
+    const cleanVisc = await run('clean', 2.5e-3);
+    const dirtyVisc = await run('poison', 2.5e-3);
+    const cleanInv = await run('clean', 0);
+    const dirtyInv = await run('poison', 0);
+
+    // Phase B: all four lines, non-saturating.
+    const pertVisc = await run('perturb', 2.5e-3);
+    const pertInv = await run('perturb', 0);
 
     if (deviceLost) throw new Error('GPU device lost mid-run: ' + deviceLost);
     return {
       visc: diff(cleanVisc.u, dirtyVisc.u),
       inviscid: diff(cleanInv.u, dirtyInv.u),
+      gainVisc: diff(cleanVisc.u, pertVisc.u).m / EPS,
+      gainInv: diff(cleanInv.u, pertInv.u).m / EPS,
+      EPS,
       substeps: cleanVisc.sub,
     };
   });
@@ -1675,4 +2124,27 @@ test('the viscous stencil cannot read the stale i=0 / j=0 ring', async ({ page }
   // because diffuse.wgsl classifies i == 0 and j == 0 as BURIED by index and
   // substitutes a ghost, so the poisoned entries are never loaded.
   expect(r.visc.m).toBe(0);
+
+  // Phase B: all four ring lines, perturbed by EPS rather than overwritten.
+  //
+  // The inviscid gain here is a PRE-EXISTING defect in the MacCormack velocity
+  // chain, not this task's: the forward pass writes the hat pair but not its
+  // ring, so hat's ring is stale, and the backward pass then samples fu at
+  // j0 = 0 and fv at i0 = 0 and loads it. It is measured, not fixed -- fixing
+  // it means making the advect passes write their ring, which is its own task.
+  // What is asserted is only that the viscous pass does not make it worse.
+  console.log(
+    `ring-leak gain: inviscid = ${r.gainInv.toExponential(3)}  ` +
+    `viscous = ${r.gainVisc.toExponential(3)}  (eps = ${r.EPS})`);
+
+  // The leak is real but bounded well below 1 -- a perturbation of the ring
+  // does not reach the interior at anything like full strength.
+  expect(r.gainInv).toBeGreaterThan(0);        // guard: the probe must actually probe
+  expect(r.gainInv).toBeLessThan(1);
+  // And viscosity does not amplify it. If the diffusion stencil ever started
+  // loading the ring, N_MAX substeps of direct injection per frame would put
+  // this far above the inviscid path rather than beside it.
+  expect(r.gainVisc).toBeLessThan(r.gainInv * 3);
 });
+
+
