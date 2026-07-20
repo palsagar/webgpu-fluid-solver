@@ -210,57 +210,107 @@ export const RE_SLIDER_STEPS = 100;
  * INSIDE the honest window, so the app opens un-badged on a visible vortex
  * street. That is what raising `numIters` 80 -> 256 bought: the position did not
  * move, the window grew out past it. At the startup tier the window is now
- * 4.10 .. 154.23, and Re 74.8 sits 1.30x above the measured shedding onset
- * (57.5) and 2.06x below the ceiling.
+ * 4.10 .. 154.23, and Re 74.8 sits 1.43x above the measured shedding onset
+ * (52.2) and 2.06x below the ceiling.
  *
- * The reasoning below is entirely re-measured, because Task 9's onset number
- * turned out to be an artifact.
+ * ─── THE ONSET IS 52.2, NOT 57.5. Two superseded measurements ──────────────
  *
- * ─── Task 9's Re ~126 onset was measuring a transient ───────────────────────
+ * Both earlier numbers came from a FIXED-WINDOW amplitude criterion, and both
+ * were too high for the same reason. Near a Hopf bifurcation the growth rate
+ * vanishes, so the amplitude is still moving when any fixed window closes: the
+ * window's length, not the flow, sets where the criterion trips.
  *
- * It settled 400 steps (3.33 s) and read the wake's unsteadiness. Repeating
- * that at dt = 1/240 gives a SMOOTH ramp over Re 30..210 with no bifurcation
- * anywhere in it — because 3.33 s is only ~5 shedding periods (St ~ 0.2,
- * D = 0.12, U = 1 -> period ~0.6 s) and the growth rate vanishes near onset, so
- * the amplitude is still climbing when the window opens. A threshold laid
- * across that ramp reports the settle time, not the physics.
+ *   Re ~126   Task 9. Settled 400 steps (3.33 s ~ 5 shedding periods) and read
+ *             the wake's unsteadiness. At dt = 1/240 that gives a SMOOTH ramp
+ *             over Re 30..210 with no bifurcation in it at all.
+ *   Re 57.5   Its replacement, and the table this block used to carry: run 30 s
+ *             from an identical impulsive start and compare the fluctuation at
+ *             t = 5 s against t = 30 s, calling onset where the RATIO crosses 1.
+ *             The same error, one order of magnitude smaller. That table read
  *
- * ─── What replaced it ──────────────────────────────────────────────────────
+ *               Re      50      53      55      57      60      72
+ *               growth  0.001   0.005   0.173   0.638  12.2   158.8
  *
- * A bifurcation test: run 30 s (~50 shedding periods) from an identical
- * impulsive start, and compare the wake fluctuation at t = 5 s against t = 30 s.
- * Below onset a perturbation decays; above it grows to a limit cycle. The
- * separation is 4-5 orders of magnitude, so the threshold is unambiguous:
+ *             and is SUPERSEDED — it is reproduced here only so the number it
+ *             produced can be traced. Do not reason from it.
  *
- *   dt = 1/240   Re      50      53      55      57      60      72
- *                growth  0.001   0.005   0.173   0.638  12.2   158.8
- *                sat.    7e-7    5e-6    2.5e-4  1.0e-3  2.8e-2  8.8e-1
+ * ─── The criterion that replaced them, and why it cannot drift ─────────────
  *
- * Onset (growth = 1) is Re 57.5. The same sweep at dt = 1/120 gives Re 56.8.
+ * Fit the perturbation's exponential growth rate and find where it crosses
+ * zero. `sigma` is a property of the flow; unlike an amplitude ratio it does
+ * not depend on how long the point ran, so no choice of window can move it.
  *
- * ─── The onset did NOT move when nu_num halved ─────────────────────────────
+ * Per point: identical initial conditions (full field reload + resetFlipState),
+ * 15 s spin-up so the base flow forms, then ONE deterministic transverse kick
+ * (a Gaussian blob 1D behind the cylinder, amplitude 1e-3 U — identical at
+ * every Re, so only the RATE differs between points), then 50 s logged at the
+ * app's own 10-step cadence. `sigma` is the slope of ln(RMS) against t, fitted
+ * only where the signal is above the float32 round-off floor (~3e-7) and below
+ * the onset of nonlinear saturation. Tier 256, dt = 1/240, 256 iterations.
  *
- * 56.8 -> 57.5 is a 1.1% shift, and UPWARD. Halving the scheme's numerical
- * viscosity changed the shedding threshold by nothing. So the onset is NOT set
- * by nu_num — it is set by the geometry: the channel blockage (D/H = 0.12
- * raises the critical Re above the textbook unconfined 47) and the staircased
- * cylinder. Any story in which the onset is "inflated by numerical viscosity"
- * is wrong, and Task 9's 126 was method, not physics.
+ *   Re        44        47        50        52        54        56
+ *   sigma  -0.3772   -0.2159   -0.0975   -0.0036   +0.0771   +0.1526
+ *   r^2     0.9989    0.9950    0.9733    (see below) 0.9993   0.9982
+ *
+ * Re 58 and 60 were run too and are NOT in the table: above Re 56 the wake
+ * crosses from the round-off floor to nonlinear saturation in under 4 s, which
+ * leaves too few windows for a fit worth quoting. They are not needed — the
+ * crossing is bracketed by 50/52/54.
+ *
+ * `sigma` is linear in Re across the whole set (dsigma/dRe ~ 0.042, r^2 > 0.996)
+ * — the textbook Hopf shape — and crosses zero at **Re 52.2**.
+ *
+ * Uncertainty **+-0.3**: the full spread of the crossing over 15 bracketing fit
+ * subsets x 7 analysis-window variants (window length, settle time, floor and
+ * ceiling of the fit range) — 53 combinations, all landing in 52.02 .. 52.39.
+ * That systematic spread dwarfs the statistical error on any single `sigma`
+ * (+-0.003 or better), so it is the honest bar.
+ *
+ * Re 52's r^2 of 0.81 is not a bad fit — it is a nearly FLAT line, which has
+ * almost no variance for a fit to explain. Its standard error is +-0.00018.
+ * That point is also the whole argument: at sigma = -0.0036 the e-folding time
+ * is 278 s, so across any 30 s window Re 52 is indistinguishable from a
+ * saturated limit cycle. The superseded criterion could not have found this.
+ *
+ * The decaying and growing signals are both the SHEDDING mode, not the kick
+ * washing downstream: detrended by the fitted exponential, the residual
+ * oscillation reads St = 0.163 .. 0.173 at every point, decaying ones included.
+ *
+ * ─── The onset barely moves when nu_num doubles ────────────────────────────
+ *
+ * This was previously argued from 56.8 (dt = 1/120) against 57.5 (dt = 1/240),
+ * but BOTH of those came from the superseded fixed-window method, so the
+ * comparison inherited its bias and could not support the conclusion. Repeated
+ * with the growth-rate criterion, same geometry, same kick, same 15 s + 50 s:
+ *
+ *   dt = 1/120   Re      46        49        52        55        58
+ *                sigma  -0.2551   -0.1367   -0.0163   +0.0974   +0.2020
+ *
+ * crossing zero at Re 52.5 (range 52.41 .. 52.57 over the bracketing subsets),
+ * against 52.2 +- 0.3 at dt = 1/240. Doubling the scheme's numerical viscosity
+ * moved the onset by 0.6%, and DOWNWARD as dt falls — the direction less
+ * dissipation predicts, and far too small to be what sets the threshold.
+ *
+ * So the conclusion the old comparison reached is right after all, and now
+ * rests on evidence of the same kind on both sides: the onset is NOT set by
+ * nu_num. It is set by the geometry — the channel blockage (D/H = 0.12) and
+ * the staircased cylinder — which is why it sits above the textbook unconfined
+ * 47 rather than below it.
  *
  * ─── Why pos 75 specifically ───────────────────────────────────────────────
  *
- * Halving dt first made the overlap exist at all: the tier-256 ceiling rose
- * 32.8 -> 59.0 while the onset stayed at 57.5. But 57.5 .. 59.0 is a 2.8% band
- * and the slider's log step is 7.9%, so no position landed in it, and widening
- * the slider would not have helped — the limit-cycle amplitude 2% above onset
- * is ~1e-3 of the mean flow and takes tens of seconds of simulated time to
- * appear. It is a vortex street only in the sense that a thermometer reads a
- * fever at 37.1 C.
+ * Halving dt made the overlap exist at all: the tier-256 ceiling rose
+ * 32.8 -> 59.0, past the onset. But 52.2 .. 59.0 is a 13% band against a 7.9%
+ * log step, so exactly ONE position lived in it — pos 71, Re 55.2, a wake 6%
+ * above onset whose saturated fluctuation is small and which takes tens of
+ * seconds of simulated time to grow. (The superseded onset made this band
+ * 2.8% wide and the old text claimed no position landed in it at all; with the
+ * onset corrected downward, one does. It was a poor default either way.)
  *
  * Raising numIters 80 -> 256 lifted that ceiling to 154.23, which is what made
- * the band wide enough to choose within rather than merely land in. pos 75 is
- * kept because the street there is already unmistakable — the saturated wake
- * fluctuation is ~0.9 of the mean flow — and because moving higher would spend
+ * the band wide enough to choose within rather than merely land in: 14 slider
+ * positions are now both honest and above onset. pos 75 is kept because the
+ * street there is already unmistakable and because moving higher would spend
  * the new margin for no visual gain. Neighbouring positions are both honest
  * too (pos 74 -> Re 69.2, pos 76 -> Re 80.8), so the default no longer sits on
  * a cliff edge the way it did when the ceiling was 59.
@@ -520,32 +570,53 @@ const PROBE_CAPACITY = 256;
  * Below this RMS transverse velocity, relative to U, the wake is steady and any
  * frequency fitted to it is a property of the noise, not of the flow.
  *
- * 0.02 sits in a gap of nearly four orders of magnitude, so its exact value
- * does not matter. Measured at this probe (2D downstream, tier 256, dt = 1/240,
- * 256 iterations), from an identical impulsive start per point, as the RMS of v
- * over the trailing 256-sample window:
+ * ─── There is NO amplitude gap, and the old note claiming one was wrong ─────
  *
- *   Re          40       50    |    55       57.5      74.8     140
- *   t = 30 s  5.2e-8   1.6e-5  |  1.9e-3    2.4e-2   2.6e-1   5.5e-1
- *   t = 90 s     -        -    |  8.1e-2    1.2e-1      -        -
- *   trend     decay    decay   |  limit cycle -------------------->
+ * This constant used to be justified by "nothing lands between 1.6e-5 and
+ * 8.1e-2 once settled, and 0.02 is inside that gap". That is false as physics.
+ * A Hopf bifurcation saturates at A_sat ~ sqrt(Re - Re_c), which is a CONTINUUM
+ * through every amplitude as Re approaches onset from above. The apparent gap
+ * was an artifact of the Re values that happened to be sampled, and the "once
+ * settled" numbers in it were not settled: they came from 30 s windows on
+ * wakes still growing by up to 271x across the window that measured them.
  *
- * Below onset the fluctuation DECAYS (Re 40 falls 67x between t = 5 s and
- * t = 30 s; Re 50 falls 4x). Above it the fluctuation grows to a sustained
- * limit cycle at 8% of the free stream or more. Nothing lands between 1.6e-5
- * and 8.1e-2 once settled, and 0.02 is inside that gap.
+ * ─── What the saturated amplitude actually does ────────────────────────────
  *
- * ─── The t = 30 s row is why the gate must sit HIGH in the gap ──────────────
+ * Measured at this probe (2D downstream, tier 256, dt = 1/240, 256 iterations),
+ * identical initial conditions per point, 115 s of simulation time each. Every
+ * value below is SATURATION-VERIFIED — the RMS over the final two 20 s windows
+ * agrees to the drift shown, rather than being read off a single window and
+ * assumed to have settled:
  *
- * At Re 55 the limit cycle is real but slow to build: 1.9e-3 at t = 30 s,
- * 4.6e-2 at t = 60 s, 8.1e-2 at t = 90 s. A gate low enough to catch it early
- * would also be low enough to fire on a decaying transient that has not yet
- * decayed. 0.02 errs toward `steady` while the amplitude is still climbing,
- * which is the right direction: the failure this gate exists to prevent is a
- * confident St for a wake that is not shedding, not a late verdict for one
- * that is. Near onset the readout therefore says `steady` first and switches
- * to a number once the wake has actually grown — a measurement in progress,
- * not a wrong answer.
+ *   Re         55      57.5      60       65      74.8     100      140
+ *   A_sat   8.19e-2  1.159e-1 1.437e-1 1.910e-1 2.636e-1 4.024e-1 5.460e-1
+ *   drift     0.83%    0.02%    0.24%    0.02%    0.01%    0.26%    0.21%
+ *
+ * A^2 is linear in Re, as the Hopf form requires: fitted over the three points
+ * nearest onset it gives A^2 = 2.788e-3 (Re - 52.62), r^2 = 0.9996 — an
+ * INDEPENDENT estimate of the onset, agreeing with the growth-rate crossing
+ * (52.2 +- 0.3) to within 1%. The fit drifts up to 53.3 as points further from
+ * onset enter, which is the expected direction for an asymptotic law, so the
+ * growth-rate crossing remains the quoted number and this is the cross-check.
+ *
+ * ─── What the gate therefore costs, in Re ──────────────────────────────────
+ *
+ * Almost nothing, and that is the real justification. Because the square-root
+ * rise is so steep just above onset, a threshold in AMPLITUDE is very nearly a
+ * threshold in Re: A = 0.02 sits at Re 52.8 by the fit above, about 0.3% above
+ * the onset of 52.2. So the gate does not silence a meaningful band of shedding
+ * flow — it silences a sliver next to onset, and everything below it.
+ *
+ * ─── It still costs TIME near onset, which is unavoidable ──────────────────
+ *
+ * The amplitude is small near onset AND slow to get there: the growth rate
+ * vanishes at the bifurcation, so at Re 55 the wake needs ~80 s of simulation
+ * time (~5 minutes of wall clock at this preset) to reach its 8.19e-2 plateau.
+ * Until it does, the readout says `steady`. That is the right direction to err:
+ * the failure this gate exists to prevent is a confident St for a wake that is
+ * not shedding, not a late verdict for one that is. Near onset the readout
+ * therefore says `steady` first and switches to a number once the wake has
+ * actually grown — a measurement in progress, not a wrong answer.
  */
 const SHEDDING_RMS_THRESHOLD = 0.02;
 
@@ -554,6 +625,47 @@ const HYSTERESIS = 0.25;
 
 /** Crossings needed before a frequency is claimed — i.e. at least two periods. */
 const MIN_CROSSINGS = 3;
+
+/**
+ * Samples per detected period below which the frequency is NOT resolved by the
+ * sample interval, and no St is reported.
+ *
+ * The sample interval is `10 * dt` and `dt` is a user-facing slider, so the app
+ * ships a reachable path to a badly under-sampled series. Nothing used to check
+ * that the interval resolved the frequency the detector had just claimed: at
+ * the top of the dt slider the readout kept printing a confident two-decimal
+ * number that was up to 22% low.
+ *
+ * ─── Where the cliff actually is ────────────────────────────────────────────
+ *
+ * Measured by feeding this detector synthetic wakes at a KNOWN St (0.16, 0.18,
+ * 0.20), five phases and three noise seeds each, swept over samples-per-period
+ * in steps of 0.05. Worst relative error over the whole set, by signal shape:
+ *
+ *   signal shape                              stays <= 3% for spp >=
+ *   pure tone                                        2.25
+ *   + 20% second harmonic                            2.50
+ *   + 20% harmonic, 8% broadband noise               2.50
+ *   + 30% harmonic, 10% noise                        2.70
+ *   + 20% harmonic, 8% noise, still growing          2.95
+ *   + 35% harmonic, 15% noise, still growing         3.10
+ *
+ * Below each boundary the error is not a graceful degradation — it jumps to
+ * 10-20%, because an aliased sample lands on the wrong side of the hysteresis
+ * band and a whole crossing is lost or invented.
+ *
+ * A pure tone flatters a zero-crossing detector and this probe never sees one:
+ * a real wake carries a harmonic, carries noise, and near onset is still
+ * growing. So the binding boundary is 3.1, not the textbook 2. 4 is a 1.3x
+ * margin on it, and leaves the shipped configuration (16.0 samples per period
+ * at dt = 1/240) a factor of 4 clear.
+ *
+ * What it costs: at a St ~ 0.18 wake the guard binds above dt ~ 0.0167, i.e.
+ * the top ~half of the dt slider now reports `under-sampled` instead of a
+ * number. That is the intended trade — the alternative is the confident wrong
+ * number the guard exists to remove.
+ */
+const MIN_SAMPLES_PER_PERIOD = 4;
 
 /**
  * Detects vortex-shedding frequency from a transverse-velocity time series and
@@ -589,10 +701,40 @@ const MIN_CROSSINGS = 3;
  * without that caveat. It is a measurement of the flow the app is actually
  * solving, which is the only thing it can honestly claim.
  *
- * ─── Measured, at this probe, from identical impulsive starts ───────────────
+ * ─── Measured at this probe, ON SATURATED WAKES ─────────────────────────────
  *
- *   Re    55      57.5    60      65      74.8    100     140
- *   St   0.167   0.168   0.168   0.174   0.179   0.190   0.200
+ * The previous version of this table was quoted to three significant figures
+ * but measured on signals still growing by 4.7x to 271x across the very window
+ * that measured them. It has been re-measured: 115 s of simulation time per
+ * point from identical initial conditions, with saturation VERIFIED (the RMS
+ * over the final two 20 s windows agreeing to better than 0.3%, except at
+ * Re 55 — see below) before any frequency is quoted.
+ *
+ * `+-` is the scatter of St across FOUR disjoint 256-sample windows at the end
+ * of each run — the app's own window length, so it is the spread a user would
+ * actually see between successive readouts, not a fit residual:
+ *
+ *   Re      55*     57.5     60       65      74.8     100      140
+ *   St     0.166   0.168   0.170    0.173    0.180    0.190    0.200
+ *   +-     0.001   0.001   0.0000   0.001    0.001    0.0000   0.001
+ *
+ * Three decimals are earned: the window-to-window scatter is <= 0.0008 (0.5%)
+ * at every point. A fourth would not be.
+ *
+ * * Re 55 is the ONE point that did not fully saturate in 115 s. Its final two
+ *   20 s windows agree to 0.83%, but the window before them sits 16% lower, so
+ *   the amplitude was still creeping. Near onset the growth rate vanishes and
+ *   saturation takes proportionally longer; running it out was impractical at
+ *   ~400 s of wall clock per point. Its St is quoted at the same precision
+ *   because the FREQUENCY settles well before the amplitude does — it moved by
+ *   0.0007 across the final four windows while the amplitude was still moving.
+ *   Treat it as good to +-0.001 with that caveat, not as a saturated value.
+ *
+ * Against the previous table the changes are small but real, and they are
+ * concentrated exactly where the old measurement was most transient: Re 60
+ * moves 0.168 -> 0.170 (it was growing 271x across its old window) and Re 65
+ * moves 0.174 -> 0.173. The saturated points confirm the SHAPE the old table
+ * reported.
  *
  * St RISES with Re across this range and reaches 0.200 at Re 140. That is the
  * expected shape, not a defect: the familiar "St ~ 0.2" is the high-Re plateau,
@@ -634,13 +776,27 @@ export class StrouhalProbe {
    *   speed, read live at call time so dragging the obstacle (which changes
    *   nothing here but D is read from it) or moving the inflow slider cannot
    *   leave St scaled by a geometry the flow no longer has.
-   * @returns {{state: 'measuring'|'steady'|'shedding', st: number|null}}
+   * @returns {{state: 'measuring'|'no-signal'|'steady'|'unresolved'|'shedding',
+   *            st: number|null}}
    */
   read({ D, U }) {
     const n = this.v.length;
     if (n < PROBE_CAPACITY / 2 || !(U > 0) || !(D > 0)) {
       return { state: 'measuring', st: null };
     }
+
+    // A dead field, not a steady one. An all-zeros readback — a lost device, a
+    // collapsed solve, or a probe reading a cell the solver never writes —
+    // gives rms = 0, which falls straight through the gate below and prints
+    // `steady — no shedding`: a verdict about the physics of a wake, delivered
+    // from a buffer that carries no physics at all. A perfectly constant series
+    // is not evidence of a steady flow; it is evidence of no measurement.
+    let vMin = this.v[0], vMax = this.v[0];
+    for (let k = 1; k < n; k++) {
+      if (this.v[k] < vMin) vMin = this.v[k];
+      if (this.v[k] > vMax) vMax = this.v[k];
+    }
+    if (!(vMax > vMin)) return { state: 'no-signal', st: null };
 
     const mean = this.v.reduce((a, b) => a + b, 0) / n;
     const dev = this.v.map((x) => x - mean);
@@ -667,9 +823,30 @@ export class StrouhalProbe {
         tLast = this.t[k];
       }
     }
-    if (crossings < MIN_CROSSINGS || tLast === tFirst) return { state: 'measuring', st: null };
+    // `tLast > tFirst`, not `!==`: the strict form also rejects a series whose
+    // timestamps run backwards, which `!==` accepts and turns into a NEGATIVE
+    // frequency — the readout would render a tidy `-0.17`. It also rejects NaN,
+    // which `!==` admits.
+    //
+    // This is defense in depth, not the only line: a reversed series also has a
+    // negative mean sample interval, so the resolution check below rejects it
+    // anyway. Mutating this line back to `===` does NOT fail the suite for that
+    // reason. It stays because it is the correct predicate for what it guards,
+    // and because it must not depend on a check further down that a later edit
+    // could reorder or remove.
+    if (crossings < MIN_CROSSINGS || !(tLast > tFirst)) return { state: 'measuring', st: null };
 
     const f = (crossings - 1) / (tLast - tFirst);
+
+    // Does the sample interval actually resolve the period just claimed? The
+    // mean interval over the whole series, not the nominal 10*dt, so a readback
+    // that outlived its 10-frame slot widens the interval here rather than
+    // being assumed away. See MIN_SAMPLES_PER_PERIOD.
+    const interval = (this.t[n - 1] - this.t[0]) / (n - 1);
+    if (!(interval > 0) || 1 / (f * interval) < MIN_SAMPLES_PER_PERIOD) {
+      return { state: 'unresolved', st: null };
+    }
+
     return { state: 'shedding', st: (f * D) / U };
   }
 }

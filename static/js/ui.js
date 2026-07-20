@@ -44,6 +44,9 @@ export class UI {
         // Last velocity readback generation fed to the probe, so each readback
         // contributes exactly one sample no matter how many frames it survives.
         this._probeVelGen = -1;
+        // Simulation time of the last sample, so a readback delivered while the
+        // field is frozen cannot pad the window with duplicates. See _sampleProbe.
+        this._probeSimTime = -1;
 
         // Initial preset
         this.currentPreset = 'karmanVortex';
@@ -177,6 +180,18 @@ export class UI {
             }
         };
 
+        // Every caller of this method has just changed something the wake
+        // depends on — Re, dt, the iteration count, or the inflow speed — so
+        // the samples already in the probe describe a flow that no longer
+        // exists. Dropping them costs a fresh ~43 s window; keeping them costs
+        // a number averaged across two different simulations and presented as
+        // a measurement of the current one.
+        //
+        // The inflow slider is the sharpest case: U scales the stored samples
+        // AND sits in the shedding gate (`rms < THRESHOLD * U`), so raising it
+        // could flip a shedding wake to `steady` with no change in the physics.
+        this.probe.clear();
+
         const re = reFromSliderPos(parseFloat(slider.value));
         const D = 2 * this.interaction.obstacleRadius;
         const U = this._inflowVelocity();
@@ -276,18 +291,23 @@ export class UI {
     /**
      * Push one transverse-velocity sample per velocity readback.
      *
-     * Skipped while paused: `readbackVelocity` keeps firing every 10 frames on
-     * a frozen field, and the identical samples it would deliver are not 10
-     * steps of flow — they would pad the window with a flat line, drag the RMS
-     * under the shedding gate, and turn a shedding wake into 'steady' just by
-     * leaving the app paused.
+     * Gated on simulation time having ADVANCED since the last sample, not on
+     * `solver.paused`. `readbackVelocity` keeps firing every 10 frames on a
+     * frozen field, and the identical samples it would deliver are not 10 steps
+     * of flow — they would pad the window with a flat line, drag the RMS under
+     * the shedding gate, and turn a shedding wake into 'steady' just by leaving
+     * the app paused. A `paused` test catches that case but also catches the
+     * single-step button, which advances the field 10 steps between readbacks
+     * exactly as the running loop does; keying off `simTime` rejects the frozen
+     * field and admits the stepped one.
      */
     _sampleProbe() {
         const { renderer, solver, interaction } = this;
-        if (solver.paused) return;
+        if (solver.simTime === this._probeSimTime) return;
         if (renderer._velDataGen === this._probeVelGen) return;
         if (!renderer.vData || !interaction.showObstacle) return;
         this._probeVelGen = renderer._velDataGen;
+        this._probeSimTime = solver.simTime;
 
         const cell = probeCell({
             obstacleX: interaction.obstacleX,
@@ -309,9 +329,11 @@ export class UI {
      * is actually shedding.
      *
      * D and U are read HERE rather than cached at push time, so dragging the
-     * obstacle to a new size or moving the inflow slider rescales St to the
-     * geometry the flow currently has. (Both of those also clear the series, so
-     * in practice this re-reads a window that already belongs to them.)
+     * obstacle to a new size rescales St to the geometry the flow currently
+     * has. A drag clears the series as well, so in practice that path re-reads
+     * a window that already belongs to the new geometry; the inflow slider is
+     * cleared explicitly (see `_updateReBadge`) because it does NOT go through
+     * the renderer's invalidation path.
      */
     _updateStrouhal() {
         const el = document.getElementById('val-st');
@@ -321,8 +343,10 @@ export class UI {
         const D = 2 * this.interaction.obstacleRadius;
         const U = this._inflowVelocity();
         const { state, st } = this.probe.read({ D, U });
-        el.textContent = state === 'shedding' ? st.toFixed(2)
-                       : state === 'steady'   ? 'steady — no shedding'
+        el.textContent = state === 'shedding'   ? st.toFixed(2)
+                       : state === 'steady'     ? 'steady — no shedding'
+                       : state === 'unresolved' ? 'under-sampled — lower dt'
+                       : state === 'no-signal'  ? 'no signal'
                        : 'measuring…';
     }
 
@@ -437,10 +461,20 @@ export class UI {
             if (btnPlay) btnPlay.textContent = this.solver.paused ? '\u25B6 Play' : '\u23F8 Pause';
         };
 
+        // Mirrors the rAF loop's order — step, draw, tick — so single-stepping
+        // is self-contained rather than relying on the loop to repaint after it.
+        //
+        // The loop DOES tick unconditionally (main.js ticks even while paused),
+        // so removing this call alone does not change what the user sees, and
+        // mutating it away does not fail the suite. What actually froze the
+        // readout during single-stepping was `_sampleProbe`'s `paused` gate,
+        // which is now a simulation-time gate; see there. This call stays so
+        // that stepping does not depend on a separate loop for its readout.
         const stepOnce = () => {
             if (this.solver.paused) {
                 this.solver.step(this.numIters);
                 this.renderer.draw();
+                this.tick();
             }
         };
 

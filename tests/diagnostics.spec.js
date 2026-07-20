@@ -486,17 +486,33 @@ test('the shipped default sheds, and now sits inside the honest window', async (
   });
   expect(shipped.attr).toBe(shipped.documented);
 
-  // Measured shedding onset at tier 256, by growth-to-saturation over 30 s:
-  // growth(late/early) = 0.638 at Re 57 and 12.2 at Re 60, crossing 1 at 57.5.
-  // The default must clear it — below onset the preset shows no street at all.
-  const ONSET = 57.46;
+  // Measured shedding onset at tier 256, dt = 1/240, 256 iterations, by the
+  // zero crossing of the LINEAR GROWTH RATE — a window-independent criterion.
+  // sigma = -0.0975 / -0.0036 / +0.0771 at Re 50 / 52 / 54, linear in Re, so
+  // the crossing is 52.2; the +-0.3 is the spread over 49 combinations of fit
+  // subset and analysis window. The superseded 57.5 came from a 30 s amplitude
+  // RATIO, which near onset measures the window: at Re 52 the e-folding time is
+  // 278 s and 30 s cannot tell it from a saturated limit cycle.
+  //
+  // The UPPER end of the interval is used here, so the assertion holds for any
+  // onset the measurement is consistent with rather than only the best estimate.
+  const ONSET = 52.5;
   expect(shipped.re).toBeGreaterThan(ONSET);
 
-  // And it must clear it by enough to be VISIBLE, not merely unstable. The
-  // saturated fluctuation is 1.0e-3 of the mean flow at Re 57 but 8.8e-1 at
-  // Re 72, so a default parked just above onset would technically shed and
-  // show nothing. This is the assertion that stops the default drifting down
-  // into the honest window at the cost of the picture.
+  // And it must clear it by enough to be VISIBLE, not merely unstable. A Hopf
+  // bifurcation saturates at A_sat ~ sqrt(Re - Re_c), so just above onset the
+  // street is real but far too weak to see. Saturated wake RMS as a fraction of
+  // the free stream, verified flat over the final two 20 s windows:
+  //
+  //   Re      55      57.5     60      65     74.8     100     140
+  //   A_sat  0.082   0.116   0.144   0.191   0.264   0.402   0.546
+  //
+  // A default parked just above onset would technically shed and show nothing;
+  // 74.8 lands at 0.264, thirteen times the shedding gate. It is also slow:
+  // near onset the growth rate vanishes, so Re 55 needs ~80 s of simulation
+  // time to reach its plateau against ~12 s at Re 60. This is the assertion
+  // that stops the default drifting down into the honest window at the cost of
+  // the picture.
   expect(shipped.re).toBeGreaterThan(72);
 
   // It is INSIDE the honest window, so the app opens un-badged. This is the
@@ -513,9 +529,10 @@ test('the shipped default sheds, and now sits inside the honest window', async (
   expect(w.reMaxProjection / shipped.re).toBeGreaterThan(1.5);
 
   // The band that is both honest and shedding is now wide enough to CHOOSE
-  // within rather than merely land in: at 80 iterations it was Re 57.5 .. 59.0,
-  // a 2.8% band against a 7.9% log step, so no slider position lived there. It
-  // must now hold several, and the shipped default must be one of them.
+  // within rather than merely land in: at 80 iterations it was Re 52.2 .. 59.0,
+  // a 13% band against a 7.9% log step, so exactly one slider position lived
+  // there (pos 71, Re 55.2) on a wake 6% above onset. It must now hold several,
+  // and the shipped default must be one of them.
   expect(ONSET).toBeLessThan(w.reMaxProjection);
   const both = await page.evaluate(async ({ ONSET, ceiling }) => {
     const d = await import('/js/diagnostics.js');
@@ -805,6 +822,83 @@ test('Strouhal detector recovers a known frequency and reports steady flow', asy
   expect(r.half.st).toBeLessThan(0.105);
 });
 
+test('the detector refuses an under-sampled series, a dead field, and reversed time', async ({ page }) => {
+  await page.goto('/');
+  const r = await page.evaluate(async () => {
+    const { StrouhalProbe } = await import('/js/diagnostics.js');
+    const D = 0.12, U = 1.0;
+    const ST_TRUE = 0.18;
+    const f = ST_TRUE * U / D;          // 1.5 Hz, period 0.667 s
+
+    // Build the SAME wake at two sample intervals, both reachable from the dt
+    // slider: 10*dt at the bottom (the preset, 1/240) and at the top (0.033).
+    // A wake carries a harmonic and noise; a pure tone flatters a zero-crossing
+    // detector in exactly the regime this guard exists to police.
+    let seed = 1;
+    const rnd = () => (seed = (seed * 1103515245 + 12345) % 2147483648) / 2147483648 - 0.5;
+    const wake = (dtS, n = 300) => {
+      seed = 1;
+      const p = new StrouhalProbe();
+      for (let k = 0; k < n; k++) {
+        const t = k * dtS;
+        p.push(0.35 * (Math.sin(2 * Math.PI * f * t)
+                     + 0.2 * Math.sin(4 * Math.PI * f * t + 0.6)
+                     + 0.08 * rnd()), t);
+      }
+      return p;
+    };
+
+    // Dead field: a readback of all zeros, or of any constant. rms = 0 falls
+    // through the shedding gate and used to print a verdict about the wake.
+    const dead = new StrouhalProbe();
+    for (let k = 0; k < 300; k++) dead.push(0, k * (10 / 240));
+    const frozen = new StrouhalProbe();
+    for (let k = 0; k < 300; k++) frozen.push(0.4213, k * (10 / 240));
+
+    // Reversed timestamps: same shedding signal, clock running backwards.
+    const back = new StrouhalProbe();
+    const src = wake(10 / 240);
+    for (let k = 0; k < src.v.length; k++) back.push(src.v[k], -src.t[k]);
+
+    return {
+      shipped:  { r: wake(10 / 240).read({ D, U }), spp: 1 / (f * (10 / 240)) },
+      sliderTop:{ r: wake(10 * 0.033).read({ D, U }), spp: 1 / (f * 10 * 0.033) },
+      // 10*dt = 0.025*10: 2.67 samples/period. Also refused — the measured
+      // error cliff for a harmonic-rich, still-growing wake is at 3.1.
+      near:     { r: wake(10 * 0.025).read({ D, U }), spp: 1 / (f * 10 * 0.025) },
+      dead: dead.read({ D, U }),
+      frozen: frozen.read({ D, U }),
+      back: back.read({ D, U }),
+      ST_TRUE,
+    };
+  });
+
+  // The shipped sample rate resolves this wake 16x over and must report it.
+  expect(r.shipped.spp).toBeGreaterThan(15);
+  expect(r.shipped.r.state).toBe('shedding');
+  expect(r.shipped.r.st).toBeGreaterThan(0.97 * r.ST_TRUE);
+  expect(r.shipped.r.st).toBeLessThan(1.03 * r.ST_TRUE);
+
+  // The top of the dt slider samples this same wake barely twice per period.
+  // The detector still finds crossings there and, before the guard, returned a
+  // confident two-decimal number 12-22% below the truth. It must now decline.
+  expect(r.sliderTop.spp).toBeLessThan(2.1);
+  expect(r.sliderTop.r.state).toBe('unresolved');
+  expect(r.sliderTop.r.st).toBe(null);
+  expect(r.near.r.state).toBe('unresolved');
+  expect(r.near.r.st).toBe(null);
+
+  // A constant series is not a steady wake — it is no measurement at all.
+  // 'steady — no shedding' is a claim about the physics; these carry none.
+  expect(r.dead.state).toBe('no-signal');
+  expect(r.dead.st).toBe(null);
+  expect(r.frozen.state).toBe('no-signal');
+
+  // Reversed timestamps must not render as a negative Strouhal number.
+  expect(r.back.st === null || r.back.st > 0).toBe(true);
+  expect(r.back.state).not.toBe('shedding');
+});
+
 test('probeCell tracks the obstacle and refuses the frozen outflow columns', async ({ page }) => {
   await page.goto('/');
   const r = await page.evaluate(async () => {
@@ -873,6 +967,13 @@ test('the probe samples the live wake in simulation time and clears on a drag', 
       dt: solver.params.dt,
       gapMin: Math.min(...gaps),
       gapMax: Math.max(...gaps),
+      // Every gap must be a whole number of 10-step readback slots. Asserting
+      // gap == 10 exactly is machine-dependent: `readbackVelocity` self-blocks
+      // on `_velReadbackPending`, so a readback that outlives its 10 frames on
+      // a slow GPU (or at tier 1024) legitimately produces a gap of 20 and
+      // would fail a healthy app. What must hold is that the stamps are
+      // simulation time — integer multiples of 10*dt — not wall clock.
+      gapsAreWholeSlots: gaps.every((g) => Math.abs(g / 10 - Math.round(g / 10)) < 1e-6),
       monotonic: gaps.every((g) => g > 0),
       allFinite: p.v.every((x) => Number.isFinite(x)),
       // Non-zero field: a lost device or a collapsed solve reads back all
@@ -890,9 +991,9 @@ test('the probe samples the live wake in simulation time and clears on a drag', 
   expect(run.allFinite).toBe(true);
   expect(run.monotonic).toBe(true);
   expect(run.simTime).toBeGreaterThan(0);
-  // Exactly the readback throttle: 10 steps per sample, no more, no less.
-  expect(run.gapMin).toBeCloseTo(10, 6);
-  expect(run.gapMax).toBeCloseTo(10, 6);
+  // Whole readback slots, and at least one. Wall-clock stamps would be neither.
+  expect(run.gapsAreWholeSlots).toBe(true);
+  expect(run.gapMin).toBeGreaterThanOrEqual(10 - 1e-6);
   // The wake is not identically zero — the readback carried real flow.
   expect(run.vSpread).toBeGreaterThan(0);
 
@@ -904,4 +1005,79 @@ test('the probe samples the live wake in simulation time and clears on a drag', 
     return ui.probe.length;
   });
   expect(afterDrag).toBe(0);
+});
+
+test('changing Re or inflow clears the probe rather than averaging across two flows', async ({ page }) => {
+  await page.goto('/');
+  await page.waitForFunction(() => window.__flowlab?.ui?.probe, null, { timeout: 20_000 });
+  await page.evaluate(() => { window.__flowlab.adaptive.manualOverride = true; });
+
+  // These sliders do NOT go through the renderer's invalidation path, which is
+  // what clears the probe on a drag / preset / tier change. Before this fix
+  // moving Re left a window straddling two Reynolds numbers for up to ~43 s of
+  // wall clock and reported the average as a measurement; moving inflow
+  // instantly rescaled every stored sample by the NEW U, and since U also sits
+  // in the shedding gate (rms < THRESHOLD * U), raising it could flip a
+  // shedding wake to 'steady' with no change in the physics.
+  const move = async (id, value) => {
+    await page.waitForFunction(() => window.__flowlab.ui.probe.length > 3, null, { timeout: 30_000 });
+    return page.evaluate(({ id, value }) => {
+      const before = window.__flowlab.ui.probe.length;
+      const el = document.getElementById(id);
+      el.value = String(value);
+      el.dispatchEvent(new Event('input', { bubbles: true }));
+      return { before, after: window.__flowlab.ui.probe.length };
+    }, { id, value });
+  };
+
+  const re = await move('slider-re', 60);
+  expect(re.before).toBeGreaterThan(3);
+  expect(re.after).toBe(0);
+
+  const invel = await move('slider-invel', 1.5);
+  expect(invel.before).toBeGreaterThan(3);
+  expect(invel.after).toBe(0);
+
+  const dt = await move('slider-dt', 0.01);
+  expect(dt.before).toBeGreaterThan(3);
+  expect(dt.after).toBe(0);
+});
+
+test('the probe freezes while paused and advances on single-step', async ({ page }) => {
+  await page.goto('/');
+  await page.waitForFunction(() => window.__flowlab?.ui?.probe, null, { timeout: 20_000 });
+  await page.evaluate(() => { window.__flowlab.adaptive.manualOverride = true; });
+  await page.waitForFunction(() => window.__flowlab.ui.probe.length > 3, null, { timeout: 30_000 });
+
+  // Paused, the readback keeps firing every 10 frames on a field that is not
+  // moving. Those duplicate samples are not 10 steps of flow — they would pad
+  // the window with a flat line and drag a shedding wake under the gate.
+  const frozen = await page.evaluate(() => {
+    window.__flowlab.solver.paused = true;
+    return { n: window.__flowlab.ui.probe.length, t: window.__flowlab.solver.simTime };
+  });
+  await page.waitForTimeout(1500);
+  const stillFrozen = await page.evaluate(() => ({
+    n: window.__flowlab.ui.probe.length, t: window.__flowlab.solver.simTime,
+  }));
+  expect(stillFrozen.t).toBe(frozen.t);      // the field really did not move
+  expect(stillFrozen.n).toBe(frozen.n);      // and no samples were invented
+
+  // Single-stepping DOES advance the field, 10 steps between readbacks exactly
+  // as the running loop does, so it must feed the probe and repaint the
+  // readout — not leave both stuck at whatever the last running frame left.
+  await page.evaluate(async () => {
+    for (let k = 0; k < 60; k++) {
+      window.__flowlab.ui._stepOnce();
+      await new Promise((r) => setTimeout(r, 8));
+    }
+  });
+  await page.waitForTimeout(500);
+  const stepped = await page.evaluate(() => ({
+    n: window.__flowlab.ui.probe.length, t: window.__flowlab.solver.simTime,
+    paused: window.__flowlab.solver.paused,
+  }));
+  expect(stepped.paused).toBe(true);
+  expect(stepped.t).toBeGreaterThan(frozen.t);
+  expect(stepped.n).toBeGreaterThan(stillFrozen.n);
 });
