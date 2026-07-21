@@ -111,7 +111,7 @@
             <div class="guide-learn-more">
               <div class="guide-learn-more-toggle">&#9656; Learn more about the solver</div>
               <div class="guide-learn-more-body">
-                <p>FlowLab solves the 2D incompressible Navier-Stokes equations using a pressure-projection method. The pressure field is computed iteratively (SOR Jacobi), then used to correct velocities so they satisfy the divergence-free condition. The entire computation — pressure solve, velocity advection, and boundary enforcement — runs as WebGPU compute shader dispatches on your GPU.</p>
+                <p>FlowLab solves the 2D incompressible Navier-Stokes equations using a pressure-projection method. The pressure field is computed iteratively (red-black SOR), then used to correct velocities so they satisfy the divergence-free condition. The entire computation — pressure solve, MacCormack advection, viscous diffusion, and boundary enforcement — runs as WebGPU compute shader dispatches on your GPU.</p>
               </div>
             </div>
           </div>
