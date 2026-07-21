@@ -348,7 +348,13 @@ export class UI {
 
         // v, not u: on the centreline the streamwise component dips once per
         // shed vortex from EITHER side and so carries 2f. See StrouhalProbe.
-        this.probe.push(renderer.vData[cell.i * solver.numY + cell.j], solver.simTime);
+        //
+        // Stamp with the time the velocity was COPIED (renderer._velDataSimTime),
+        // not the live simTime at which this readback's mapAsync happened to
+        // resolve. Copies fire every 10 steps, so capture-times are exact
+        // multiples of 10*dt and the series is evenly spaced; the live simTime
+        // carries a variable readback latency that makes the gaps jitter.
+        this.probe.push(renderer.vData[cell.i * solver.numY + cell.j], renderer._velDataSimTime);
     }
 
     /**

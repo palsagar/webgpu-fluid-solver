@@ -55,6 +55,11 @@ export class Renderer {
     this.uData = null;
     this.vData = null;
     this._velDataGen = 0;
+    // Simulation time of the frame the current vData was COPIED (not the frame
+    // its mapAsync resolved). The probe stamps samples with this so the series
+    // carries capture-frame time; stamping with the live simTime at completion
+    // adds a variable readback latency and the gaps stop being whole slots.
+    this._velDataSimTime = 0;
     this._velDataVersion = -1;
     this._cachedStreamlines = null;
     this._cachedArrows = null;
@@ -453,6 +458,10 @@ export class Renderer {
     const { device, solver, numX, numY } = this;
     const size = numX * numY * 4;
     const gen = this._gridGen;
+    // Snapshot the simulation time NOW, when the buffers are copied — this is
+    // the frame the sampled velocity belongs to, regardless of how many frames
+    // the mapAsync takes to resolve.
+    const simTimeAtCapture = solver.simTime;
     const { u: uBuf, v: vBuf } = solver.velocityBuffers;
 
     const stagingU = device.createBuffer({ size, usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST });
@@ -467,6 +476,7 @@ export class Renderer {
       if (gen === this._gridGen) {
         this.uData = new Float32Array(stagingU.getMappedRange().slice(0));
         this.vData = new Float32Array(stagingV.getMappedRange().slice(0));
+        this._velDataSimTime = simTimeAtCapture;
         this._velDataGen++;
       }
       stagingU.unmap();
@@ -712,6 +722,7 @@ export class Renderer {
     this.uData = null;
     this.vData = null;
     this._velDataGen = 0;
+    this._velDataSimTime = 0;
     this._velDataVersion = -1;
     this._cachedStreamlines = null;
     this._cachedArrows = null;
