@@ -1034,6 +1034,59 @@ test('the badge stops quoting the projection ceiling when the inflow leaves U = 
   expect(back.text).toBe('');
 });
 
+test('an obstacle-less preset applies zero viscosity, whatever preset was viewed first', async ({ page }) => {
+  await page.goto('/');
+  await page.waitForFunction(() => window.__flowlab?.ui, null, { timeout: 20_000 });
+  await page.evaluate(() => { window.__flowlab.solver.paused = true; });
+
+  // Load Karman first: it carries an obstacle of radius 0.06, so the interaction
+  // handler is left holding a non-zero obstacleRadius. backwardStep has
+  // obstacle: null, and loadPreset only reassigns obstacleRadius inside
+  // `if (preset.obstacle)` — so switching to it INHERITS Karman's 0.06.
+  const karman = await page.evaluate(() => {
+    const { ui, interaction, solver } = window.__flowlab;
+    ui._loadAndApplyPreset('karmanVortex');
+    return {
+      showObstacle: interaction.showObstacle,
+      radius: interaction.obstacleRadius,
+      nu: solver.params.nu,
+    };
+  });
+  expect(karman.showObstacle).toBe(true);
+  expect(karman.radius).toBeCloseTo(0.06, 6);
+  // Karman DOES force a viscosity — the obstacle is real — so the zero below is
+  // a real transition, not a field that was already zero.
+  expect(karman.nu).toBeGreaterThan(0);
+
+  const step = await page.evaluate(() => {
+    const { ui, interaction, solver } = window.__flowlab;
+    ui._loadAndApplyPreset('backwardStep');
+    return {
+      showObstacle: interaction.showObstacle,
+      inheritedRadius: interaction.obstacleRadius,   // still 0.06 — the phantom
+      nu: solver.params.nu,
+      valRe: document.getElementById('val-re').textContent,
+      badgeVisible: document.getElementById('re-badge').classList.contains('visible'),
+    };
+  });
+
+  // The obstacle is gone from the flow...
+  expect(step.showObstacle).toBe(false);
+  // ...but its radius is still on the handler. That is exactly the phantom the
+  // showObstacle gate must ignore; if this were 0 the bug could not manifest and
+  // the assertions below would pass vacuously.
+  expect(step.inheritedRadius).toBeCloseTo(0.06, 6);
+
+  // THE PAYLOAD. No body => no Reynolds number => zero forced viscosity, and the
+  // Re readout says nothing. Remove the `!showObstacle` clause from
+  // _updateReBadge and nu becomes U*D/re = 1.5 * 0.12 / re — a non-zero
+  // viscosity inherited from Karman's geometry — and val-re shows that Re
+  // instead of '--'.
+  expect(step.nu).toBe(0);
+  expect(step.valRe).toBe('--');
+  expect(step.badgeVisible).toBe(false);
+});
+
 // ── The Strouhal probe ──────────────────────────────────────────────────────
 //
 // Expected values below come from the SIGNAL, not from the detector. The

@@ -209,7 +209,12 @@ export class UI {
         this._updateFlowInfo();
 
         // No obstacle or no free stream — Re is undefined, so claim nothing.
-        if (!(D > 0) || !(U > 0)) {
+        // The showObstacle gate is load-bearing: obstacle-less presets
+        // (backwardStep) never reassign interaction.obstacleRadius, so D here is
+        // a phantom inherited from whatever preset was viewed before. Without
+        // this clause the badge would apply a viscosity derived from a body that
+        // is not in the flow. Mirrors the same guard in _updateStrouhal.
+        if (!(D > 0) || !(U > 0) || !this.interaction.showObstacle) {
             this.solver.setParams({ nu: 0 });
             el.textContent = '--';
             hideBadge();

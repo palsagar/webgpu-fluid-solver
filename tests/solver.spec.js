@@ -1128,6 +1128,82 @@ test('the backward pass uniform really holds a negated dt, and nu reaches offset
   expect(got.back.nu).toBeCloseTo(0.375, 6);
 });
 
+test('the uniform buffer packs every field at its documented offset', async ({ page }) => {
+  await boot(page);
+  const r = await page.evaluate(async () => {
+    const { solver, device } = window.__flowlab;
+    solver.paused = true;
+
+    // A lost device returns an all-zero buffer, which fits nothing here (every
+    // sentinel is non-zero) but must be reported as device loss, not as a
+    // confusing field mismatch.
+    let deviceLost = false;
+    device.lost.then((info) => { deviceLost = info.message || 'lost'; });
+
+    // A distinct sentinel in EVERY field, each exactly representable in its type
+    // (u32 for numX/numY/color, f32 for the rest). Because all eight differ, a
+    // swap of any two DataView writes moves a value to the wrong offset and the
+    // read-back below mismatches — which the drift test on the WGSL structs and
+    // the offset-28-only readback above both miss.
+    const saved = { ...solver.params };
+    solver.params.numX    = 61;
+    solver.params.numY    = 62;
+    solver.params.h       = 8.5;
+    solver.params.dt      = 12.25;
+    solver.params.omega   = 16.5;
+    solver.params.density = 20.75;
+    solver.params.color   = 3;
+    solver.params.nu      = 28.125;
+
+    // Exercise _writeParamsTo directly, no overrides, so color/dt/nu flow from
+    // params. This is the hand-packed 32-byte layout every shader's Params
+    // struct depends on — the single source of truth no other test pins
+    // field-by-field.
+    solver._writeParamsTo(solver.uniformBuf);
+
+    const staging = device.createBuffer({
+      size: 32, usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST,
+    });
+    const enc = device.createCommandEncoder();
+    enc.copyBufferToBuffer(solver.uniformBuf, 0, staging, 0, 32);
+    device.queue.submit([enc.finish()]);
+    await staging.mapAsync(GPUMapMode.READ);
+    const dv = new DataView(staging.getMappedRange().slice(0));
+    staging.unmap();
+    staging.destroy();
+
+    // Restore real params to every uniform buffer before handing the field back.
+    Object.assign(solver.params, saved);
+    solver._writeAllParams();
+
+    return {
+      deviceLost,
+      numX:    dv.getUint32(0, true),
+      numY:    dv.getUint32(4, true),
+      h:       dv.getFloat32(8, true),
+      dt:      dv.getFloat32(12, true),
+      omega:   dv.getFloat32(16, true),
+      density: dv.getFloat32(20, true),
+      color:   dv.getUint32(24, true),
+      nu:      dv.getFloat32(28, true),
+    };
+  });
+
+  expect(r.deviceLost).toBe(false);
+
+  // Each field at its documented offset (0,4,8,12,16,20,24,28), read as its
+  // documented type. Swap any two setFloat32 offsets in _writeParamsTo and the
+  // two fields trade values here.
+  expect(r.numX).toBe(61);
+  expect(r.numY).toBe(62);
+  expect(r.h).toBeCloseTo(8.5, 6);
+  expect(r.dt).toBeCloseTo(12.25, 6);
+  expect(r.omega).toBeCloseTo(16.5, 6);
+  expect(r.density).toBeCloseTo(20.75, 6);
+  expect(r.color).toBe(3);
+  expect(r.nu).toBeCloseTo(28.125, 6);
+});
+
 test('MacCormack actually corrects: dye fronts reach saturation, unlike first-order SL', async ({ page }) => {
   await boot(page);
   const stats = await page.evaluate(async () => {

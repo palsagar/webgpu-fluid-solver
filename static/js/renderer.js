@@ -70,7 +70,6 @@ export class Renderer {
 
     this._ctx = this._canvas.getContext('2d');
 
-    this._stagingBuffer = this._createStagingBuffer(this.numX, this.numY);
     this._pressureRange = null; // [min, max] from the throttled pressure readback
   }
 
@@ -143,7 +142,11 @@ export class Renderer {
     // field readback at all (ADR-0005).
     if (usePressure && !this.readbackPending && this._frameCount % 10 === 1) {
       this.readbackPending = true;
-      const staging = this._stagingBuffer;
+      // Fresh staging buffer per call, destroyed on both paths — self-contained
+      // like readbackVelocity/readbackSolid. A persistent buffer here could be
+      // destroyed by resize() while this mapAsync was in flight, landing
+      // getMappedRange() on a freed buffer.
+      const staging = this._createStagingBuffer(this.numX, this.numY);
       const gen = this._gridGen;
       const encoder = device.createCommandEncoder();
       encoder.copyBufferToBuffer(solver.pressureBuffer, 0, staging, 0, this.numX * this.numY * 4);
@@ -155,8 +158,12 @@ export class Renderer {
           this._pressureRange = this._computePressureRange(new Float32Array(raw.slice(0)));
         }
         staging.unmap();
+        staging.destroy();
         this.readbackPending = false;
-      }).catch(() => { this.readbackPending = false; });
+      }).catch(() => {
+        staging.destroy();
+        this.readbackPending = false;
+      });
     }
 
     // Read solid mask once (refreshed on invalidateSolid()) — particles need it
@@ -682,8 +689,8 @@ export class Renderer {
 
   /**
    * Resizes the renderer to match a new grid resolution.
-   * Destroys and recreates the staging buffer, resets the canvas dimensions,
-   * and clears all cached readback data and overlay geometry.
+   * Invalidates readbacks in flight, resets the canvas dimensions, and clears
+   * all cached readback data and overlay geometry.
    * @param {number} numX - New grid width
    * @param {number} numY - New grid height
    * @param {number} h - New cell size
@@ -695,11 +702,9 @@ export class Renderer {
     this._velReadbackPending = false;
     this._solidReadbackPending = false;
 
-    this._stagingBuffer.destroy();
     this.numX = numX;
     this.numY = numY;
     this.h = h;
-    this._stagingBuffer = this._createStagingBuffer(numX, numY);
     this._pressureRange = null;
     this.fieldRenderer.resize();
     this.solidData = null;
