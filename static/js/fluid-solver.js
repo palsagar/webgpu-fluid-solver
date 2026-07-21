@@ -67,9 +67,10 @@ export class FluidSolver {
    * Allocates all GPU buffers for the simulation grid.
    *
    * Velocity and smoke live in a 3-slot rotation (see `velPairs`/`smokeBufs`).
-   * Pressure (p) and the solid mask (s) are single buffers. Also creates three
-   * uniform buffers: one general-purpose and two for the red/black pressure
-   * solve (which differ only in the color flag).
+   * Pressure (p) and the solid mask (s) are single buffers. Also creates five
+   * uniform buffers: one general-purpose, two for the red/black pressure solve
+   * (which differ only in the color flag), one with dt negated for MacCormack's
+   * backward pass, and one carrying the viscous substep dt.
    *
    * @param {number} numX - Grid width in cells
    * @param {number} numY - Grid height in cells
@@ -117,7 +118,8 @@ export class FluidSolver {
    * Packs simulation parameters into a 32-byte ArrayBuffer and uploads
    * to the main uniform buffer. Layout must match the WGSL struct:
    * [numX(u32), numY(u32), h(f32), dt(f32), omega(f32), density(f32), color(u32), nu(f32)].
-   * The older 7-field shaders (pressure/boundary/advect) simply ignore nu.
+   * The older 7-field shaders (pressure/boundary) simply ignore nu; advect and
+   * the rest declare all 8 fields.
    *
    * @param {number} [colorOverride] - If provided, overrides the color field (0=red, 1=black)
    */
@@ -662,7 +664,7 @@ export class FluidSolver {
 
   /**
    * Merges overrides into the simulation parameters and immediately
-   * uploads to all three uniform buffers.
+   * uploads to all five uniform buffers (via `_writeAllParams`).
    *
    * @param {Object} overrides - Key/value pairs to merge (e.g., { dt: 1/120 })
    */

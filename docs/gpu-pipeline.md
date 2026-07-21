@@ -174,7 +174,7 @@ The `s` buffer (solid mask: 0.0 = solid, 1.0 = fluid) is rasterized on the CPU v
 
 **advect.wgsl / advect_smoke.wgsl:** Only advects cells where `s[idx] != 0` (fluid). For velocity advection, additionally checks the solid state at the neighboring face (`s[(i-1)*n+j]` for u, `s[i*n+j-1]` for v) — if either cell sharing a velocity face is solid, that face's velocity is not advected. Smoke advection simply checks `s[idx] != 0`. The revert condition depends only on `s` and the indices, so it fires identically on the forward and backward passes.
 
-**maccormack.wgsl:** Skips solid cells, and drops solid corners from the limiter's bounds — but the corner test is gated on `params.dt < 0.0`, so it runs on the **backward pass only**. On the forward pass it would wall the dye out of the domain entirely, because the inlet band is written into a solid column.
+**maccormack.wgsl:** Skips solid cells, and drops solid corners from the limiter's bounds **unconditionally** while widening them (line ~153, `if (s[k] == 0.0) { continue; }` — no `dt` gate; the combine only ever runs on the forward re-trace, so `dt` is always positive here). Dropping the solid corners cannot wall the dye out, because the bounds are seeded with `phi^` itself (the first-order forward result), which already carries each solid corner at its bilinear weight — so the widening is fluid-only and the inlet band injected through the solid left wall survives. The `dt < 0.0` gate — which reverts near-solid cells on the **backward pass only** — lives in `advect_smoke.wgsl:133`, not here.
 
 **maccormack_velocity.wgsl:** Binds no solid mask at all. The `phi^` seed makes the clamp the identity wherever a face reverted, so a guard would be a provable no-op.
 
@@ -218,7 +218,7 @@ Pipeline layout is explicit, never `layout: 'auto'` (see [ADR-0002](adr/0002-exp
 
 Three independent readbacks feed the CPU side. None of them is needed to draw the field itself.
 
-**1. Pressure (throttled, persistent staging buffer).** Only issued when the pressure view is active and only on `_frameCount % 10 === 1`. `copyBufferToBuffer()` from `solver.pressureBuffer` into `_stagingBuffer` (`MAP_READ | COPY_DST`), then `mapAsync`; the resolved data goes to `_computePressureRange()`, which returns `[mean - range, mean + range]` for the next frames' `minVal`/`maxVal`. The `readbackPending` flag keeps at most one map in flight. Smoke needs no equivalent — its range is fixed.
+**1. Pressure (throttled, temporary staging buffer).** Only issued when the pressure view is active and only on `_frameCount % 10 === 1`. A fresh staging buffer (`MAP_READ | COPY_DST`) is created per cycle; `copyBufferToBuffer()` from `solver.pressureBuffer` into it, then `mapAsync`; the resolved data goes to `_computePressureRange()`, which returns `[mean - range, mean + range]` for the next frames' `minVal`/`maxVal`. The buffer is destroyed on both the success and error paths, so — like the velocity and solid readbacks below — a resize cannot free it mid-map. The `readbackPending` flag keeps at most one map in flight. Smoke needs no equivalent — its range is fixed.
 
 **2. Velocity (throttled, temporary staging buffers).** Every 10 frames, gated on `showStreamlines || showVelocities || showParticles`. Two staging buffers are created and destroyed per cycle for `u` and `v`. On completion `_velDataGen` increments, which is what triggers streamline and arrow geometry to be recomputed.
 

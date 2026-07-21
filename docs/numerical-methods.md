@@ -161,7 +161,7 @@ The sign flip is carried by a second uniform buffer (`uniformBufNegDt`) rather t
 
 - **Seeded with `phi^`, not with the corner range.** The seed guarantees `lo <= phi^ <= hi`, so wherever a face or cell reverted (advection is skipped next to solids) the clamp collapses to the identity and the scheme degrades to exactly first-order semi-Lagrangian rather than picking up a spurious correction. Without the seed the reverted case is inconsistent.
 - **Only *fluid* corners widen the interval.** Including solid corners lets stale in-solid values into the bounds; excluding them *without* the seed gives `lo = hi = 1.0` at the inlet, pinning it to clear forever.
-- **The stencil-corner solid test runs on the backward pass only**, gated on `params.dt < 0.0`. The dye inlet is written into column `i = 0`, which is *solid*; cell `i = 1` picks the dye up only because its forward departure point clamps back into that column. A corner test on the forward pass walls the dye out entirely and the smoke field goes uniformly clear, silently. The inflow velocity BC at `i = 1` survives by exactly the same mechanism.
+- **A separate stencil-corner solid test runs in the advection pass, on the backward pass only**, gated on `params.dt < 0.0` (`advect_smoke.wgsl:133`) — distinct from the combine's fluid-only corner drop above, which is unconditional. The dye inlet is written into column `i = 0`, which is *solid*; cell `i = 1` picks the dye up only because its forward departure point clamps back into that column. A corner test on the forward pass walls the dye out entirely and the smoke field goes uniformly clear, silently. The inflow velocity BC at `i = 1` survives by exactly the same mechanism.
 
 **Velocity uses a separate backward binding for `phi^n`.** Reusing the advect shader for the backward pass would copy reverted faces from its *input* (which is `phi^`), so a reverted face would write `phi~ = phi^` and the correction would be non-zero at precisely the inflow faces. The velocity backward pass therefore keeps `u^n, v^n` bound as the origin field while advecting `phi^`.
 
@@ -260,14 +260,14 @@ Solid cells have `s[i,j] = 0`. The compute passes handle them as follows:
 
 - **Pressure:** Skips solid cells entirely. The s-flag terms in velocity correction prevent modifying velocities on solid faces.
 - **Boundary:** Does not check solids (operates on domain edges only).
-- **Advection:** Skips faces/cells where an adjacent cell is solid, preserving zero-flux conditions. The limiter's corner test additionally drops solid corners from the bounds, on the backward pass only (§4).
+- **Advection:** Skips faces/cells where an adjacent cell is solid, preserving zero-flux conditions. Its backward pass additionally reverts any cell whose departure stencil touches a solid, gated on `params.dt < 0.0` (`advect_smoke.wgsl:133`). The MacCormack combine's limiter *separately* drops solid corners from its bounds — unconditionally, since the combine only ever runs forward (§4).
 - **Diffusion:** Face-classified FLUID / WALL / BURIED (§5). Solid cells are never written, so an obstacle's drag velocity — which *is* the moving-wall BC — survives the viscous pass untouched.
 
 ### Inflow
 
 Fixed velocity is imposed at column i=1, re-applied from JavaScript after each `solver.step()` call. Inflow values survive advection because the left wall (i=0) is solid -- the advection condition `s[(i-1)*n + j] != 0` fails at i=1, so the velocity is not overwritten. In the viscous pass the same face is a WALL face and is copied through. Re-application after the solver step prevents drift from the pressure solve.
 
-See [Ping-Pong Buffers](gpu-pipeline.md#4-the-three-slot-rotation) for why inflow velocities must be written to every rotation slot.
+See [Three-Slot Rotation](gpu-pipeline.md#4-the-three-slot-rotation) for why inflow velocities must be written to every rotation slot.
 
 ### Open Outflow
 
@@ -321,6 +321,8 @@ NU_NUM_PER_DT = 0.121354        nu_num(dt) = NU_NUM_PER_DT * dt
 ```
 
 anchored at the converged **5.0564e-4 at dt = 1/240** (r² = 0.99994), giving a flat scheme ceiling of **Re = 237.32** at every tier.
+
+> **On the ~2% gap with the table above.** The direct dt-sweep reads `nu_num(1/240)` as 5.14–5.15e-4 (→ Re ≈ 233), while the shipped `NU_NUM_PER_DT` comes from the linear `nu_num`-vs-`dt` regression anchored at dt = 1/240, which lands at **5.0564e-4** (→ **Re 237.32**). The two are separate measurements and the ~2% difference is inter-sweep scatter, not a discrepancy to resolve. **The fitted 5.0564e-4 / Re 237.32 is the number of record** — it is what `diagnostics.js` ships, what drives the badge, and what ADR-0008 and the ROADMAP quote — so every downstream reference uses it rather than the table's directly-read column.
 
 **This is an operator-splitting error in time, not grid diffusion.** Refining the grid cannot lower it; only reducing `dt` can. An earlier design assumed the opposite — that the ceiling is set by resolving the cylinder boundary layer and therefore *rises* with resolution — and that model disagrees with measurement by 8.3x to 746x and in the opposite direction. [ADR-0008](adr/0008-viscous-substepping-and-resolution-aware-window.md) records the reversal.
 

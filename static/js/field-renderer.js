@@ -166,8 +166,9 @@ export class FieldRenderer {
 
   /**
    * Returns (and caches) the bind group for a specific field buffer.
-   * Smoke ping-pongs between two buffers, so the cache ends up holding one
-   * bind group per distinct buffer. Cleared on resize (buffers are recreated).
+   * Smoke rotates through three buffers (`smokeBufs`), so the cache ends up
+   * holding one bind group per distinct buffer. Cleared on resize (buffers are
+   * recreated).
    * @param {GPUBuffer} fieldBuffer
    */
   _bindGroupFor(fieldBuffer) {

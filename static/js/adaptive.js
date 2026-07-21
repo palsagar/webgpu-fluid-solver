@@ -21,6 +21,11 @@ export class AdaptiveController {
      *   tier        64      128      256      512     1024
      *   ms/frame   8.33     8.34    17.75    62.01   257.36
      *
+     * Frame time carries run-to-run variance: the presets.js numIters sweep
+     * timed this same tier-256 @ 256-iters point at 14.4-16.6 ms against the
+     * 17.75 ms here — separate runs, not a contradiction. The 12 and 20 ms
+     * thresholds are chosen with margin for exactly that spread.
+     *
      * 12 ms separates the two vsync-capped tiers from the first GPU-bound one
      * with ~40% margin on either side. Both directions are then reachable: 64
      * and 128 promote, 512 and 1024 trip the 20 ms downscale, and the 256

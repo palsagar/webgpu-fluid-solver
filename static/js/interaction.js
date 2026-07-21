@@ -63,7 +63,8 @@ export class Interaction {
     /**
      * Rasterizes the active obstacle shape onto the solver's grid at the given
      * center position. Clears the previous obstacle footprint, writes the new
-     * solid mask, and sets obstacle velocity in both ping-pong buffers.
+     * solid mask, and sets obstacle velocity in all three rotation slots
+     * (`writeVelocityU`/`writeVelocityV` write every `velPairs` entry).
      *
      * Three-step process:
      *   1. Restore cells from the previous bounding box to their boundary-mask state.

@@ -2,7 +2,7 @@
 
 ## Project
 
-FlowLab — real-time 2D incompressible flow simulation running entirely on the GPU via WebGPU compute shaders, rendered with a 2D canvas, served by FastAPI. Includes interactive obstacles, Lagrangian particle tracing, and multiple visualization modes.
+FlowLab — real-time 2D incompressible flow simulation running entirely on the GPU via WebGPU compute shaders, with the field drawn by a WebGPU render pass and overlays (streamlines, arrows, particles, obstacles) on a transparent 2D canvas above it (ADR-0005), served by FastAPI. Includes interactive obstacles, Lagrangian particle tracing, and multiple visualization modes.
 
 ## Quick Start
 
