@@ -3,7 +3,7 @@
  * Each preset defines solver parameters, boundary conditions, obstacle
  * placement, and default visualization toggles.
  *
- * - numIters: pressure solver Jacobi iterations per step (higher = more accurate)
+ * - numIters: red-black SOR sweeps per step in the pressure solver (higher = more accurate)
  * - dt: simulation timestep in seconds
  * - omega: SOR over-relaxation factor for the pressure solver
  * - inVel: horizontal inflow velocity at the left boundary

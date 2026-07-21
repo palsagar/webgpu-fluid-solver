@@ -40,13 +40,29 @@ Decided 2026-07-06 (see ADRs 0005–0008 for the load-bearing decisions).
 
 Deferred / rejected: GPU compute particles (revisit at ~100× particle counts, ADR-0003), multigrid pressure, 2048 tier, multiple parametric obstacles (subsumed by Draw mode), nominal-Re readout (rejected permanently, ADR-0007), smoke diffusion, a GPU-side probe ring buffer.
 
-## Known gaps in the measured numbers
+## Known gaps
 
-Recorded here so nothing above reads as more settled than it is.
+Recorded here so nothing above reads as more settled than it is, and so the list survives the merge — it previously lived only in untracked working-tree notes.
 
-- **Amplitude (`U`) dependence of `ν_num` was never measured.** Every fit used `A = 1.0`. `windTunnel` runs `U = 2.0` and `backwardStep` `U = 1.5`, so their ceiling is approximate and both presets show an `unmeasured` badge rather than a number.
+### Defects that are measured and disclosed, not fixed
+
+- **Dragging the obstacle resets the velocity field to the preset's initial conditions.** `interaction.js` allocates `_uData` / `_vData` as CPU mirrors, `presets.js` seeds them at preset load, and **nothing ever refreshes them from the GPU**. Every `rasterizeObstacle()` — i.e. every drag, shape change, and rotation — ends with `writeVelocityU(this._uData)` / `writeVelocityV(this._vData)`, pushing the whole stale array back over the live field. So a drag does not perturb the flow, it restarts it. Pre-existing (predates this branch), user-visible on the flagship demo, and until now disclosed in no tracked file. Magnitude: total — the entire interior velocity field, not a neighbourhood of the obstacle. The fix is a readback (or a GPU-side rasterizer) and is a follow-up.
+- **The MacCormack velocity chain leaks its stale `i = 0` / `j = 0` ring into the interior.** `advect.wgsl`'s entry point returns for `i < 1 || j < 1`, so neither the forward nor the backward pass writes those lines; the forward pass leaves `phi^`'s ring stale and the backward pass samples it. Measured gain from an `EPS = 1e-3` perturbation of all four ring lines: **9.894e-3 inviscid**, **8.345e-4 with viscosity on** — diffusion damps it ~12×, because `diffuse.wgsl` classifies those lines as buried *by index* and substitutes a ghost rather than loading them. Bounded well below 1 and asserted in `tests/solver.spec.js`; fixing it means making the advect passes write their ring, which changes what every downstream stencil reads. Noted in `advect.wgsl` and `maccormack_velocity.wgsl` where it originates, and in `diffuse.wgsl` where it is defended against.
+- **The domain walls silently change from free-slip to no-slip whenever `ν > 0`.** `diffuse.wgsl` reads the `j = 0` and `j = numY-1` lines as ghost cells, placing a zero-velocity wall half a cell outside the domain. This alters the effective blockage and shifts measured St the moment the Re control applies a viscosity — i.e. always, in the shipped configuration. Disclosed in the St tooltip; not corrected.
+
+### Gaps in the measured numbers
+
+- **Amplitude (`U`) dependence of `ν_num` was never measured.** Every Taylor–Green fit ran at `A = 1.0`, and not even the *sign* of the correction is established — a plausible `ν_num ~ A²` scaling would make the true ceiling *fall* as `U` rises, i.e. the quoted ceiling is optimistic exactly where a user reaches by turning the flow up. Kármán ships `inVel = 1.0` so the app opens on the measured slice, but the inflow slider spans 0.5–5.0. `U` is now part of the measured-point gate (`ui.js`), so leaving 1.0 badges `unmeasured` rather than quoting a ceiling; `windTunnel` (`U = 2.0`) and `backwardStep` (`U = 1.5`) are off-slice on the `dt`/iterations axes too. Measuring `ν_num` across `A` is the way to close it — no correction is applied in the meantime, by design.
 - **Tier 512 and 1024 converged values are extrapolated**, not measured — the browser died at 4096 iterations.
-- **The domain walls silently change from free-slip to no-slip whenever `ν > 0`**, altering effective blockage and shifting measured St. Disclosed, not corrected.
 - **St is measured at one probe position, one tier, and one preset.** Sensitivity to any of the three is unmeasured.
-- **`adaptive.js`'s `UPSCALE_MS = 12` is calibrated on one machine and one display.** On a 60 Hz display nothing auto-promotes.
+- **`adaptive.js`'s `UPSCALE_MS = 12` is calibrated on one machine and one display.** It sits between the 120 Hz dev machine's vsync period (8.33 ms) and its first GPU-bound tier (17.75 ms). On a 60 Hz display no tier can beat 16.67 ms, so nothing auto-promotes and adaptive resolution silently does nothing in the upward direction. Conservative, and deliberate, but uncalibrated anywhere but here.
 - **Step 0's controlled iteration table was taken inside the startup transient.**
+
+### Test gaps
+
+The suite is green and the mutations behind each assertion are recorded, but these are uncovered:
+
+- **No descriptor test for pressure/boundary bind-group slot indexing.** The `diffuse` pipeline has one (`tests/solver.spec.js` captures the descriptor and checks which buffer lands in which slot); `pressure.wgsl` and `boundary.wgsl` do not. Slot indexing is precisely the class of bug that opened this branch, and nothing currently covers it for the two oldest pipelines.
+- **No test for the `diffuse` bind group's `[src][dst]` transposition.** Swapping the two would still produce a plausible-looking field.
+- **No rotation invariant after a resize or tier change.** The three-slot velocity rotation is checked in steady state, not across the buffer recreation that `applyTier()` performs.
+- **The shedding ONSET value is not measured in-suite.** `tests/diagnostics.spec.js` steps the live solver at the shipped default and confirms the wake sheds at the measured St and amplitude, which bounds the onset from *above* (it is below Re 74.8). Locating the crossing needs a sweep in Re at minutes of wall clock per point, and stays offline.

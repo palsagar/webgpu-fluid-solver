@@ -34,6 +34,23 @@ export class AdaptiveController {
     static UPSCALE_MS = 12;
 
     /**
+     * Average wall-clock frame time above which the current tier is judged too
+     * slow and dropped immediately (no cooldown — a stalling tier should not be
+     * held for five seconds before being abandoned).
+     *
+     * 20 ms is ~50 fps. Against the measured per-tier table on the UPSCALE_MS
+     * block above, it sits above both vsync-capped tiers (8.33 / 8.34 ms) and
+     * above the 256 startup tier (17.75 ms), so none of the three trips it,
+     * while 512 (62.01 ms) and 1024 (257.36 ms) clear it by 3.1x and 12.9x.
+     *
+     * Exported as a named constant rather than left inline because the tests
+     * assert the two thresholds do not overlap and that this one stays
+     * reachable from the slow tiers. A literal typed into the test instead
+     * would assert nothing about the value the controller actually uses.
+     */
+    static DOWNSCALE_MS = 20;
+
+    /**
      * @param {Object} solver - The GPU fluid solver instance
      * @param {Object} renderer - The canvas renderer instance
      * @param {Object} interaction - The obstacle/interaction handler
@@ -81,8 +98,8 @@ export class AdaptiveController {
         if (this.frameTimes.length > 120) this.frameTimes.shift(); // rolling window of 120 samples
         if (this.frameTimes.length < 20) return; // need enough samples for stable average
         const avg = this.frameTimes.reduce((a, b) => a + b, 0) / this.frameTimes.length;
-        // >20ms avg (~<50 FPS): drop resolution immediately
-        if (avg > 20 && this.currentTierIndex > 0) {
+        // >DOWNSCALE_MS avg (~<50 FPS): drop resolution immediately
+        if (avg > AdaptiveController.DOWNSCALE_MS && this.currentTierIndex > 0) {
             this.downscale();
         // <UPSCALE_MS avg with 5s cooldown: try higher resolution
         } else if (avg < AdaptiveController.UPSCALE_MS && this.currentTierIndex < this.maxAutoTierIndex) {

@@ -40,7 +40,7 @@ A user-draggable solid shape (circle, etc.) rasterized into the Solid Mask. Movi
 
 **Pressure Iteration**:
 One red-black Gauss-Seidel (SOR) sweep of the pressure projection. Presets choose how many run per step. Not a free knob: the count sets the delivered Numerical Viscosity, and therefore the top of the honest Reynolds window.
-_Avoid_: Jacobi iteration (— the solver is Gauss-Seidel, not Jacobi; a stale comment in `presets.js` says otherwise)
+_Avoid_: Jacobi iteration (— the solver is red-black Gauss-Seidel with over-relaxation, not Jacobi)
 
 **MacCormack**:
 The advection scheme: a semi-Lagrangian forward trace, a reversed retrace, and a limited combine `phi^{n+1} = phi^ + (phi^n − phi~)/2` clamped to the fluid corners of the departure stencil. Three GPU dispatches per field. It replaced plain semi-Lagrangian advection, whose numerical diffusion it cuts by up to 3x.

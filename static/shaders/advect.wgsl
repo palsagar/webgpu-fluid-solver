@@ -164,6 +164,26 @@ fn sample_fv(st: Stencil) -> f32 {
 // the forward interpolation is entitled to blend them -- that is how no-slip
 // enters the advected field. There is no velocity analogue of the stale-dye
 // problem that motivates the smoke path's corner test.
+//
+// ---------------------------------------------------------------------------
+// KNOWN DEFECT: THIS IS WHERE THE STALE RING ORIGINATES
+//
+// The `i < 1 || j < 1` return below means the i=0 column and the j=0 row are
+// never written by this pass. On the FORWARD pass that leaves phi^'s ring
+// stale, and the BACKWARD pass then samples it -- `sampleU` reaches
+// `fu[i0*n + j0]` with j0 == 0, and `sampleV` reaches `fv[i0*n + j0]` with
+// i0 == 0 -- so a perturbation of the ring leaks into the interior.
+//
+// Measured (tests/solver.spec.js, "the viscous stencil cannot read the stale
+// i=0 / j=0 ring", phase B): an EPS = 1e-3 perturbation of all four ring lines
+// reaches the interior with gain 9.894e-3 inviscid, and 8.345e-4 with viscosity
+// on -- diffusion damps it ~12x rather than amplifying it, because
+// `diffuse.wgsl` classifies these lines as buried BY INDEX and substitutes a
+// ghost rather than loading them.
+//
+// It is measured and bounded, not fixed: fixing it means making this pass write
+// its ring, which changes what every downstream stencil reads and is its own
+// task. Recorded in docs/ROADMAP.md under Known gaps.
 @compute @workgroup_size(8, 8)
 fn advect_velocity(@builtin(global_invocation_id) id: vec3u) {
     let i = id.x;

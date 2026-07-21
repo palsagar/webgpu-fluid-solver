@@ -72,6 +72,21 @@
 // a solid cell is a genuine wall BC that interaction.js rewrites in full every
 // frame, and the forward interpolation legitimately blends it; there is no
 // velocity analogue of the stale-dye problem that motivates smoke's exclusion.
+//
+// ---------------------------------------------------------------------------
+// KNOWN DEFECT: THE STALE RING REACHES THIS COMBINE
+//
+// `advect.wgsl`'s entry point returns for i < 1 and j < 1, so neither the
+// forward nor the backward pass ever writes the i=0 column or the j=0 row.
+// uHat/vHat therefore carry a stale ring, the backward pass samples it, and the
+// error arrives here inside phi^ and phi~. The min/max limiter below bounds how
+// far it can travel but does not remove it.
+//
+// Measured gain from an EPS = 1e-3 ring perturbation into the interior: 9.894e-3
+// inviscid, 8.345e-4 with viscosity on (tests/solver.spec.js, "the viscous
+// stencil cannot read the stale i=0 / j=0 ring", phase B). Bounded and
+// disclosed, not fixed -- see the same note in advect.wgsl and the Known gaps
+// section of docs/ROADMAP.md.
 // ============================================================================
 
 struct Params {

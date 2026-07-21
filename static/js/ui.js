@@ -1,7 +1,8 @@
 import { loadPreset, PRESETS } from './presets.js';
 import {
     honestWindow, windowState, fmtRe, reFromSliderPos,
-    nuNumConverged, NU_NUM_ITERS256, NU_NUM_ITERS256_DT, PROJECTION_ITERS_MEASURED,
+    nuNumConverged, NU_NUM_ITERS256, NU_NUM_ITERS256_DT, NU_NUM_MEASURED_U,
+    PROJECTION_ITERS_MEASURED,
     StrouhalProbe, probeCell,
 } from './diagnostics.js';
 
@@ -13,6 +14,15 @@ import {
 // position sneaks through. This exists so a slider dragged back to the bottom
 // (0.0041667, the preset's dt to within 8e-6) still counts as the anchor.
 const ANCHOR_DT_REL_TOL = 1e-3;
+
+// How close the live inflow must sit to NU_NUM_MEASURED_U for the projection
+// table to be a measurement of THIS flow. Same 0.1% as the dt tolerance and for
+// the same reason: it exists so a slider returned to the preset value counts as
+// the measured point despite float round-trips through the DOM, not so a
+// neighbouring position sneaks through. The inflow slider steps by 0.1 on a
+// U = 1.0 anchor, so the nearest other position is 10% away — a hundred times
+// this tolerance.
+const MEASURED_U_REL_TOL = 1e-3;
 
 // Map kebab-case data-preset attribute values to PRESETS object keys
 const PRESET_KEY_MAP = {
@@ -225,23 +235,35 @@ export class UI {
         });
 
         // The operating-point ceiling is measured on ONE slice: dt = 1/240 at
-        // PROJECTION_ITERS_MEASURED iterations, across the tiers. It is neither
-        // rescaled to the live iteration count nor to the live dt — two slices
-        // through the (tier x numIters x dt) surface are measured, not the
-        // surface, and interpolating one from two lines would be inventing the
-        // number this branch exists to measure.
+        // PROJECTION_ITERS_MEASURED iterations and an amplitude of
+        // NU_NUM_MEASURED_U, across the tiers. It is rescaled to none of the
+        // three — three lines through the (tier x numIters x dt x U) surface
+        // are measured, not the surface, and interpolating it would be
+        // inventing the number this branch exists to measure.
         //
         // So it is quoted ONLY where it was measured. Off that slice — the
-        // other two presets (dt = 1/60 at 40 and 60 iters), or any move of the
-        // dt / iterations sliders — no projection ceiling is supplied, and
-        // `windowState` reports the ceiling as unmeasured instead. Carrying it
-        // off-slice used to produce an impossible pair: on `windTunnel` a
-        // projection ceiling of Re 771 against a converged ceiling of Re 297,
-        // i.e. an under-converged solve dissipating less than a converged one.
+        // other two presets (dt = 1/60 at 40 and 60 iters, U = 2.0 and 1.5), or
+        // any move of the dt / iterations / inflow sliders — no projection
+        // ceiling is supplied, and `windowState` reports the ceiling as
+        // unmeasured instead. Carrying it off-slice used to produce an
+        // impossible pair: on `windTunnel` a projection ceiling of Re 771
+        // against a converged ceiling of Re 297, i.e. an under-converged solve
+        // dissipating less than a converged one.
+        //
+        // The AMPLITUDE axis is the one added last and the one with the least
+        // behind it. dt and numIters are each measured at two settings, so the
+        // shape of the dependence is at least known. `U` is measured at ONE —
+        // every Taylor-Green fit ran at A = 1.0 — so off it not even the SIGN
+        // of the correction is established, while the inflow slider spans
+        // 0.5 .. 5.0 live on the flagship preset. Gating here is what stops one
+        // drag of that slider leaving a measured ceiling on screen for a flow
+        // nothing measured.
         const atMeasuredPoint =
             Math.abs(this.solver.params.dt - NU_NUM_ITERS256_DT)
                 <= ANCHOR_DT_REL_TOL * NU_NUM_ITERS256_DT
-            && this.numIters === PROJECTION_ITERS_MEASURED;
+            && this.numIters === PROJECTION_ITERS_MEASURED
+            && Math.abs(U - NU_NUM_MEASURED_U)
+                <= MEASURED_U_REL_TOL * NU_NUM_MEASURED_U;
         const nuProjection = atMeasuredPoint ? NU_NUM_ITERS256[this.solver.numY] : undefined;
         const reMaxProjection = nuProjection ? (U * D) / nuProjection : Infinity;
 

@@ -469,10 +469,25 @@ test('the Re slider spans the measured window and its midpoint is honest at the 
   expect(mapped.mid).toBeLessThan(w256.reMaxProjection);
 });
 
-test('the shipped default sheds, and now sits inside the honest window', async ({ page }) => {
+test('the shipped default sits inside the honest window and opens un-badged', async ({ page }) => {
   await page.goto('/');
   // The badge is written by the UI constructor, which runs after WebGPU init.
   await page.waitForFunction(() => window.__flowlab?.ui, null, { timeout: 20_000 });
+
+  // WHAT THIS TEST COVERS, AND WHAT IT DOES NOT.
+  //
+  // Everything below is ARITHMETIC over the shipped constants: the slider
+  // default, the measured tables, and the window they imply. It is worth
+  // asserting — it is what stops the default drifting outside the window, and
+  // what pins index.html's `value` attribute to the documented position — but
+  // none of it touches the solver.
+  //
+  // In particular `ONSET` below is a literal transcribed from an offline
+  // growth-rate measurement that this suite does not reproduce. It is used here
+  // only to check the SLIDER MAPPING against a number, so `expect(shipped.re >
+  // ONSET)` is a statement about the mapping, not about the flow. That the
+  // solver still actually sheds at this position is a separate claim, and it is
+  // measured on the live solver by the test immediately after this one.
 
   // index.html's value attribute must match the documented default, so the
   // rationale in diagnostics.js cannot drift away from what ships.
@@ -489,7 +504,7 @@ test('the shipped default sheds, and now sits inside the honest window', async (
   // Measured shedding onset at tier 256, dt = 1/240, 256 iterations, by the
   // zero crossing of the LINEAR GROWTH RATE — a window-independent criterion.
   // sigma = -0.0975 / -0.0036 / +0.0771 at Re 50 / 52 / 54, linear in Re, so
-  // the crossing is 52.2; the +-0.3 is the spread over 49 combinations of fit
+  // the crossing is 52.2; the +-0.3 is the spread over 53 combinations of fit
   // subset and analysis window. The superseded 57.5 came from a 30 s amplitude
   // RATIO, which near onset measures the window: at Re 52 the e-folding time is
   // 278 s and 30 s cannot tell it from a saturated limit cycle.
@@ -554,6 +569,203 @@ test('the shipped default sheds, and now sits inside the honest window', async (
   expect(badge.visible).toBe(false);
   expect(badge.text).toBe('');
   expect(badge.valRe).toBe('75');
+});
+
+/**
+ * Steps the LIVE solver at whatever the UI currently has configured, sampling
+ * the transverse velocity at the app's own probe cell.
+ *
+ * Replicates `main.js`'s per-frame sequence exactly — smoke inlet before the
+ * step, inflow column re-applied after it — but off the rAF loop, so the run
+ * is not paced by the display. `solver.paused` is set for the duration so the
+ * frame loop does not step the field underneath the sampler.
+ *
+ * Only the probe cell is copied back (4 bytes), not the whole velocity buffer:
+ * at one readback per 10 steps a full-field copy would dominate the run.
+ */
+async function stepAndSampleWake(page, { settleSteps, sampleSteps, sampleEvery }) {
+  return page.evaluate(async ({ settleSteps, sampleSteps, sampleEvery }) => {
+    const { solver, ui, interaction } = window.__flowlab;
+    const d = await import('/js/diagnostics.js');
+
+    const cell = d.probeCell({
+      obstacleX: interaction.obstacleX,
+      obstacleY: interaction.obstacleY,
+      D: 2 * interaction.obstacleRadius,
+      h: solver.h,
+      numX: solver.numX,
+      numY: solver.numY,
+    });
+    if (!cell) return { error: 'no probe cell for this geometry' };
+    const byteOffset = (cell.i * solver.numY + cell.j) * 4;
+
+    const wasPaused = solver.paused;
+    solver.paused = true;
+    // Let any frame already in flight finish before taking the field over.
+    await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+
+    const readProbeV = async () => {
+      const stage = solver.device.createBuffer({
+        size: 4, usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST,
+      });
+      const enc = solver.device.createCommandEncoder();
+      enc.copyBufferToBuffer(solver.velocityBuffers.v, byteOffset, stage, 0, 4);
+      solver.device.queue.submit([enc.finish()]);
+      await stage.mapAsync(GPUMapMode.READ);
+      const val = new Float32Array(stage.getMappedRange().slice(0))[0];
+      stage.unmap();
+      stage.destroy();
+      return val;
+    };
+
+    const oneStep = () => {
+      if (ui.smokeInletData) {
+        solver.device.queue.writeBuffer(solver.smokeBuffer, 0, ui.smokeInletData);
+      }
+      solver.step(ui.numIters);
+      if (ui.boundaryVelData) {
+        solver.writeInflowColumn(
+          1, ui.boundaryVelData.uData, 1 * solver.numY, solver.numY);
+      }
+    };
+
+    const t0 = performance.now();
+    for (let k = 0; k < settleSteps; k++) oneStep();
+
+    const t = [], v = [];
+    for (let k = 0; k < sampleSteps; k++) {
+      oneStep();
+      if (k % sampleEvery === 0) {
+        t.push(solver.simTime);
+        v.push(await readProbeV());
+      }
+    }
+
+    solver.paused = wasPaused;
+
+    const n = v.length;
+    const mean = v.reduce((a, b) => a + b, 0) / n;
+    const rms = Math.sqrt(v.reduce((a, b) => a + (b - mean) ** 2, 0) / n);
+
+    // Feed the app's OWN detector, so what this test calls "shedding" is
+    // exactly what the readout calls shedding — not a second opinion.
+    const probe = new d.StrouhalProbe();
+    for (let k = 0; k < n; k++) probe.push(v[k], t[k]);
+    const verdict = probe.read({ D: 2 * interaction.obstacleRadius, U: ui._inflowVelocity() });
+
+    return {
+      cell, n, mean, rms, verdict,
+      U: ui._inflowVelocity(),
+      D: 2 * interaction.obstacleRadius,
+      numIters: ui.numIters,
+      dt: solver.params.dt,
+      numY: solver.numY,
+      simTimeSpan: t[n - 1] - t[0],
+      wallMs: performance.now() - t0,
+      allFinite: v.every(Number.isFinite),
+      vSpread: Math.max(...v) - Math.min(...v),
+    };
+  }, { settleSteps, sampleSteps, sampleEvery });
+}
+
+test('the shipped default actually sheds, observed on the live solver', async ({ page }) => {
+  test.setTimeout(240_000);
+  await page.goto('/');
+  await page.waitForFunction(() => window.__flowlab?.ui, null, { timeout: 20_000 });
+
+  // WHY THIS TEST EXISTS.
+  //
+  // The test above says the shipped Re clears a transcribed onset literal. That
+  // literal came from an offline growth-rate sweep this suite does not run, so
+  // if the SOLVER's onset moved — a MacCormack regression, a projection change,
+  // a boundary change altering the blockage — nothing would notice, and the
+  // onset is the number this branch re-measured twice. This one steps the real
+  // solver at the shipped default and asks the app's own detector what it sees.
+  //
+  // WHAT IT COVERS: that at the shipped operating point (Karman, tier 256,
+  // dt = 1/240, 256 iterations, Re 74.8) the wake is unsteady, and that its
+  // frequency and amplitude land where they were measured. It fails if the
+  // onset rises above 74.8 (the wake would read `steady`), and it fails if the
+  // wake's character changes enough to move St or A_sat out of the measured band.
+  //
+  // WHAT IT DOES NOT COVER: the onset VALUE. Locating the crossing needs a
+  // sweep in Re, each point from identical initial conditions with a 15 s
+  // spin-up and 50 s of logging — minutes of wall clock per point. That stays
+  // offline. This test bounds the onset from above (it is below 74.8) and
+  // nothing more.
+
+  // Pin the tier: an adaptive switch mid-run would resize the grid and change
+  // the operating point the measured numbers below belong to.
+  await page.evaluate(() => { window.__flowlab.adaptive.manualOverride = true; });
+
+  const cfg = await page.evaluate(() => {
+    const { ui, solver } = window.__flowlab;
+    // Identical initial conditions, so the settle window below starts from the
+    // impulsive start rather than from however long the page happened to sit.
+    ui.reapplyCurrentPreset();
+    return { preset: ui.currentPreset, numIters: ui.numIters, dt: solver.params.dt,
+             numY: solver.numY };
+  });
+  expect(cfg.preset).toBe('karmanVortex');
+  expect(cfg.numIters).toBe(256);
+  expect(cfg.dt).toBeCloseTo(1 / 240, 10);
+  expect(cfg.numY).toBe(256);
+
+  // 2400 settle steps = 10.0 s of simulation time, then 1280 sampled steps at
+  // one sample per 10 = 128 samples, which is exactly the minimum
+  // `StrouhalProbe.read()` accepts (PROBE_CAPACITY / 2) and spans 5.3 s — about
+  // 7.9 shedding periods at St 0.18.
+  //
+  // The settle length is set by measurement, not by guessing. At 1200 steps
+  // (5 s) the run reads St = 0.169 at rms/U = 0.064 — shedding, but still deep
+  // in the growth phase, only a quarter of the way to the measured plateau. At
+  // 2400 it reads St = 0.178 at rms/U = 0.230, within 1% and 13% of the offline
+  // saturated values (0.180 and 0.2636). The extra 1200 steps cost ~17 s of
+  // wall clock and are what makes the amplitude assertion below able to have a
+  // real margin instead of grazing the shedding gate.
+  const r = await stepAndSampleWake(page, {
+    settleSteps: 2400, sampleSteps: 1280, sampleEvery: 10,
+  });
+  expect(r.error).toBeUndefined();
+  console.log(
+    `live wake @ Re 74.8: state = ${r.verdict.state}  St = ${r.verdict.st}  ` +
+    `rms/U = ${(r.rms / r.U).toFixed(4)}  span = ${r.simTimeSpan.toFixed(2)} s  ` +
+    `(${(r.wallMs / 1000).toFixed(1)} s wall)`);
+
+  // The series is a real one: finite, and not a constant field. Without this a
+  // dead device would read rms = 0 and land in `steady`, which is a verdict
+  // about physics delivered from a buffer carrying none.
+  expect(r.allFinite).toBe(true);
+  expect(r.vSpread).toBeGreaterThan(0);
+  expect(r.n).toBe(128);
+  expect(r.U).toBeCloseTo(1.0, 6);
+  expect(r.D).toBeCloseTo(0.12, 6);
+
+  // THE PAYLOAD. The app's own detector, on the app's own default, must say the
+  // wake sheds. If the solver's onset rises past Re 74.8 this reads `steady`.
+  expect(r.verdict.state).toBe('shedding');
+
+  // And the amplitude must be the measured one, not merely over the 0.02 gate.
+  // A_sat = 0.2636 at Re 74.8 offline (saturation-verified, drift 0.01% over
+  // the final two 20 s windows); this run measures 0.230, 13% short because it
+  // settles for 10 s rather than 115 s. The lower bound is 7.5x the shedding
+  // gate, so a wake that merely trips the detector fails here, and the upper
+  // bound sits below the Re 100 plateau (0.402).
+  expect(r.rms / r.U).toBeGreaterThan(0.15);
+  expect(r.rms / r.U).toBeLessThan(0.35);
+
+  // And the frequency must be the measured one: St = 0.180 at Re 74.8, from the
+  // offline sweep that read 0.166 at Re 55 up to 0.200 at Re 140.
+  //
+  // The band is +-1 zero crossing, not +-1%, and that is what a 5.3 s window
+  // buys. `read()` estimates f as (crossings - 1) / (t_last - t_first) over
+  // ~7.9 periods, so gaining or losing a single crossing moves St to 0.204 or
+  // 0.152 with the physics unchanged. Asserting tighter than the window can
+  // resolve would be a flaky test, not a stronger one. It still excludes both
+  // ways the detector has actually been seen to fail: 2f (0.36, from feeding it
+  // the streamwise component) and f/2 (0.09, from a wake that stops alternating).
+  expect(r.verdict.st).toBeGreaterThan(0.15);
+  expect(r.verdict.st).toBeLessThan(0.21);
 });
 
 // ── Live wiring ─────────────────────────────────────────────────────────────
@@ -754,6 +966,72 @@ test('the badge stops quoting the projection ceiling when iterations leave its m
   const on = await readBadge(page);
   expect(on.visible).toBe(false);
   expect(on.text).toBe('');
+});
+
+test('the badge stops quoting the projection ceiling when the inflow leaves U = 1', async ({ page }) => {
+  await page.goto('/');
+  await page.waitForFunction(() => window.__flowlab?.ui, null, { timeout: 20_000 });
+  await page.evaluate(() => { window.__flowlab.solver.paused = true; });
+
+  // The AMPLITUDE axis, and the one the gate covered last. Every Taylor-Green
+  // fit behind NU_NUM_PER_DT and NU_NUM_ITERS256 ran at A = 1.0, which is why
+  // diagnostics.js says the ceiling is "approximate — and optimistic — for any
+  // preset whose U differs from 1.0". Karman ships inVel = 1.0, so the app
+  // opens ON the measured slice — but the inflow slider spans 0.5 .. 5.0, and
+  // one drag leaves it while the badge used to keep quoting a measured ceiling.
+  // The direction is not even known: a plausible nu_num ~ A^2 scaling would
+  // make the true ceiling FALL as U rises, i.e. the quoted number would be
+  // optimistic exactly where a user reaches by turning the flow up.
+  const start = await page.evaluate(() => ({
+    U: window.__flowlab.ui._inflowVelocity(),
+    visible: document.getElementById('re-badge').classList.contains('visible'),
+  }));
+  expect(start.U).toBeCloseTo(1.0, 6);
+  expect(start.visible).toBe(false);
+
+  // Up: the regime where the unmeasured correction is optimistic.
+  const up = await setSlider(page, 'slider-invel', 2.0);
+  expect(up).toBeCloseTo(2.0, 6);
+  const offUp = await page.evaluate(() => ({
+    U: window.__flowlab.ui._inflowVelocity(),
+    visible: document.getElementById('re-badge').classList.contains('visible'),
+    text: document.getElementById('re-badge').textContent,
+  }));
+  expect(offUp.U).toBeCloseTo(2.0, 6);
+  expect(offUp.visible).toBe(true);
+  expect(offUp.text).toMatch(/unmeasured/i);
+  // The reason must NAME the axis that actually moved. Before this gate the
+  // `unmeasured` text attributed the whole residual unknown to the pressure
+  // solve, so the amplitude gap was invisible in the UI even once it opened.
+  expect(offUp.text).toMatch(/U = 1/);
+  expect(offUp.text).toMatch(/amplitude|inflow/i);
+  // The scheme ceiling at U = 2 is U*D/nu_num = 0.24/5.0564e-4 = 475, and it is
+  // still honest to quote it — nu_num's h- and dt-scaling is measured, only its
+  // amplitude dependence is not. What must be gone is the projection ceiling
+  // (0.24/7.7808e-4 = 308), which is quoted nowhere once the gate opens.
+  expect(offUp.text).toContain('475');
+  expect(offUp.text).not.toContain('308');
+
+  // Down as well as up: the gate is about leaving the measured point, not about
+  // exceeding it. A `U > 1` test alone would pass on a one-sided gate.
+  await setSlider(page, 'slider-invel', 1.0);
+  expect((await readBadge(page)).visible).toBe(false);
+
+  const down = await setSlider(page, 'slider-invel', 0.5);
+  expect(down).toBeCloseTo(0.5, 6);
+  const offDown = await page.evaluate(() => ({
+    visible: document.getElementById('re-badge').classList.contains('visible'),
+    text: document.getElementById('re-badge').textContent,
+  }));
+  expect(offDown.visible).toBe(true);
+  expect(offDown.text).toMatch(/unmeasured/i);
+
+  // And back at U = 1.0 the claim returns — the gate must not be a one-way trip
+  // that silently disables the measured ceiling for the rest of the session.
+  await setSlider(page, 'slider-invel', 1.0);
+  const back = await readBadge(page);
+  expect(back.visible).toBe(false);
+  expect(back.text).toBe('');
 });
 
 // ── The Strouhal probe ──────────────────────────────────────────────────────

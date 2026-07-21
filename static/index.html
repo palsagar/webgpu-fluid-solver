@@ -304,7 +304,7 @@
               <div class="guide-learn-more">
                 <div class="guide-learn-more-toggle">&#9656; Learn more about wake transition</div>
                 <div class="guide-learn-more-body">
-                  <p>At low Reynolds number the wake is steady and symmetric. As Re increases (raise inflow velocity or grid resolution), the wake becomes unsteady — you'll see vortex shedding begin. For a circular cylinder, this transition happens around Re &#8776; 47. Try it: start with low inflow velocity, then slowly increase it with the Advanced panel slider.</p>
+                  <p>At low Reynolds number the wake is steady and symmetric. Raise Re and the wake becomes unsteady — you'll see vortex shedding begin. The textbook figure for an <em>unconfined</em> circular cylinder is Re &#8776; 47; in this solver's channel the onset was <em>measured</em> at Re 52.2 &#177; 0.3, which sits above the textbook value in the direction the 12% blockage and the staircased cylinder both predict. Try it: drag the <strong>Re</strong> slider in the Flow Info panel below 52 and the street dies out, then bring it back up and watch it grow again — slowly, because the growth rate vanishes near onset. Use that slider and not the inflow velocity: the Re control sets &nu; = U&middot;D/Re, so moving U moves &nu; with it and holds Re fixed. Grid resolution does not raise Re either.</p>
                 </div>
               </div>
             </div>
@@ -394,16 +394,16 @@
             </div>
             <div class="guide-param-row">
               <span class="guide-param-name">Inflow velocity</span>
-              <span class="guide-param-desc">Speed of the incoming flow. Higher velocity means higher Reynolds number and more complex wake behavior.</span>
+              <span class="guide-param-desc">Speed of the incoming flow — the U in Re = U&middot;D/&nu;. It does <em>not</em> raise Reynolds number: the Re control sets &nu; = U&middot;D/Re, so raising the inflow raises the viscosity with it and Re holds constant. It does raise the CFL number, and it takes you off the one amplitude (U = 1.0) at which the solver's numerical viscosity was measured — so the Re badge stops quoting a measured ceiling once you move it.</span>
             </div>
             <div class="guide-param-row">
               <span class="guide-param-name">Grid resolution</span>
-              <span class="guide-param-desc">Number of cells across the domain. Higher resolution captures finer detail but demands more GPU work. Also raises the effective Reynolds number by reducing numerical diffusion.</span>
+              <span class="guide-param-desc">Number of cells across the domain. Higher resolution captures finer detail but demands more GPU work. It does <em>not</em> buy Reynolds number. The scheme's own numerical viscosity was measured <em>independent</em> of cell size — flat to 0.5% across a 4&times; refinement — because it is an operator-splitting error in time, not grid diffusion; only a smaller dt lowers it. And at the 256 pressure iterations the Kármán preset ships, the honest Re ceiling <em>falls</em> as the grid grows — Re 236 at tier 64 down to Re 16.5 at tier 1024 — because a fixed iteration count converges the pressure solve progressively less well on a finer grid.</span>
             </div>
             <div class="guide-learn-more">
               <div class="guide-learn-more-toggle">&#9656; Learn more about numerical stability</div>
               <div class="guide-learn-more-body">
-                <p>The solver uses a semi-Lagrangian advection scheme. For stability, the CFL condition (dt &times; U / h &lt; 1) should be satisfied — meaning fluid should not cross more than one cell per timestep. The default parameters are chosen to be stable for typical configurations. If the simulation explodes into noise, lower dt or reduce inflow velocity.</p>
+                <p>The solver uses a MacCormack advection scheme — a semi-Lagrangian trace forward, the same trace backward, then a limited combine that keeps the correction only where it stays inside the min/max of the cells it was interpolated from. For stability, the CFL condition (dt &times; U / h &lt; 1) should be satisfied — meaning fluid should not cross more than one cell per timestep. The default parameters are chosen to be stable for typical configurations. If the simulation explodes into noise, lower dt or reduce inflow velocity.</p>
               </div>
             </div>
           </div>

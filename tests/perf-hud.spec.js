@@ -76,10 +76,21 @@ test('both adaptive thresholds are reachable under wall-clock frame time', async
   await page.waitForFunction(() => window.__flowlab?.adaptive, null, { timeout: 20_000 });
 
   const m = await measureFrames(page, 90);
+  // BOTH thresholds are read off the live controller. `downscaleMs` used to be
+  // the literal 20 typed here, while `adaptive.js` carried a bare `avg > 20` —
+  // so `downscaleMs < 60` was really `20 < 60` and the comparison against
+  // `upscaleMs` was against a fabrication. Changing the solver's threshold to
+  // 500 failed nothing. It is now a `static DOWNSCALE_MS` the controller
+  // actually branches on, so these assertions bind to shipped behaviour.
   const { upscaleMs, downscaleMs } = await page.evaluate(() => ({
     upscaleMs: window.__flowlab.adaptive.constructor.UPSCALE_MS,
-    downscaleMs: 20,
+    downscaleMs: window.__flowlab.adaptive.constructor.DOWNSCALE_MS,
   }));
+
+  // Guard: `page.evaluate` yields `undefined` for a missing static, and
+  // `undefined < 60` is false — but `expect(undefined).toBeLessThan` throws a
+  // type error rather than reporting a threshold problem, so say what is wrong.
+  expect(typeof downscaleMs, 'AdaptiveController must export DOWNSCALE_MS').toBe('number');
 
   // `tick` is fed wall-clock frame time, so a tier with headroom does not read
   // "fast" — it reads the display's refresh period, because vsync is what it is
@@ -96,4 +107,48 @@ test('both adaptive thresholds are reachable under wall-clock frame time', async
   // ~257 ms here, both far above 20 ms, so a threshold that drifted above the
   // slow tiers would leave the controller unable to recover from a stall.
   expect(downscaleMs).toBeLessThan(60);
+});
+
+test('the controller branches on DOWNSCALE_MS, not on a number beside it', async ({ page }) => {
+  await page.goto('/');
+  await page.waitForFunction(() => window.__flowlab?.adaptive, null, { timeout: 20_000 });
+
+  // The test above pins the VALUE of the constant. This one pins that `tick`
+  // actually reads it: exporting a constant the branch ignores would satisfy
+  // every assertion up there while the shipped threshold stayed wherever the
+  // inline literal left it. Driven with synthetic frame times straddling the
+  // constant by ±10%, so it holds for any value the constant is set to and
+  // fails the moment the branch stops tracking it.
+  const r = await page.evaluate(() => {
+    const a = window.__flowlab.adaptive;
+    const D = a.constructor.DOWNSCALE_MS;
+
+    const drive = (ms) => {
+      a.enabled = true;
+      a.manualOverride = false;
+      // Tier 512, so there is somewhere to fall to, and pinned as the auto
+      // ceiling so a fast frame time cannot promote instead.
+      a.currentTierIndex = 3;
+      a.maxAutoTierIndex = 3;
+      a.frameTimes = [];
+      a.lastUpscaleTime = Date.now();
+      a.tierStartTime = Date.now() - 3000;  // past the 2 s warmup gate
+      const before = a.currentTierIndex;
+      for (let k = 0; k < 40; k++) a.tick(ms);
+      a.enabled = false;
+      return a.currentTierIndex - before;
+    };
+
+    return { D, above: drive(D * 1.1), below: drive(D * 0.9) };
+  });
+
+  // Just above the threshold the tier must drop exactly once — `downscale()`
+  // clears the frame-time window and the warmup gate, so the remaining ticks
+  // in the batch cannot compound it.
+  expect(r.above).toBe(-1);
+  // Just below it, nothing moves. This is the assertion that fails if the
+  // branch keeps a literal that has drifted away from the constant: with
+  // `avg > 20` inline and DOWNSCALE_MS raised, 0.9x the constant would still
+  // clear 20 and demote.
+  expect(r.below).toBe(0);
 });

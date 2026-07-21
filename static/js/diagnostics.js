@@ -87,6 +87,28 @@ export const PROJECTION_ITERS_MEASURED = 256;
 export const NU_NUM_ITERS256_DT = 1 / 240;
 
 /**
+ * The Taylor-Green AMPLITUDE every `nu_num` fit in this module was run at, and
+ * therefore the free-stream `U` at which any ceiling derived from them is a
+ * measurement rather than an extrapolation.
+ *
+ * ─── Why this is a gate and not a correction ───────────────────────────────
+ *
+ * `A = 1.0` matches the Karman preset's shipped `inVel`, so the flagship demo
+ * opens ON the measured slice. But the inflow slider spans 0.5 .. 5.0, and one
+ * drag leaves it. The dependence is UNMEASURED — see the "What is NOT measured"
+ * block on NU_NUM_PER_DT — and its SIGN is not merely unknown in magnitude: a
+ * plausible `nu_num ~ A^2 dt` scaling would make the true ceiling FALL as `U`
+ * rises, i.e. the quoted ceiling would be optimistic in exactly the regime a
+ * user reaches by turning the flow up.
+ *
+ * The only honest options are to measure it or to stop claiming a measured
+ * ceiling off the measured point. Scaling the table by a guessed power of `U`
+ * would manufacture the number this branch exists to measure, so `ui.js` gates
+ * on this constant and `windowState` reports `'unmeasured'` instead.
+ */
+export const NU_NUM_MEASURED_U = 1.0;
+
+/**
  * Numerical viscosity at the OPERATING POINT the app actually ships:
  * `numIters = 256`, where the red-black SOR projection is converged at the two
  * coarse tiers and still under-converged at the three finer ones.
@@ -482,11 +504,14 @@ export function windowState({
     return {
       ok: false,
       code: 'unmeasured',
-      reason: `Ceiling unmeasured at this configuration — the projection ceiling is only measured `
-            + `at ${PROJECTION_ITERS_MEASURED} pressure iterations and dt = 1/${anchor}, and does `
-            + `not carry to this timestep and iteration count. The advection scheme alone allows `
-            + `Re ${fmtRe(reMax)}; an under-converged pressure solve can only lower that, by an `
-            + `amount nothing here has measured.`,
+      reason: `Ceiling unmeasured at this configuration — the projection ceiling is measured on one `
+            + `slice only: ${PROJECTION_ITERS_MEASURED} pressure iterations, dt = 1/${anchor}, and `
+            + `an inflow of U = ${NU_NUM_MEASURED_U}. It does not carry off any of those three `
+            + `axes, and the inflow one is the least known: the scheme's numerical viscosity has `
+            + `never been measured against amplitude, and a plausible U² scaling would push the `
+            + `true ceiling DOWN as the flow speeds up. The advection scheme allows `
+            + `Re ${fmtRe(reMax)} at the measured amplitude; a larger U and an under-converged `
+            + `pressure solve can each only lower that, by amounts nothing here has measured.`,
     };
   }
 

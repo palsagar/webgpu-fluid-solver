@@ -1545,10 +1545,44 @@ test('Taylor-Green decay yields a numerical viscosity', async ({ page }) => {
 
   // And the shipped coefficient must be anchored at 1/240, not 1/120: anchoring
   // at the larger dt would make the ceiling OPTIMISTIC at the preset's own dt.
-  // nuNumConverged(1/240) must therefore sit at the 1/240 measurement, not at
-  // half the 1/120 one.
-  expect(d.perDt * DT).toBeCloseTo(d.converged, 12);
-  expect(Math.abs(d.converged - conv.nuNum) / conv.nuNum).toBeLessThan(0.05);
+  //
+  // This used to read `expect(d.perDt * DT).toBeCloseTo(d.converged, 12)`, with
+  // `d.converged = nuNumConverged(1/240) = NU_NUM_PER_DT * (1/240)` — the same
+  // expression on both sides. It asserted `x === x` and could not fail for any
+  // value of the constant. Saying what it MEANT needs both measurements.
+  //
+  // The two candidate anchors are `conv.nuNum * 240` (shipped, 0.121354) and
+  // `conv120.nuNum * 120` (0.117878). They differ only because linearity is
+  // close but not exact — ratio 1.943, not 2.000 — so the ENTIRE content of the
+  // anchoring choice lives in that ~2.9% gap, and any assertion that cannot
+  // resolve 2.9% cannot test the choice. A first attempt at this asserted only
+  // that the shipped anchor fits BETTER than the alternative; re-anchoring the
+  // constant at 1/120 passed it, because the two errors then differ by float
+  // noise rather than by anything meaningful. Hence explicit bounds.
+  const errShipped = Math.abs(d.perDt * DT - conv.nuNum) / conv.nuNum;
+  const errAt120   = Math.abs(conv120.nuNum * 120 * DT - conv.nuNum) / conv.nuNum;
+  console.log(`anchor error: shipped(1/240) = ${(100 * errShipped).toFixed(2)}%  ` +
+              `alternative(1/120) = ${(100 * errAt120).toFixed(2)}%`);
+
+  // First: the gap must still be real. Both sides here are GPU measurements —
+  // if the scheme ever became exactly linear in dt the two anchors would
+  // coincide, the bound below would stop discriminating between them, and this
+  // assertion says so instead of passing quietly. Measured 2.86%.
+  expect(errAt120).toBeGreaterThan(0.02);
+
+  // Second: the shipped coefficient must reproduce the 1/240 measurement to
+  // well inside that gap — measured 0.00%, bounded at half the gap so a
+  // 1/120-anchored constant (2.86% off) cannot satisfy it. This is tighter than
+  // the 5% the surrounding assertions use, and deliberately: 5% cannot tell the
+  // two anchors apart, which is the one thing this is here to check.
+  expect(errShipped).toBeLessThan(0.015);
+
+  // Third, the direction: evaluated at the LARGER dt the shipped model must
+  // OVERSTATE nu_num, never understate it, because overstating nu_num
+  // understates the Re ceiling — the safe direction for a claim about honesty.
+  // A 1/120-anchored coefficient lands ON the measurement rather than above it,
+  // so the margin is what separates them, not the inequality.
+  expect(d.perDt * (1 / 120) / conv120.nuNum).toBeGreaterThan(1.01);
 });
 
 test('the viscous operator delivers the kinematic viscosity it is given', async ({ page }) => {
