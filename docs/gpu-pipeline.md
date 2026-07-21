@@ -2,8 +2,6 @@
 
 How the WebGPU compute shaders and the renderer work together to simulate and visualize fluid flow. For the numerical algorithms behind each shader, see [Numerical Methods](numerical-methods.md). For how these pieces fit into the overall application, see [Architecture](architecture.md).
 
-> **Stale as of 2026-07-19:** the buffer-layout and advection sections below (§1, §3, §4) still describe the pre-3-slot ping-pong design (`u`/`uNew`, `v`/`vNew`, `m`/`mNew`, `advectVelBindGroupA`/`B`, `_advectVelFlip`, `_syncVelBindGroups()`). Commit `a9b78f5` replaced this with a three-slot rotation (`velPairs[0..2]`, `smokeBufs[0..2]`, `_velCur`/`_smokeCur`, a 3×3 `advectSmoke` table). A later task rewrites advection again (MacCormack), so a full rewrite of this doc is deferred until then rather than done twice.
-
 ---
 
 ## 1. Buffer Layout
@@ -12,22 +10,33 @@ All field buffers share the same flat layout: `numX * numY` float32 values in co
 
 ### Field Buffers
 
-| Buffer | Type | Size (bytes) | Usage Flags | Purpose |
-|--------|------|-------------|-------------|---------|
-| `u` | Float32 | numX × numY × 4 | STORAGE \| COPY_SRC \| COPY_DST | Horizontal velocity |
-| `v` | Float32 | numX × numY × 4 | STORAGE \| COPY_SRC \| COPY_DST | Vertical velocity |
-| `p` | Float32 | numX × numY × 4 | STORAGE \| COPY_SRC \| COPY_DST | Pressure |
-| `s` | Float32 | numX × numY × 4 | STORAGE \| COPY_SRC \| COPY_DST | Solid mask (0 = solid, 1 = fluid) |
-| `m` | Float32 | numX × numY × 4 | STORAGE \| COPY_SRC \| COPY_DST | Smoke/dye density |
-| `uNew` | Float32 | numX × numY × 4 | STORAGE \| COPY_SRC \| COPY_DST | Ping-pong pair for u |
-| `vNew` | Float32 | numX × numY × 4 | STORAGE \| COPY_SRC \| COPY_DST | Ping-pong pair for v |
-| `mNew` | Float32 | numX × numY × 4 | STORAGE \| COPY_SRC \| COPY_DST | Ping-pong pair for m |
+Velocity and smoke live in a **three-slot rotation** (§4), so there are 11 field buffers, not 8:
 
-All 8 field buffers use the same usage flags (`STORAGE | COPY_SRC | COPY_DST`). `COPY_SRC` enables GPU-side readback to staging buffers. `COPY_DST` enables CPU-side writes via `device.queue.writeBuffer()`.
+| Buffer | Count | Size (bytes) | Purpose |
+|--------|-------|-------------|---------|
+| `velPairs[0..2].u` | 3 | numX × numY × 4 | Horizontal velocity, one per rotation slot |
+| `velPairs[0..2].v` | 3 | numX × numY × 4 | Vertical velocity, one per rotation slot |
+| `smokeBufs[0..2]` | 3 | numX × numY × 4 | Smoke/dye density, one per rotation slot |
+| `p` | 1 | numX × numY × 4 | Pressure |
+| `s` | 1 | numX × numY × 4 | Solid mask (0 = solid, 1 = fluid) |
+
+All use the same usage flags (`STORAGE | COPY_SRC | COPY_DST`). `COPY_SRC` enables GPU-side readback to staging buffers. `COPY_DST` enables CPU-side writes via `device.queue.writeBuffer()`.
+
+Pressure is a single buffer because the red-black sweep updates it in place, alternating colours; the solid mask is written only from the CPU.
 
 ### Uniform Buffers
 
-Three uniform buffers (`uniformBuf`, `uniformBufRed`, `uniformBufBlack`), each 32 bytes with usage `UNIFORM | COPY_DST`. The red/black variants differ only in the `color` field (0 or 1) for the pressure solver's red-black Gauss-Seidel checkerboard.
+**Five** uniform buffers, each 32 bytes with usage `UNIFORM | COPY_DST`. They share one `Params` struct and differ only in which fields are overridden:
+
+| Buffer | Overrides | Used by |
+|--------|-----------|---------|
+| `uniformBuf` | — | boundary, the forward advect passes, both MacCormack combines |
+| `uniformBufRed` | `color = 0` | pressure, red sweep |
+| `uniformBufBlack` | `color = 1` | pressure, black sweep |
+| `uniformBufNegDt` | `dt = -dt` | the backward advect passes |
+| `uniformBufVisc` | `dt = dt/N`, `nu = nuEff` | diffusion |
+
+`uniformBufNegDt` is why the backward MacCormack trace needs no second shader — the sign flip is data, not code. `uniformBufVisc` is rewritten every step the viscous pass runs, because both `N` and the effective `nu` depend on the current `nu`, `h` and `dt`.
 
 **Struct layout (32 bytes):**
 
@@ -36,10 +45,13 @@ Three uniform buffers (`uniformBuf`, `uniformBufRed`, `uniformBufBlack`), each 3
 | 0 | `numX` | u32 | Grid width |
 | 4 | `numY` | u32 | Grid height |
 | 8 | `h` | f32 | Cell spacing |
-| 12 | `dt` | f32 | Time step |
+| 12 | `dt` | f32 | Time step (negative on the backward pass, `dt/N` on the viscous pass) |
 | 16 | `omega` | f32 | SOR relaxation factor |
 | 20 | `density` | f32 | Fluid density |
 | 24 | `color` | u32 | 0 = red, 1 = black (pressure solver only) |
+| 28 | `nu` | f32 | Kinematic viscosity (diffusion only) |
+
+A test asserts the `Params` struct is byte-identical across all five shader files that declare it, and the `Stencil` struct across the four advection shaders — a field reorder would otherwise re-trace with the wrong values and stay invisible to every behavioural test.
 
 ---
 
@@ -49,13 +61,34 @@ Each simulation frame dispatches all compute passes into a single `commandEncode
 
 ```mermaid
 graph LR
-    B["Pressure Red → Black<br/>×numIters"] --> C[Boundary H<br/>1 dispatch, 64]
-    C --> D[Boundary V<br/>1 dispatch, 64]
-    D --> E[Advect Velocity<br/>1 dispatch, 8×8]
-    E --> F[Advect Smoke<br/>1 dispatch, 8×8]
+    B["Pressure Red → Black<br/>×numIters"] --> C[Boundary H]
+    C --> D[Boundary V]
+    D --> E["Advect Velocity<br/>fwd → back → combine"]
+    E --> F["Advect Smoke<br/>fwd → back → combine"]
+    F --> G["Diffuse<br/>×N substeps"]
 ```
 
-**Dispatch counts per frame:** 4 fixed dispatches (boundary H, boundary V, advect velocity, advect smoke) plus 2 × `numIters` for pressure. Total: `4 + 2×numIters`. At the default 40 iterations: **84 dispatches** in a single command buffer.
+**Seven compute shader files, eight pipelines:**
+
+| Shader file | Entry point | Role |
+|---|---|---|
+| `pressure.wgsl` | `main` | Red-black SOR projection |
+| `boundary.wgsl` | `extrapolate_horizontal`, `extrapolate_vertical` | Free-slip domain edges (two pipelines, one module) |
+| `advect.wgsl` | `advect_velocity` | Semi-Lagrangian trace for velocity, both directions |
+| `advect_smoke.wgsl` | `advect_smoke` | Semi-Lagrangian trace for smoke, both directions |
+| `maccormack_velocity.wgsl` | `maccormack_velocity` | Limited combine for velocity |
+| `maccormack.wgsl` | `maccormack_smoke` | Limited combine for smoke |
+| `diffuse.wgsl` | `diffuse` | Explicit five-point viscous update |
+
+Velocity and smoke need separate trace shaders because velocity's advected-field bindings must be read-write while smoke's are read-only.
+
+**Dispatch counts per frame:** `2×numIters` (pressure) + 2 (boundary H, V) + 3 (velocity MacCormack) + 3 (smoke MacCormack) + `N` (viscous substeps, 0 when `nu = 0`, at most 32).
+
+```
+total = 2*numIters + 8 + N
+```
+
+At the Kármán preset's 256 iterations with 2 substeps: **522 dispatches** in a single command buffer. The pressure sweep dominates by two orders of magnitude, which is why the iteration count is the lever that moves both frame cost and the honest Reynolds ceiling.
 
 **Workgroup sizing:**
 
@@ -66,70 +99,86 @@ graph LR
 | boundary V | `@workgroup_size(64)` | `ceil(numY/64) × 1 × 1` |
 | advect_velocity | `@workgroup_size(8, 8)` | `ceil(numX/8) × ceil(numY/8) × 1` |
 | advect_smoke | `@workgroup_size(8, 8)` | `ceil(numX/8) × ceil(numY/8) × 1` |
+| maccormack_velocity | `@workgroup_size(8, 8)` | `ceil(numX/8) × ceil(numY/8) × 1` |
+| maccormack_smoke | `@workgroup_size(8, 8)` | `ceil(numX/8) × ceil(numY/8) × 1` |
+| diffuse | `@workgroup_size(8, 8)` | `ceil(numX/8) × ceil(numY/8) × 1` |
 
 ---
 
 ## 3. Bind Group Strategy
 
-The solver creates 3 explicit `GPUBindGroupLayout` objects and 7 bind groups. Explicit layouts are required because `layout: 'auto'` only includes bindings that are **statically used** by the shader entry point. For example, `boundary.wgsl`'s `extrapolate_horizontal` uses `u` but not `v` — an auto-layout would omit the `v` binding, and bind group creation would fail with a layout mismatch.
+The solver creates **7 explicit `GPUBindGroupLayout` objects**. Explicit layouts are required because `layout: 'auto'` only includes bindings that are **statically used** by the shader entry point. For example, `boundary.wgsl`'s `extrapolate_horizontal` uses `u` but not `v` — an auto-layout would omit the `v` binding, and bind group creation would fail with a layout mismatch. See [ADR-0002](adr/0002-explicit-bind-group-layouts.md).
 
-### Bind Group Layouts
+### The storage-buffer budget
 
-| Layout | Bindings |
-|--------|----------|
-| `_pressureBGL` | uniform(0), storage(1), storage(2), read-only-storage(3), storage(4) |
-| `_boundaryBGL` | uniform(0), storage(1), storage(2) |
-| `_advectBGL` | uniform(0), read-only-storage(1,2,3), storage(4,5) |
+Every layout was designed against `maxStorageBuffersPerShaderStage`, whose guaranteed minimum is **8**. Uniforms do not count toward it. The two advection layouts are the tight ones:
 
-### Bind Groups
+| Layout | Bindings | Storage buffers |
+|--------|----------|-----------------|
+| `_pressureBGL` | uniform(0), storage(1,2), read-only(3), storage(4) | 4 |
+| `_boundaryBGL` | uniform(0), storage(1,2) | 2 |
+| `_advectVelBGL` | uniform(0), read-only(1–5), storage(6,7) | **7** |
+| `_mcVelBGL` | uniform(0), read-only(1–4), storage(5,6) | 6 |
+| `_advectSmokeBGL` | uniform(0), read-only(1–5), storage(6) | 6 |
+| `_mcSmokeBGL` | uniform(0), read-only(1–4), storage(5), read-only(6) | 6 |
+| `_diffuseBGL` | uniform(0), read-only(1–3), storage(4,5) | 5 |
 
-| Bind Group | Layout | Binding 0 | Binding 1 | Binding 2 | Binding 3 | Binding 4 | Binding 5 |
-|------------|--------|-----------|-----------|-----------|-----------|-----------|-----------|
-| `pressureRedBindGroup` | pressure | uniformBufRed | u | v | s | p | — |
-| `pressureBlackBindGroup` | pressure | uniformBufBlack | u | v | s | p | — |
-| `boundaryBindGroup` | boundary | uniformBuf | u | v | — | — | — |
-| `advectVelBindGroupA` | advect | uniformBuf | u | v | s | uNew | vNew |
-| `advectVelBindGroupB` | advect | uniformBuf | uNew | vNew | s | u | v |
-| `advectSmokeBindGroupA` | advect | uniformBuf | u | v | s | m | mNew |
-| `advectSmokeBindGroupB` | advect | uniformBuf | u | v | s | mNew | m |
+`_advectVelBGL` reaches 7 because the backward pass needs the advecting velocity (`u^n, v^n`), the solid mask, the field being advected (`phi^`), *and* the origin field (`phi^n`) all bound at once — the origin field is what makes a reverted face write `phi^n` rather than `phi^`. On the forward pass the same buffers alias onto both read-only pairs, which is legal.
 
-The boundary shader shares a single bind group across both `extrapolate_horizontal` and `extrapolate_vertical` entry points. The shared layout includes both `u` and `v` even though each entry point only uses one of them.
+`_mcVelBGL` carries no solid mask, unlike the smoke combine. It does not need one: the velocity limiter's `phi^` seed makes the clamp the identity wherever a face reverted, so a solid guard would be a provable no-op.
+
+### Bind groups, indexed by rotation slot
+
+| Table | Shape | Indexed by |
+|---|---|---|
+| `pressureRed`, `pressureBlack`, `boundary` | 3 | velocity slot (they write velocity in place) |
+| `velFwd`, `velBack`, `velCombine` | 3 | velocity slot alone — velocity is both the advecting and advected field |
+| `smokeFwd`, `smokeBack`, `smokeCombine` | 3 × 3 | `[velCur][smokeCur]` — the velocity carrying the dye is not tied to the smoke rotation |
+| `diffuse` | 3 × 3 | `[src][dst]`; the diagonal is `null` (a pass cannot read and write the same buffer) |
+
+The smoke tables must be two-dimensional. Keying the advecting velocity off the smoke index instead would trace dye through the wrong velocity field — a bug that existed before the rotation landed and is now pinned by a test that reads back the actually-bound buffers.
 
 ---
 
-## 4. Ping-Pong Buffers
+## 4. The Three-Slot Rotation
 
-Advection cannot read and write the same buffer in one dispatch (a thread's output would corrupt another thread's input). The solver uses ping-pong buffer pairs to alternate read/write roles between frames.
+Advection cannot read and write the same buffer in one dispatch (a thread's output would corrupt another thread's input). MacCormack needs **three** fields live simultaneously — `phi^n`, `phi^` (the forward result), and `phi~` (the backward result) — so a two-buffer ping-pong is not enough. Velocity and smoke each rotate through three slots.
 
-```mermaid
-graph LR
-    subgraph "Frame N (_advectVelFlip = false)"
-        A1[Read: u, v, m] --> B1[Write: uNew, vNew, mNew]
-    end
-    subgraph "Frame N+1 (_advectVelFlip = true)"
-        A2[Read: uNew, vNew, mNew] --> B2[Write: u, v, m]
-    end
-    B1 -.->|flip| A2
-    B2 -.->|flip| A1
+For a live slot `c`:
+
+```
+phi^n   = slot c
+phi^    = slot (c + 1) % 3      (hat,   written by the forward pass)
+phi~    = slot (c + 2) % 3      (tilde, written by the backward pass)
 ```
 
-After each `step()`, the solver toggles `_advectVelFlip` and `_advectSmokeFlip`, switching which bind group (A or B) is active for the next frame. The `smokeBuffer` and `velocityBuffers` getters use the flip state to return the correct (most recently written) buffer for readback.
+The combine writes `phi^{n+1}` **in place into tilde**, so the inviscid step advances the index by +2 and the sequence runs `0, 2, 1, 0, 2, 1, …`.
 
-**Critical rule:** when writing boundary conditions or inflow velocities from JavaScript (e.g., `writeBuffer` calls in preset setup), **write to both buffers** in each pair — the solver may read from either one depending on the current flip state.
+**The viscous pass breaks that regularity.** It ping-pongs between the combine's output pair and the one pair the step has finished with, so after `N` substeps the result lands on tilde when `N` is even and on hat when `N` is odd. `step()` therefore publishes the final source slot rather than adding a fixed offset — which is the first thing in the codebase that makes `_velCur` and `_smokeCur` diverge, and the reason the smoke bind groups need the `[velCur][smokeCur]` table above.
 
-See [Boundary Conditions](numerical-methods.md#5-boundary-conditions) for the numerical rationale.
+The `smokeBuffer` and `velocityBuffers` getters return the currently published slot for readback.
+
+**Critical rule:** when writing boundary conditions, inflow velocities, or obstacle velocities from JavaScript (e.g. `writeBuffer` calls in preset setup or `rasterizeObstacle`), **write to all three slots**. `writeU`, `writeV`, `writeSmoke` and `writeSmokeCell` do this; reaching for a raw buffer does not.
+
+See [Boundary Conditions](numerical-methods.md#7-boundary-conditions) for the numerical rationale.
 
 ---
 
 ## 5. Solid Mask Through the Pipeline
 
-The `s` buffer (solid mask: 0.0 = solid, 1.0 = fluid) is rasterized on the CPU via `rasterizeObstacle()` in `interaction.js` and uploaded to the GPU with `device.queue.writeBuffer()`. It flows through all three compute stages differently:
+The `s` buffer (solid mask: 0.0 = solid, 1.0 = fluid) is rasterized on the CPU via `rasterizeObstacle()` in `interaction.js` and uploaded to the GPU with `device.queue.writeBuffer()`. Each compute stage reads it differently:
 
 **pressure.wgsl:** Counts fluid neighbors via `sx0 + sx1 + sy0 + sy1` (the s-values of the 4 cardinal neighbors). Skips cells where `s[idx] == 0` (solid cell) or where `sTotal == 0` (all neighbors are solid). The divergence correction is divided by `sTotal`, naturally handling partial fluid neighborhoods near boundaries.
 
 **boundary.wgsl:** Does **not** read `s`. Operates only on domain edges (row 0/last row for horizontal, column 0/last column for vertical), extrapolating interior velocities to boundary cells regardless of solid state.
 
-**advect.wgsl:** Only advects cells where `s[idx] != 0` (fluid). For velocity advection, additionally checks the solid state at the neighboring face (`s[(i-1)*n+j]` for u, `s[i*n+j-1]` for v) — if either cell sharing a velocity face is solid, that face's velocity is not advected. Smoke advection simply checks `s[idx] != 0`.
+**advect.wgsl / advect_smoke.wgsl:** Only advects cells where `s[idx] != 0` (fluid). For velocity advection, additionally checks the solid state at the neighboring face (`s[(i-1)*n+j]` for u, `s[i*n+j-1]` for v) — if either cell sharing a velocity face is solid, that face's velocity is not advected. Smoke advection simply checks `s[idx] != 0`. The revert condition depends only on `s` and the indices, so it fires identically on the forward and backward passes.
+
+**maccormack.wgsl:** Skips solid cells, and drops solid corners from the limiter's bounds — but the corner test is gated on `params.dt < 0.0`, so it runs on the **backward pass only**. On the forward pass it would wall the dye out of the domain entirely, because the inlet band is written into a solid column.
+
+**maccormack_velocity.wgsl:** Binds no solid mask at all. The `phi^` seed makes the clamp the identity wherever a face reverted, so a guard would be a provable no-op.
+
+**diffuse.wgsl:** Classifies each velocity *face* three ways — FLUID (both flanking cells fluid, diffused), WALL (exactly one solid, copied through, preserving the no-penetration BC and the inflow column), BURIED (both solid, **or** `i == 0` / `j == 0`, read as a ghost `-center`). The index-based part of the BURIED test is load-bearing: at `j = 0` for `u` and `i = 0` for `v` both flanking cells are fluid, so the FLUID predicate does not block the read, and the mask test itself would underflow. The domain ring's last column and row are copied through unchanged, which is why they carry no viscous update.
 
 ---
 
@@ -222,7 +271,21 @@ Drawn via Canvas 2D primitives (`arc`, `fillRect`/`strokeRect`, `beginPath`/`lin
 
 **Single outstanding readback.** The `readbackPending` flag ensures at most one `mapAsync` is in flight for the field buffer. A second readback is not issued until the first completes. This prevents staging buffer contention and GPU pipeline stalls.
 
-**Batched compute submission.** All dispatches for one simulation step (pressure iterations, boundary, advection) are recorded into a single `GPUCommandEncoder` and submitted with one `device.queue.submit()` call. No synchronization barriers between passes — WebGPU guarantees sequential execution within a submission.
+**Batched compute submission.** All dispatches for one simulation step (pressure iterations, boundary, both MacCormack chains, and every viscous substep) are recorded into a single `GPUCommandEncoder` and submitted with one `device.queue.submit()` call. No synchronization barriers between passes — WebGPU guarantees sequential execution within a submission.
+
+**The pressure sweep is the cost.** Measured wall-clock rAF frame times at the Kármán preset, fresh page load per row (the in-app HUD reported 0.2–0.5 ms for every configuration below, because it bracketed CPU *encode* time around calls that return before the GPU has done the work; it now differences rAF timestamps instead):
+
+| tier | numIters | mean ms | median ms | mean fps | GPU ms/step |
+|------|----------|---------|-----------|----------|-------------|
+| 256 | 80 | 8.33 | 8.30 | 120.0 | 4.73 |
+| 256 | 128 | 8.33 | 8.30 | 120.0 | 7.33 |
+| 256 | **256** | **14.42** | **16.60** | **69.3** | **14.34** |
+| 512 | 80 | 19.90 | 16.70 | 50.2 | 19.81 |
+| 512 | 256 | 58.83 | 58.30 | 17.0 | 58.76 |
+
+The display is 120 Hz, so rAF deltas quantize to multiples of 8.33 ms; the GPU column removes that by submitting 120 steps back-to-back and awaiting `onSubmittedWorkDone` once. The shipped configuration spends ~86% of a 60 fps budget on the dev machine.
+
+**Timestep does not change frame cost.** The main loop runs exactly one `solver.step()` per rAF frame regardless of `dt`, so halving `dt` left frame time unchanged (8.33 → 8.34 ms mean) and the viscous substep count actually *fell*. What it costs is simulated time: one wall second now buys 0.5 sim seconds, so the vortex street takes about twice as long to appear.
 
 **Cached overlay geometry.** Streamline paths and velocity arrow geometry are computed once per velocity readback (every 10 frames) and stored in `_cachedStreamlines` / `_cachedArrows`. Every frame, the cached geometry is drawn with cheap Canvas 2D calls. This decouples overlay cost from the rendering frame rate.
 

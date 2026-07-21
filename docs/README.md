@@ -1,6 +1,8 @@
 # 🌀 FlowLab — Technical Documentation
 
-Real-time 2D incompressible flow simulation running entirely on the GPU via WebGPU compute shaders. The solver uses an Eulerian (grid-based) approach with a MAC staggered grid, iterative pressure projection, and semi-Lagrangian advection. Rendering is hybrid: a WebGPU render pass draws the colormapped field straight from the simulation buffers, and a transparent 2D canvas above it carries the overlays — streamlines, velocity arrows, tracer particles, and the obstacle outline.
+Real-time 2D incompressible flow simulation running entirely on the GPU via WebGPU compute shaders. The solver uses an Eulerian (grid-based) approach with a MAC staggered grid, iterative pressure projection, MacCormack advection (second-order, min/max limited), and an explicit viscous diffusion pass with automatic substepping. Rendering is hybrid: a WebGPU render pass draws the colormapped field straight from the simulation buffers, and a transparent 2D canvas above it carries the overlays — streamlines, velocity arrows, tracer particles, and the obstacle outline.
+
+Every user-visible number is measured. The Reynolds control drives a real viscosity and a badge names the bound when the requested Re leaves the range this grid and pressure solve can deliver; the Strouhal readout is recovered from the solver's own wake. The measurements behind both, and their limitations, are in [ADR-0008](adr/0008-viscous-substepping-and-resolution-aware-window.md).
 
 ## System Overview
 
@@ -25,14 +27,18 @@ graph TD
     end
 
     subgraph GPU["WebGPU Device"]
-        B[Storage Buffers — u, v, p, s, m + ping-pong pairs]
+        B["Storage Buffers — p, s + 3-slot rotation for u, v, m"]
         C2[pressure.wgsl]
         C3[boundary.wgsl]
-        C4[advect.wgsl]
+        C4["advect.wgsl / advect_smoke.wgsl"]
+        C6["maccormack.wgsl / maccormack_velocity.wgsl"]
+        C7[diffuse.wgsl]
         C5[render_field.wgsl]
         C2 --> B
         C3 --> B
         C4 --> B
+        C6 --> B
+        C7 --> B
     end
 
     S2 -->|HTTP| Browser
@@ -46,9 +52,9 @@ graph TD
 
 | Document | Description |
 |----------|-------------|
-| [System Architecture](architecture.md) | Tech stack, module graph, frame loop, presets, particle tracer |
-| [Numerical Methods](numerical-methods.md) | Governing equations, MAC grid, pressure solver, advection |
-| [GPU Pipeline](gpu-pipeline.md) | Buffer layout, compute dispatch, bind groups, rendering |
+| [System Architecture](architecture.md) | Tech stack, module graph, frame loop, presets, adaptive resolution, particle tracer |
+| [Numerical Methods](numerical-methods.md) | Governing equations, MAC grid, pressure solver, MacCormack advection, explicit diffusion, measured numerical viscosity, Strouhal measurement |
+| [GPU Pipeline](gpu-pipeline.md) | Buffer layout, the three-slot rotation, compute dispatch, bind groups and the storage budget, rendering |
 | [Decision Records](adr/README.md) | Index of ADRs — what was decided, and what has actually shipped |
 
 ## Quick Start

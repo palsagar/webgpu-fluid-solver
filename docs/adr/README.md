@@ -9,7 +9,8 @@ Each ADR records one load-bearing decision and why the alternatives lost. "Imple
 | [0003](0003-cpu-lagrangian-particles.md) | CPU-side Lagrangian particles instead of a GPU particle pass | Accepted | Yes |
 | [0004](0004-no-lid-driven-cavity-preset.md) | No lid-driven cavity preset | Accepted | Yes |
 | [0005](0005-hybrid-gpu-field-rendering.md) | Hybrid GPU field rendering, overlays stay on Canvas 2D | Accepted | Yes |
-| [0006](0006-honest-numerics-maccormack-over-confinement.md) | Honest numerics: MacCormack advection; artificial terms labeled and default-off | Accepted (not yet implemented) | No — [ROADMAP](../ROADMAP.md) step 2 |
-| [0007](0007-explicit-viscosity-bounded-re.md) | Explicit viscosity with a bounded Reynolds slider; Strouhal measured, never prescribed | Accepted (not yet implemented) | No — [ROADMAP](../ROADMAP.md) step 3 |
+| [0006](0006-honest-numerics-maccormack-over-confinement.md) | Honest numerics: MacCormack advection; artificial terms labeled and default-off | Accepted | Partly — MacCormack shipped; Confinement (ε) is [ROADMAP](../ROADMAP.md) step 5 |
+| [0007](0007-explicit-viscosity-bounded-re.md) | Explicit viscosity with a bounded Reynolds slider; Strouhal measured, never prescribed | Accepted, partially superseded by 0008 | Yes — several of its numbers corrected by measurement |
+| [0008](0008-viscous-substepping-and-resolution-aware-window.md) | Viscous substepping and a resolution-aware honest window | Accepted | Yes |
 
-The vocabulary in [CONTEXT.md](../../CONTEXT.md) covers both shipped and target-state features; ADRs 0006 and 0007 are the target-state half.
+The vocabulary in [CONTEXT.md](../../CONTEXT.md) covers both shipped and target-state features. What remains target-state is Confinement (ε) from ADR-0006, plus the Blow and Draw mouse modes — [ROADMAP](../ROADMAP.md) steps 4–5. Everything in ADRs 0007 and 0008 has shipped.
