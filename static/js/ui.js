@@ -1,4 +1,28 @@
 import { loadPreset, PRESETS } from './presets.js';
+import {
+    honestWindow, windowState, fmtRe, reFromSliderPos,
+    nuNumConverged, NU_NUM_ITERS256, NU_NUM_ITERS256_DT, NU_NUM_MEASURED_U,
+    PROJECTION_ITERS_MEASURED,
+    StrouhalProbe, probeCell,
+} from './diagnostics.js';
+
+// How close the live dt must sit to NU_NUM_ITERS256_DT for that table to be
+// the right one to quote. `nu_num` is linear in dt, so a relative dt error
+// carries straight into a relative nu error — 0.1% is four orders of magnitude
+// below the ±10% fit-window uncertainty the table already carries, while the
+// dt slider's own step near 1/240 is a 2.4% jump, so no neighbouring slider
+// position sneaks through. This exists so a slider dragged back to the bottom
+// (0.0041667, the preset's dt to within 8e-6) still counts as the anchor.
+const ANCHOR_DT_REL_TOL = 1e-3;
+
+// How close the live inflow must sit to NU_NUM_MEASURED_U for the projection
+// table to be a measurement of THIS flow. Same 0.1% as the dt tolerance and for
+// the same reason: it exists so a slider returned to the preset value counts as
+// the measured point despite float round-trips through the DOM, not so a
+// neighbouring position sneaks through. The inflow slider steps by 0.1 on a
+// U = 1.0 anchor, so the nearest other position is 10% away — a hundred times
+// this tolerance.
+const MEASURED_U_REL_TOL = 1e-3;
 
 // Map kebab-case data-preset attribute values to PRESETS object keys
 const PRESET_KEY_MAP = {
@@ -21,6 +45,18 @@ export class UI {
         this.solver = solver;
         this.renderer = renderer;
         this.interaction = interaction;
+
+        // Downstream wake probe. Owned here, but referenced by the renderer so
+        // it is cleared by the same invalidateSolid()/resize() calls that clear
+        // the particles — obstacle drag, shape switch, preset load, tier change.
+        this.probe = new StrouhalProbe();
+        renderer.probe = this.probe;
+        // Last velocity readback generation fed to the probe, so each readback
+        // contributes exactly one sample no matter how many frames it survives.
+        this._probeVelGen = -1;
+        // Simulation time of the last sample, so a readback delivered while the
+        // field is frozen cannot pad the window with duplicates. See _sampleProbe.
+        this._probeSimTime = -1;
 
         // Initial preset
         this.currentPreset = 'karmanVortex';
@@ -122,30 +158,232 @@ export class UI {
             });
         }
 
-        this._updateRe(inVel);
+        this._updateReBadge();
+    }
+
+    /** The inflow velocity currently driving the flow — the live slider, not the preset default. */
+    _inflowVelocity() {
+        const el = document.getElementById('slider-invel');
+        const fromSlider = el ? parseFloat(el.value) : NaN;
+        return Number.isFinite(fromSlider) ? fromSlider : (PRESETS[this.currentPreset]?.inVel ?? 0);
     }
 
     /**
-     * Compute and display the Reynolds number based on inflow velocity and obstacle diameter.
-     * Re = U * D / h, where D = 2 * obstacleRadius and h is the cell size.
-     * @param {number} inVel - Inflow velocity magnitude
+     * Push the Re slider into the solver as a real viscosity (nu = U*D/Re), then
+     * report whether this grid can actually deliver that Re.
+     *
+     * Both bounds are measured (see diagnostics.js): the floor is the solver's
+     * own `viscNuMax`, the ceiling is the Taylor-Green calibration. Nothing here
+     * falls back to an estimate — if a tier has no measured operating-point
+     * viscosity the projection ceiling is simply not claimed.
      */
-    _updateRe(inVel) {
+    _updateReBadge() {
         const el = document.getElementById('val-re');
-        if (!el) return;
-        const h = this.solver.h;
+        const badge = document.getElementById('re-badge');
+        const slider = document.getElementById('slider-re');
+        if (!el || !slider) return;
+
+        const hideBadge = () => {
+            if (badge) {
+                badge.textContent = '';
+                badge.classList.remove('visible', 'empty');
+            }
+        };
+
+        // Every caller of this method has just changed something the wake
+        // depends on — Re, dt, the iteration count, or the inflow speed — so
+        // the samples already in the probe describe a flow that no longer
+        // exists. Dropping them costs a fresh ~43 s window; keeping them costs
+        // a number averaged across two different simulations and presented as
+        // a measurement of the current one.
+        //
+        // The inflow slider is the sharpest case: U scales the stored samples
+        // AND sits in the shedding gate (`rms < THRESHOLD * U`), so raising it
+        // could flip a shedding wake to `steady` with no change in the physics.
+        this.probe.clear();
+
+        const re = reFromSliderPos(parseFloat(slider.value));
         const D = 2 * this.interaction.obstacleRadius;
-        if (inVel === 0 || D === 0) {
+        const U = this._inflowVelocity();
+        el.textContent = fmtRe(re);
+        this._updateFlowInfo();
+
+        // No obstacle or no free stream — Re is undefined, so claim nothing.
+        // The showObstacle gate is load-bearing: obstacle-less presets
+        // (backwardStep) never reassign interaction.obstacleRadius, so D here is
+        // a phantom inherited from whatever preset was viewed before. Without
+        // this clause the badge would apply a viscosity derived from a body that
+        // is not in the flow. Mirrors the same guard in _updateStrouhal.
+        if (!(D > 0) || !(U > 0) || !this.interaction.showObstacle) {
+            this.solver.setParams({ nu: 0 });
             el.textContent = '--';
-            this._updateFlowInfo();
+            hideBadge();
             return;
         }
-        const Re = inVel * D / h;
-        el.textContent = Re.toFixed(0);
-        this._updateFlowInfo();
+
+        const nuReq = (U * D) / re;
+        this.solver.setParams({ nu: nuReq });
+
+        const w = honestWindow({
+            h: this.solver.h,
+            dt: this.solver.params.dt,
+            D, U,
+            nMax: this.solver.constructor.N_MAX,
+            // Scaled by the LIVE dt, not a constant: nu_num is linear in dt and
+            // the presets do not share one. Karman runs 1/240, the other two
+            // 1/60, where a fixed constant made the ceiling ~2x optimistic.
+            nuNum: nuNumConverged(this.solver.params.dt),
+            // The solver's own saturation limit rather than a re-derivation of
+            // it. Identical formula today; passing it keeps the floor tied to
+            // the number the solver actually clamps at if that ever moves.
+            nuMax: this.solver.viscNuMax,
+        });
+
+        // The operating-point ceiling is measured on ONE slice: dt = 1/240 at
+        // PROJECTION_ITERS_MEASURED iterations and an amplitude of
+        // NU_NUM_MEASURED_U, across the tiers. It is rescaled to none of the
+        // three — three lines through the (tier x numIters x dt x U) surface
+        // are measured, not the surface, and interpolating it would be
+        // inventing the number this branch exists to measure.
+        //
+        // So it is quoted ONLY where it was measured. Off that slice — the
+        // other two presets (dt = 1/60 at 40 and 60 iters, U = 2.0 and 1.5), or
+        // any move of the dt / iterations / inflow sliders — no projection
+        // ceiling is supplied, and `windowState` reports the ceiling as
+        // unmeasured instead. Carrying it off-slice used to produce an
+        // impossible pair: on `windTunnel` a projection ceiling of Re 771
+        // against a converged ceiling of Re 297, i.e. an under-converged solve
+        // dissipating less than a converged one.
+        //
+        // The AMPLITUDE axis is the one added last and the one with the least
+        // behind it. dt and numIters are each measured at two settings, so the
+        // shape of the dependence is at least known. `U` is measured at ONE —
+        // every Taylor-Green fit ran at A = 1.0 — so off it not even the SIGN
+        // of the correction is established, while the inflow slider spans
+        // 0.5 .. 5.0 live on the flagship preset. Gating here is what stops one
+        // drag of that slider leaving a measured ceiling on screen for a flow
+        // nothing measured.
+        const atMeasuredPoint =
+            Math.abs(this.solver.params.dt - NU_NUM_ITERS256_DT)
+                <= ANCHOR_DT_REL_TOL * NU_NUM_ITERS256_DT
+            && this.numIters === PROJECTION_ITERS_MEASURED
+            && Math.abs(U - NU_NUM_MEASURED_U)
+                <= MEASURED_U_REL_TOL * NU_NUM_MEASURED_U;
+        const nuProjection = atMeasuredPoint ? NU_NUM_ITERS256[this.solver.numY] : undefined;
+        const reMaxProjection = nuProjection ? (U * D) / nuProjection : Infinity;
+
+        // Saturation must be read from `viscNuMax`, a getter that is always
+        // current, NOT from `solver.viscClamped` — that flag describes the last
+        // step, so between a slider move and the next frame it reports the
+        // previous request. Trusting it made the badge claim "substep budget
+        // saturated" while the slider sat at the top of its range.
+        const nuMaxNow = this.solver.viscNuMax;
+        const clamped = nuReq > nuMaxNow;
+
+        // The Re the solver is actually running, from the viscosity it applied
+        // — not from params.nu, which differs exactly when saturated. Same
+        // staleness caveat, so viscNuEff is only used once it matches what this
+        // request implies; until the next step it would describe the old one.
+        const nuExpected = Math.min(nuReq, nuMaxNow);
+        const nuEff = Math.abs(this.solver.viscNuEff - nuExpected) <= 1e-9 * nuExpected
+            ? this.solver.viscNuEff
+            : nuExpected;
+        const reEff = nuEff > 0 ? (U * D) / nuEff : re;
+
+        const st = windowState({
+            re, reEff,
+            reMin: w.reMin, reMax: w.reMax, reMaxProjection,
+            viscClamped: clamped,
+        });
+
+        if (!badge) return;
+        badge.textContent = st.ok ? '' : st.reason;
+        badge.classList.toggle('visible', !st.ok);
+        badge.classList.toggle('empty', st.code === 'empty-grid' || st.code === 'empty-iters');
     }
 
-    /** Update the flow-info overlay text with preset-specific physics description and Re. */
+    /**
+     * Per-frame hook, called from the rAF loop: feed the wake probe from the
+     * latest velocity readback and repaint its readout.
+     *
+     * Lives on the frame loop rather than on a slider handler because the probe
+     * is a MEASUREMENT — it accumulates while the flow evolves, and nothing the
+     * user does marks the moment it becomes valid.
+     */
+    tick() {
+        this._sampleProbe();
+        this._updateStrouhal();
+    }
+
+    /**
+     * Push one transverse-velocity sample per velocity readback.
+     *
+     * Gated on simulation time having ADVANCED since the last sample, not on
+     * `solver.paused`. `readbackVelocity` keeps firing every 10 frames on a
+     * frozen field, and the identical samples it would deliver are not 10 steps
+     * of flow — they would pad the window with a flat line, drag the RMS under
+     * the shedding gate, and turn a shedding wake into 'steady' just by leaving
+     * the app paused. A `paused` test catches that case but also catches the
+     * single-step button, which advances the field 10 steps between readbacks
+     * exactly as the running loop does; keying off `simTime` rejects the frozen
+     * field and admits the stepped one.
+     */
+    _sampleProbe() {
+        const { renderer, solver, interaction } = this;
+        if (solver.simTime === this._probeSimTime) return;
+        if (renderer._velDataGen === this._probeVelGen) return;
+        if (!renderer.vData || !interaction.showObstacle) return;
+        this._probeVelGen = renderer._velDataGen;
+        this._probeSimTime = solver.simTime;
+
+        const cell = probeCell({
+            obstacleX: interaction.obstacleX,
+            obstacleY: interaction.obstacleY,
+            D: 2 * interaction.obstacleRadius,
+            h: solver.h,
+            numX: solver.numX,
+            numY: solver.numY,
+        });
+        if (!cell) return;
+
+        // v, not u: on the centreline the streamwise component dips once per
+        // shed vortex from EITHER side and so carries 2f. See StrouhalProbe.
+        //
+        // Stamp with the time the velocity was COPIED (renderer._velDataSimTime),
+        // not the live simTime at which this readback's mapAsync happened to
+        // resolve. Copies fire every 10 steps, so capture-times are exact
+        // multiples of 10*dt and the series is evenly spaced; the live simTime
+        // carries a variable readback latency that makes the gaps jitter.
+        this.probe.push(renderer.vData[cell.i * solver.numY + cell.j], renderer._velDataSimTime);
+    }
+
+    /**
+     * Write the probe's verdict into the readout — a number only when the wake
+     * is actually shedding.
+     *
+     * D and U are read HERE rather than cached at push time, so dragging the
+     * obstacle to a new size rescales St to the geometry the flow currently
+     * has. A drag clears the series as well, so in practice that path re-reads
+     * a window that already belongs to the new geometry; the inflow slider is
+     * cleared explicitly (see `_updateReBadge`) because it does NOT go through
+     * the renderer's invalidation path.
+     */
+    _updateStrouhal() {
+        const el = document.getElementById('val-st');
+        if (!el) return;
+        if (!this.interaction.showObstacle) { el.textContent = '--'; return; }
+
+        const D = 2 * this.interaction.obstacleRadius;
+        const U = this._inflowVelocity();
+        const { state, st } = this.probe.read({ D, U });
+        el.textContent = state === 'shedding'   ? st.toFixed(2)
+                       : state === 'steady'     ? 'steady — no shedding'
+                       : state === 'unresolved' ? 'under-sampled — lower dt'
+                       : state === 'no-signal'  ? 'no signal'
+                       : 'measuring…';
+    }
+
+    /** Update the flow-info overlay text with the preset-specific physics description. */
     _updateFlowInfo() {
         const el = document.getElementById('flow-info');
         if (!el) return;
@@ -154,10 +392,7 @@ export class UI {
             karmanVortex:  'Periodic vortex shedding behind a small cylinder',
             backwardStep:  'Sudden expansion — recirculation and flow reattachment',
         };
-        const reEl = document.getElementById('val-re');
-        const re = reEl ? reEl.textContent : '--';
-        const desc = info[this.currentPreset] || '';
-        el.textContent = desc + (re !== '--' ? `  · Re ≈ ${re}` : '');
+        el.textContent = info[this.currentPreset] || '';
     }
 
     /** Attach click handlers to preset buttons, mapping kebab-case attributes to preset keys. */
@@ -259,10 +494,20 @@ export class UI {
             if (btnPlay) btnPlay.textContent = this.solver.paused ? '\u25B6 Play' : '\u23F8 Pause';
         };
 
+        // Mirrors the rAF loop's order — step, draw, tick — so single-stepping
+        // is self-contained rather than relying on the loop to repaint after it.
+        //
+        // The loop DOES tick unconditionally (main.js ticks even while paused),
+        // so removing this call alone does not change what the user sees, and
+        // mutating it away does not fail the suite. What actually froze the
+        // readout during single-stepping was `_sampleProbe`'s `paused` gate,
+        // which is now a simulation-time gate; see there. This call stays so
+        // that stepping does not depend on a separate loop for its readout.
         const stepOnce = () => {
             if (this.solver.paused) {
                 this.solver.step(this.numIters);
                 this.renderer.draw();
+                this.tick();
             }
         };
 
@@ -306,10 +551,25 @@ export class UI {
             });
         };
 
-        bind('slider-dt',      'val-dt',      4, v => this.solver.setParams({ dt:      parseFloat(v) }));
+        // dt and numIters both move the honest window, so both must repaint the
+        // badge. dt sets BOTH bounds — the ceiling through nuNumConverged(dt)
+        // and the floor through viscNuMax, which divides by dt — and numIters
+        // decides whether the measured projection ceiling applies at all.
+        // Without these the badge silently describes the previous timestep.
+        bind('slider-dt',      'val-dt',      4, v => {
+            this.solver.setParams({ dt: parseFloat(v) });
+            this._updateReBadge();
+        });
         bind('slider-omega',   'val-omega',   2, v => this.solver.setParams({ omega:   parseFloat(v) }));
-        bind('slider-iters',   'val-iters',   0, v => { this.numIters = parseInt(v); });
+        bind('slider-iters',   'val-iters',   0, v => {
+            this.numIters = parseInt(v);
+            this._updateReBadge();
+        });
 
+        // The Re slider carries a log-spaced position, so val-re is written by
+        // _updateReBadge() rather than by bind()'s generic formatter.
+        document.getElementById('slider-re')
+            ?.addEventListener('input', () => this._updateReBadge());
 
         const invelEl  = document.getElementById('slider-invel');
         const invelVal = document.getElementById('val-invel');
@@ -318,7 +578,8 @@ export class UI {
                 const inVel = parseFloat(invelEl.value);
                 if (invelVal) invelVal.textContent = inVel.toFixed(2);
                 this._setInflowVelocity(inVel);
-                this._updateRe(inVel);
+                // U changed, so nu = U*D/Re and both window bounds move with it.
+                this._updateReBadge();
             });
         }
 

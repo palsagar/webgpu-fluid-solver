@@ -4,7 +4,7 @@ Real-time 2D incompressible flow simulation in the browser. Users pick a scenari
 
 ## Language
 
-Some entries below are **target-state vocabulary** — decided in [ADR-0006](docs/adr/0006-honest-numerics-maccormack-over-confinement.md) / [ADR-0007](docs/adr/0007-explicit-viscosity-bounded-re.md) but not yet built. They are marked _Not yet implemented_. Use the terms in design discussion; do not assume the feature exists in the code.
+Some entries below are **target-state vocabulary** — decided but not yet built. They are marked _Not yet implemented_. Use the terms in design discussion; do not assume the feature exists in the code. Everything in [ADR-0007](docs/adr/0007-explicit-viscosity-bounded-re.md) and [ADR-0008](docs/adr/0008-viscous-substepping-and-resolution-aware-window.md) has shipped; what remains unbuilt is Confinement (ε) from [ADR-0006](docs/adr/0006-honest-numerics-maccormack-over-confinement.md) plus the Blow and Draw mouse modes.
 
 ### Simulation
 
@@ -39,8 +39,20 @@ The band of cells at the left edge where Smoke is re-injected each frame.
 A user-draggable solid shape (circle, etc.) rasterized into the Solid Mask. Moving it re-rasterizes the mask and clears stale Smoke in its old footprint.
 
 **Pressure Iteration**:
-One red-black Gauss-Seidel (SOR) sweep of the pressure projection. Presets choose how many run per step.
-_Avoid_: Jacobi iteration (— the solver is Gauss-Seidel, not Jacobi; a stale comment in `presets.js` says otherwise)
+One red-black Gauss-Seidel (SOR) sweep of the pressure projection. Presets choose how many run per step. Not a free knob: the count sets the delivered Numerical Viscosity, and therefore the top of the honest Reynolds window.
+_Avoid_: Jacobi iteration (— the solver is red-black Gauss-Seidel with over-relaxation, not Jacobi)
+
+**MacCormack**:
+The advection scheme: a semi-Lagrangian forward trace, a reversed retrace, and a limited combine `phi^{n+1} = phi^ + (phi^n − phi~)/2` clamped to the fluid corners of the departure stencil. Three GPU dispatches per field. It replaced plain semi-Lagrangian advection, whose numerical diffusion it cuts by up to 3x.
+_Avoid_: BFECC (— a different scheme, considered and rejected in ADR-0006), "second-order advection" unqualified
+
+**Viscous Substep**:
+One application of the explicit five-point diffusion pass. A frame runs `N = ceil(nu·dt/(0.25 h²))` of them, capped at 32, because a single pass at the frame's timestep would violate the explicit stability limit. Past the cap the viscosity saturates rather than the count truncating.
+_Avoid_: viscous iteration (— it is a time substep, not an iterative solve)
+
+**Numerical Viscosity**:
+The unrequested diffusion the advection scheme and the under-converged pressure solve add on top of the requested viscosity. **Measured, never estimated** — by fitting the decay of a Taylor–Green vortex with physical viscosity off. It is what sets the honest Reynolds ceiling. It is independent of grid spacing and linear in the timestep, i.e. a time-splitting error, not grid diffusion.
+_Avoid_: artificial viscosity (— that is a term deliberately added; this one is a defect of the scheme), numerical dissipation
 
 ### Visualization
 
@@ -61,7 +73,7 @@ _Avoid_: sprite, tracer particle
 A fixed location that continuously spawns Particles (a few per frame), producing a steady visible stream.
 
 **Colormap**:
-A scientific color lookup table (magma, viridis, coolwarm) mapping scalar values to color.
+A scientific color lookup table mapping scalar values to color. Two are loaded as GPU LUT textures: magma (Smoke) and coolwarm (pressure). `static/colormaps/viridis.png` ships in the repo but nothing loads it.
 
 **Confinement (ε)**:
 An explicitly-labeled, default-off control that injects artificial vorticity for visual effect. Always presented as artificial — never silently on.
@@ -88,16 +100,19 @@ _Not yet implemented_.
 ### Diagnostics
 
 **Reynolds Number (Re)**:
-A user-controllable physical parameter (via explicit viscosity), valid only within the grid-resolvable range. Never displayed as a nominal/fake value.
-_Not yet implemented_ (ADR-0007) — a nominal `Re = U·D/h` readout still ships in the Flow Info panel, to be replaced when the viscous pass lands.
+A user-controllable physical parameter: the slider sets `nu = U·D/Re` and the viscous pass integrates it. The slider's range is fixed at 0.25–500 and **never moves** — instead a badge names the bound when the requested Re leaves the Honest Window. Never displayed as a nominal/fake value.
+_Avoid_: nominal Re (— rejected permanently, ADR-0007)
+
+**Honest Window**:
+The Reynolds range a given Resolution Tier and Pressure Iteration count can actually deliver. Floor = the largest viscosity the Viscous Substep budget can integrate; ceiling = where the requested viscosity falls below the measured Numerical Viscosity. Both bounds are measured. When the app has not measured the ceiling at a given operating point it says `unmeasured` rather than quoting a number from a different one.
+_Avoid_: Re cap, clamp (— the control is never clamped; the badge is the mechanism)
 
 **Probe**:
-A fixed sampling point in the flow whose velocity time-series feeds Diagnostics.
-_Not yet implemented_ (ADR-0007).
+A fixed sampling point in the flow whose velocity time-series feeds Diagnostics. Placed 2 diameters downstream of the Obstacle, sampled in simulation time. Returns nothing rather than clamping if that cell would fall outside the valid interior.
 
 **Strouhal Number (St)**:
-The dimensionless vortex-shedding frequency, measured live from a Probe — an emergent result, never prescribed.
-_Not yet implemented_ (ADR-0007).
+The dimensionless vortex-shedding frequency `St = f·D/U`, measured live from a Probe — an emergent result, never prescribed. The readout refuses to produce a number for a steady flow, an under-sampled signal, or a collapsed field, and says so.
+_Avoid_: "St ≈ 0.2" as a claim about this app (— 0.2 is the high-Re plateau; the measured values here run 0.166–0.200 over Re 55–140)
 
 ## Example dialogue
 

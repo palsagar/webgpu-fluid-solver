@@ -63,7 +63,8 @@ export class Interaction {
     /**
      * Rasterizes the active obstacle shape onto the solver's grid at the given
      * center position. Clears the previous obstacle footprint, writes the new
-     * solid mask, and sets obstacle velocity in both ping-pong buffers.
+     * solid mask, and sets obstacle velocity in all three rotation slots
+     * (`writeVelocityU`/`writeVelocityV` write every `velPairs` entry).
      *
      * Three-step process:
      *   1. Restore cells from the previous bounding box to their boundary-mask state.
@@ -124,8 +125,7 @@ export class Interaction {
                     }
                     // Clear smoke in former obstacle cells to prevent stale dye imprints
                     if (wasObstacle) {
-                        this.solver.device.queue.writeBuffer(this.solver.m, idx * 4, clearSmoke);
-                        this.solver.device.queue.writeBuffer(this.solver.mNew, idx * 4, clearSmoke);
+                        this.solver.writeSmokeCell(idx, clearSmoke);
                     }
                 }
                 // Zero pressure for this column slice (contiguous in memory)
@@ -215,11 +215,8 @@ export class Interaction {
         this._prevBBox = { iMin: newIMin, iMax: newIMax, jMin: newJMin, jMax: newJMax };
 
         this.solver.writeSolidMask(sData);
-        // Write velocity to BOTH ping-pong buffers so the active one always gets it
         this.solver.writeVelocityU(uData);
         this.solver.writeVelocityV(vData);
-        this.solver.device.queue.writeBuffer(this.solver.uNew, 0, uData);
-        this.solver.device.queue.writeBuffer(this.solver.vNew, 0, vData);
 
         // Notify renderer that solid mask changed
         if (this._renderer) this._renderer.invalidateSolid();

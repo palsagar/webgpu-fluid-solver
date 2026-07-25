@@ -111,7 +111,7 @@
             <div class="guide-learn-more">
               <div class="guide-learn-more-toggle">&#9656; Learn more about the solver</div>
               <div class="guide-learn-more-body">
-                <p>FlowLab solves the 2D incompressible Navier-Stokes equations using a pressure-projection method. The pressure field is computed iteratively (SOR Jacobi), then used to correct velocities so they satisfy the divergence-free condition. The entire computation — pressure solve, velocity advection, and boundary enforcement — runs as WebGPU compute shader dispatches on your GPU.</p>
+                <p>FlowLab solves the 2D incompressible Navier-Stokes equations using a pressure-projection method. The pressure field is computed iteratively (red-black SOR), then used to correct velocities so they satisfy the divergence-free condition. The entire computation — pressure solve, MacCormack advection, viscous diffusion, and boundary enforcement — runs as WebGPU compute shader dispatches on your GPU.</p>
               </div>
             </div>
           </div>
@@ -304,7 +304,7 @@
               <div class="guide-learn-more">
                 <div class="guide-learn-more-toggle">&#9656; Learn more about wake transition</div>
                 <div class="guide-learn-more-body">
-                  <p>At low Reynolds number the wake is steady and symmetric. As Re increases (raise inflow velocity or grid resolution), the wake becomes unsteady — you'll see vortex shedding begin. For a circular cylinder, this transition happens around Re &#8776; 47. Try it: start with low inflow velocity, then slowly increase it with the Advanced panel slider.</p>
+                  <p>At low Reynolds number the wake is steady and symmetric. Raise Re and the wake becomes unsteady — you'll see vortex shedding begin. The textbook figure for an <em>unconfined</em> circular cylinder is Re &#8776; 47; in this solver's channel the onset was <em>measured</em> at Re 52.2 &#177; 0.3, which sits above the textbook value in the direction the 12% blockage and the staircased cylinder both predict. Try it: drag the <strong>Re</strong> slider in the Flow Info panel below 52 and the street dies out, then bring it back up and watch it grow again — slowly, because the growth rate vanishes near onset. Use that slider and not the inflow velocity: the Re control sets &nu; = U&middot;D/Re, so moving U moves &nu; with it and holds Re fixed. Grid resolution does not raise Re either.</p>
                 </div>
               </div>
             </div>
@@ -329,7 +329,8 @@
               <div class="guide-learn-more">
                 <div class="guide-learn-more-toggle">&#9656; Learn more about the Strouhal number</div>
                 <div class="guide-learn-more-body">
-                  <p>Named after Theodore von K&aacute;rm&aacute;n, this alternating vortex pattern explains why power lines hum in the wind and why certain bridges oscillate. The shedding frequency follows the Strouhal relationship: St = fD/U &#8776; 0.2 for circular cylinders, where f is frequency, D is diameter, and U is freestream velocity.</p>
+                  <p>Named after Theodore von K&aacute;rm&aacute;n, this alternating vortex pattern explains why power lines hum in the wind and why certain bridges oscillate. The shedding frequency is reported as the Strouhal number, St = fD/U, where f is frequency, D is diameter, and U is freestream velocity.</p>
+                  <p>The familiar &#8220;St &#8776; 0.2 for a circular cylinder&#8221; is the <em>high-Re plateau</em>, not a constant: below Re &#8776; 300 the Strouhal number falls with Reynolds number. FlowLab does not assume a value &mdash; the St readout in the Flow Info panel is measured from this simulation&#8217;s own wake by a downstream probe, and in the Re range the app runs it reads below 0.2.</p>
                 </div>
               </div>
             </div>
@@ -393,16 +394,16 @@
             </div>
             <div class="guide-param-row">
               <span class="guide-param-name">Inflow velocity</span>
-              <span class="guide-param-desc">Speed of the incoming flow. Higher velocity means higher Reynolds number and more complex wake behavior.</span>
+              <span class="guide-param-desc">Speed of the incoming flow — the U in Re = U&middot;D/&nu;. It does <em>not</em> raise Reynolds number: the Re control sets &nu; = U&middot;D/Re, so raising the inflow raises the viscosity with it and Re holds constant. It does raise the CFL number, and it takes you off the one amplitude (U = 1.0) at which the solver's numerical viscosity was measured — so the Re badge stops quoting a measured ceiling once you move it.</span>
             </div>
             <div class="guide-param-row">
               <span class="guide-param-name">Grid resolution</span>
-              <span class="guide-param-desc">Number of cells across the domain. Higher resolution captures finer detail but demands more GPU work. Also raises the effective Reynolds number by reducing numerical diffusion.</span>
+              <span class="guide-param-desc">Number of cells across the domain. Higher resolution captures finer detail but demands more GPU work. It does <em>not</em> buy Reynolds number. The scheme's own numerical viscosity was measured <em>independent</em> of cell size — flat to 0.5% across a 4&times; refinement — because it is an operator-splitting error in time, not grid diffusion; only a smaller dt lowers it. And at the 256 pressure iterations the Kármán preset ships, the honest Re ceiling <em>falls</em> as the grid grows — Re 236 at tier 64 down to Re 16.5 at tier 1024 — because a fixed iteration count converges the pressure solve progressively less well on a finer grid.</span>
             </div>
             <div class="guide-learn-more">
               <div class="guide-learn-more-toggle">&#9656; Learn more about numerical stability</div>
               <div class="guide-learn-more-body">
-                <p>The solver uses a semi-Lagrangian advection scheme. For stability, the CFL condition (dt &times; U / h &lt; 1) should be satisfied — meaning fluid should not cross more than one cell per timestep. The default parameters are chosen to be stable for typical configurations. If the simulation explodes into noise, lower dt or reduce inflow velocity.</p>
+                <p>The solver uses a MacCormack advection scheme — a semi-Lagrangian trace forward, the same trace backward, then a limited combine that keeps the correction only where it stays inside the min/max of the cells it was interpolated from. For stability, the CFL condition (dt &times; U / h &lt; 1) should be satisfied — meaning fluid should not cross more than one cell per timestep. The default parameters are chosen to be stable for typical configurations. If the simulation explodes into noise, lower dt or reduce inflow velocity.</p>
               </div>
             </div>
           </div>
@@ -490,7 +491,16 @@
             <span class="slider-name">dt</span>
             <span class="slider-value" id="val-dt">0.0167</span>
           </div>
-          <input type="range" id="slider-dt" min="0.004" max="0.033" step="0.001" value="0.0167">
+          <!-- min IS the Karman preset's dt (1/240 = 0.00416666..., to the 8e-6
+               a 7-digit attribute allows), because a range input snaps to
+               min + k*step and 1/240 is on no round grid at all. With min 0.004
+               and step 1e-4 the nearest position was 0.0042: the readout showed
+               a value the solver was not running, and the next drag snapped the
+               solver by 0.8%. Now position 0 IS the preset, and the residual
+               8e-6 is four orders below the tolerance the badge treats as the
+               measured operating point. The readout still rounds to 4 decimals
+               ("0.0042"); that is display precision, not a solver mismatch. -->
+          <input type="range" id="slider-dt" min="0.0041667" max="0.033" step="0.0001" value="0.0041667">
         </div>
 
         <div class="slider-row">
@@ -506,7 +516,10 @@
             <span class="slider-name">Iterations</span>
             <span class="slider-value" id="val-iters">40</span>
           </div>
-          <input type="range" id="slider-iters" min="10" max="200" step="1" value="40">
+          <!-- max must reach the Karman preset's 256, or _syncSliders() sets a
+               value the range input silently clamps and the next drag snaps the
+               solver down to the clamp. -->
+          <input type="range" id="slider-iters" min="10" max="320" step="1" value="40">
         </div>
 
         <div class="slider-row">
@@ -523,8 +536,17 @@
 
         <div class="slider-row">
           <div class="slider-header">
-            <span class="slider-name">Re <span class="hint" title="Reynolds number Re ≈ U·D/h. No explicit viscosity — numerical diffusion from advection acts as implicit viscosity proportional to grid spacing. Higher resolution → less diffusion → higher effective Re.">(?)</span></span>
+            <span class="slider-name">Re <span class="hint" title="Reynolds number Re = U·D/ν, set by a real explicit viscous term. The slider is log-spaced from 0.25 to 500. The badge below reports when the current grid cannot deliver the requested Re — either the viscous substep budget saturates (low Re) or the solver's own numerical viscosity exceeds the physical one (high Re). Both bounds come from measured numbers, not estimates.">(?)</span></span>
             <span class="slider-value" id="val-re">--</span>
+          </div>
+          <input type="range" id="slider-re" min="0" max="100" step="1" value="75">
+          <div id="re-badge" class="re-badge"></div>
+        </div>
+
+        <div class="slider-row">
+          <div class="slider-header">
+            <span class="slider-name">St <span class="hint" title="Strouhal number St = f&#183;D/U, MEASURED &#8212; not prescribed. A probe 2 diameters downstream on the wake centreline samples the transverse velocity every 10 solver steps, timestamped in simulation time, and the shedding frequency is recovered by counting zero crossings across the stored window. The first number appears once the window is half full &#8212; about 9 shedding periods, ~21 s of wall clock at the K&#225;rm&#225;n preset &#8212; and a full window is ~18 periods. It reports a number only when it has one: &#8216;steady&#8217; below the amplitude gate, &#8216;under-sampled&#8217; when the sample interval does not resolve the period it just found (which the upper part of the dt slider does), and &#8216;no signal&#8217; when the probe reads a constant field. WHERE THE CALIBRATION APPLIES: the values below were measured on the K&#225;rm&#225;n preset ONLY &#8212; a cylinder blocking D/H = 12% of the channel, U = 1.0, dt = 1/240, 256 pressure iterations, tier 256, on saturated wakes. St rises 0.166 at Re 55 to 0.200 at Re 140 (&#177;0.001), and shedding starts at a measured onset of Re 52.2 &#177;0.3. &#8216;St &#8776; 0.2&#8217; is the high-Re plateau, not the value in this range. On any other preset, or after dragging or resizing the obstacle, the readout is still a live measurement of that wake &#8212; but nothing here has validated it against a reference, and the blockage and onset figures above do not apply. Wind Tunnel in particular runs D/H = 30% and U = 2.0, neither of which was measured. The channel walls go no-slip whenever the Re control applies a viscosity, so these values run above the unconfined-cylinder correlation and the onset sits above the textbook unconfined Re 47.">(?)</span></span>
+            <span class="slider-value" id="val-st">measuring…</span>
           </div>
         </div>
       </div>

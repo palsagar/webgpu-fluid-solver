@@ -557,6 +557,26 @@ input[type="range"]::-moz-range-thumb {
   border: none;
 }
 
+/* Reported when the requested Re leaves the window the grid can deliver.
+   The 'empty' variant is stronger because no slider position is valid there. */
+.re-badge {
+  display: none;
+  margin-top: 6px;
+  font-size: 11px;
+  line-height: 1.35;
+  color: #ffcc66;
+  opacity: 0.9;
+}
+
+.re-badge.visible {
+  display: block;
+}
+
+.re-badge.empty {
+  color: #ff7b72;
+  opacity: 1;
+}
+
 .slider-hint {
   font-size: 10px;
   color: #6e7681;

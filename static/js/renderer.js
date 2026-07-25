@@ -1,4 +1,5 @@
 import { FieldRenderer, backingSize } from './field-renderer.js';
+import { probeCell } from './diagnostics.js';
 
 /**
  * Renderer for the 2D flow simulation.
@@ -29,6 +30,12 @@ export class Renderer {
     this.interaction = null;
     this.particleSystem = null;
     this.showParticles = true;
+    /** Strouhal probe, assigned by the UI. Cleared here alongside particles. */
+    this.probe = null;
+    /** Gates the velocity readback the Strouhal probe feeds on, and its marker.
+     *  Without this in the readback condition below the probe never receives a
+     *  sample and its readout sits at `measuring...` forever. */
+    this.showProbe = true;
 
     this.readbackPending = false;
     this.solidData = null;
@@ -48,6 +55,11 @@ export class Renderer {
     this.uData = null;
     this.vData = null;
     this._velDataGen = 0;
+    // Simulation time of the frame the current vData was COPIED (not the frame
+    // its mapAsync resolved). The probe stamps samples with this so the series
+    // carries capture-frame time; stamping with the live simTime at completion
+    // adds a variable readback latency and the gaps stop being whole slots.
+    this._velDataSimTime = 0;
     this._velDataVersion = -1;
     this._cachedStreamlines = null;
     this._cachedArrows = null;
@@ -63,7 +75,6 @@ export class Renderer {
 
     this._ctx = this._canvas.getContext('2d');
 
-    this._stagingBuffer = this._createStagingBuffer(this.numX, this.numY);
     this._pressureRange = null; // [min, max] from the throttled pressure readback
   }
 
@@ -136,7 +147,11 @@ export class Renderer {
     // field readback at all (ADR-0005).
     if (usePressure && !this.readbackPending && this._frameCount % 10 === 1) {
       this.readbackPending = true;
-      const staging = this._stagingBuffer;
+      // Fresh staging buffer per call, destroyed on both paths — self-contained
+      // like readbackVelocity/readbackSolid. A persistent buffer here could be
+      // destroyed by resize() while this mapAsync was in flight, landing
+      // getMappedRange() on a freed buffer.
+      const staging = this._createStagingBuffer(this.numX, this.numY);
       const gen = this._gridGen;
       const encoder = device.createCommandEncoder();
       encoder.copyBufferToBuffer(solver.pressureBuffer, 0, staging, 0, this.numX * this.numY * 4);
@@ -148,8 +163,12 @@ export class Renderer {
           this._pressureRange = this._computePressureRange(new Float32Array(raw.slice(0)));
         }
         staging.unmap();
+        staging.destroy();
         this.readbackPending = false;
-      }).catch(() => { this.readbackPending = false; });
+      }).catch(() => {
+        staging.destroy();
+        this.readbackPending = false;
+      });
     }
 
     // Read solid mask once (refreshed on invalidateSolid()) — particles need it
@@ -171,7 +190,7 @@ export class Renderer {
 
     // Velocity readback every 10 frames (not every frame) to reduce GPU stalls.
     // Needed for streamlines, arrows, and particle advection.
-    if (this._frameCount % 10 === 0 && (this.showStreamlines || this.showVelocities || this.showParticles)) {
+    if (this._frameCount % 10 === 0 && (this.showStreamlines || this.showVelocities || this.showParticles || this.showProbe)) {
       this.readbackVelocity();
     }
 
@@ -202,6 +221,7 @@ export class Renderer {
     }
     if (this.interaction && this.interaction.showObstacle) {
       this.drawObstacle(this._ctx, this.interaction);
+      this.drawProbe(this._ctx, this.interaction);
     }
   }
 
@@ -217,6 +237,11 @@ export class Renderer {
     this._solidReadbackDone = false;
     this._solidGen++;
     if (this.particleSystem) this.particleSystem.clear();
+    // The solid mask only changes when the geometry does — an obstacle drag, a
+    // shape switch, or a preset load. A Strouhal series spanning such a change
+    // is a frequency fitted across two different flows, so it is discarded for
+    // exactly the same reason and in exactly the same place as the particles.
+    if (this.probe) this.probe.clear();
   }
 
   /**
@@ -330,6 +355,49 @@ export class Renderer {
   }
 
   /**
+   * Draws the Strouhal probe as a ringed dot at the cell it actually samples.
+   *
+   * Drawn from `probeCell` — the same function `ui.js` samples through — and at
+   * the CELL CENTRE rather than the ideal 2D-downstream point, so the marker
+   * shows where the number comes from rather than where it was asked for. When
+   * `probeCell` returns null (obstacle dragged too close to the outflow) there
+   * is no marker, which is what makes the readout dropping to `measuring...`
+   * legible instead of mysterious.
+   *
+   * @param {CanvasRenderingContext2D} ctx - Canvas 2D context
+   * @param {Object} interaction - Interaction state with obstacle position and radius
+   */
+  drawProbe(ctx, interaction) {
+    if (!this.showProbe) return;
+    const { numX, numY, h } = this;
+    const cell = probeCell({
+      obstacleX: interaction.obstacleX,
+      obstacleY: interaction.obstacleY,
+      D: 2 * interaction.obstacleRadius,
+      h, numX, numY,
+    });
+    if (!cell) return;
+
+    const px = ((cell.i + 0.5) * h) / (numX * h) * this._canvas.width;
+    const py = (1 - ((cell.j + 0.5) * h) / (numY * h)) * this._canvas.height;
+    const scale = this._overlayScale;
+
+    ctx.save();
+    // Spring green: absent from both the magma field ramp and the ice-blue
+    // particle trails, so the marker stays findable over either.
+    ctx.strokeStyle = 'rgba(120, 255, 170, 0.95)';
+    ctx.fillStyle = 'rgba(120, 255, 170, 0.95)';
+    ctx.lineWidth = 1.5 * scale;
+    ctx.beginPath();
+    ctx.arc(px, py, 5 * scale, 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.arc(px, py, 1.5 * scale, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.restore();
+  }
+
+  /**
    * Displays a brief on-screen indicator when grid resolution changes.
    * @param {number} tier - New grid resolution tier (e.g., 100, 200)
    * @param {number} direction - Positive for upscale, negative for downscale
@@ -390,6 +458,10 @@ export class Renderer {
     const { device, solver, numX, numY } = this;
     const size = numX * numY * 4;
     const gen = this._gridGen;
+    // Snapshot the simulation time NOW, when the buffers are copied — this is
+    // the frame the sampled velocity belongs to, regardless of how many frames
+    // the mapAsync takes to resolve.
+    const simTimeAtCapture = solver.simTime;
     const { u: uBuf, v: vBuf } = solver.velocityBuffers;
 
     const stagingU = device.createBuffer({ size, usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST });
@@ -404,6 +476,7 @@ export class Renderer {
       if (gen === this._gridGen) {
         this.uData = new Float32Array(stagingU.getMappedRange().slice(0));
         this.vData = new Float32Array(stagingV.getMappedRange().slice(0));
+        this._velDataSimTime = simTimeAtCapture;
         this._velDataGen++;
       }
       stagingU.unmap();
@@ -626,8 +699,8 @@ export class Renderer {
 
   /**
    * Resizes the renderer to match a new grid resolution.
-   * Destroys and recreates the staging buffer, resets the canvas dimensions,
-   * and clears all cached readback data and overlay geometry.
+   * Invalidates readbacks in flight, resets the canvas dimensions, and clears
+   * all cached readback data and overlay geometry.
    * @param {number} numX - New grid width
    * @param {number} numY - New grid height
    * @param {number} h - New cell size
@@ -639,11 +712,9 @@ export class Renderer {
     this._velReadbackPending = false;
     this._solidReadbackPending = false;
 
-    this._stagingBuffer.destroy();
     this.numX = numX;
     this.numY = numY;
     this.h = h;
-    this._stagingBuffer = this._createStagingBuffer(numX, numY);
     this._pressureRange = null;
     this.fieldRenderer.resize();
     this.solidData = null;
@@ -651,9 +722,13 @@ export class Renderer {
     this.uData = null;
     this.vData = null;
     this._velDataGen = 0;
+    this._velDataSimTime = 0;
     this._velDataVersion = -1;
     this._cachedStreamlines = null;
     this._cachedArrows = null;
     if (this.particleSystem) this.particleSystem.clear();
+    // h changed, so the probe cell moved and the flow is about to be reloaded
+    // onto a different grid — the series describes neither.
+    if (this.probe) this.probe.clear();
   }
 }

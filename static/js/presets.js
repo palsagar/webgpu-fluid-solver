@@ -3,7 +3,7 @@
  * Each preset defines solver parameters, boundary conditions, obstacle
  * placement, and default visualization toggles.
  *
- * - numIters: pressure solver Jacobi iterations per step (higher = more accurate)
+ * - numIters: red-black SOR sweeps per step in the pressure solver (higher = more accurate)
  * - dt: simulation timestep in seconds
  * - omega: SOR over-relaxation factor for the pressure solver
  * - inVel: horizontal inflow velocity at the left boundary
@@ -20,8 +20,54 @@ export const PRESETS = {
   },
   karmanVortex: {
     name: 'Kármán Vortex',
-    // Higher iteration count and smaller timestep for resolving vortex shedding
-    numIters: 80, dt: 1/120, omega: 1.9, inVel: 1.0,
+    // Higher iteration count and smaller timestep for resolving vortex shedding.
+    //
+    // dt = 1/240, halved from 1/120, to open the honest Reynolds window (see
+    // diagnostics.js). Task 7 measured `nu_num` INDEPENDENT of h but LINEAR in
+    // dt, so halving dt buys the ceiling on both sides at once: the converged
+    // `nu_num` falls 9.823e-4 -> 5.056e-4 (measured, a 1.94x reduction) which
+    // lifts the ceiling Re 122 -> 237, while the viscous floor `U*D*dt/(N_MAX
+    // *h^2/4)` scales with dt and halves, 8.19 -> 4.10 at tier 256. The window
+    // at the startup tier goes from 8.2 .. 32.8 (which excluded the measured
+    // shedding onset, Re 52.2) to 4.1 .. 59.0 (which contains it, but leaves
+    // only a single slider position both honest and shedding, on a wake that
+    // is weak and slow to appear — see RE_SLIDER_DEFAULT_POS). The cost is 2x
+    // the solver steps per second of simulated time; frame rate is unaffected,
+    // since the loop steps once per frame either way.
+    //
+    // numIters raised 80 -> 256, which is what finally puts the shipped default
+    // INSIDE the honest window instead of 1.27x outside it.
+    //
+    // At 80 the projection, not the advection scheme, set the ceiling: Re 59.0
+    // against a scheme ceiling of 237. The measured shedding onset is Re 52.2,
+    // so the honest window reached past the onset by only 13%, and exactly one
+    // slider position (71 -> Re 55.2) was both honest and shedding — on a wake
+    // 6% above onset, which is weak and takes tens of seconds of simulated time
+    // to grow. Re-measuring the Taylor-Green decay across iteration counts at
+    // this tier and dt gives
+    //
+    //   numIters    80      128     160     192     256
+    //   nu_num   2.03e-3  1.34e-3 1.11e-3 9.61e-4 7.78e-4
+    //   Re_max     59.0     89.2   107.8   124.9   154.2
+    //
+    // so 256 buys a 2.6x ceiling and clears the onset by 3.0x. Above 256 the
+    // returns are small (512 was measured at Re 216 against the converged 237)
+    // and the frame cost is not.
+    //
+    // THE COST, measured as true wall-clock rAF deltas at the startup tier 256
+    // — NOT the perf HUD, which times CPU encode only and reads 0.2-0.5 ms for
+    // every configuration below:
+    //
+    //   numIters    80      128     160     192     256
+    //   ms/frame   8.33     8.33    9.15   10.97   14.42
+    //   fps         120      120     109      91      69 (median 60)
+    //
+    // 256 costs 14.34 ms of GPU work per step against a 16.67 ms budget, so it
+    // holds 60 fps with ~14% headroom on the dev machine. That is the decision
+    // rule: the highest count that still holds 60 fps at the startup tier.
+    // 128 is the conservative fallback — it fits inside a 120 Hz frame with
+    // zero dropped frames and still clears the onset by 1.71x.
+    numIters: 256, dt: 1/240, omega: 1.9, inVel: 1.0,
     // Small obstacle to trigger periodic vortex shedding
     obstacle: { shape: 'circle', x: 0.3, y: 0.5, radius: 0.06 },
     boundaryType: 'windTunnel',
@@ -124,15 +170,12 @@ export function loadPreset(name, solver, interaction) {
 
   }
 
-  // Write all fields to both ping-pong buffers to avoid stale data
+  // Write all fields — the solver writes every buffer in the rotation
   solver.resetFlipState();
   solver.writeSolidMask(sData);
   solver.writeVelocityU(uData);
   solver.writeVelocityV(new Float32Array(numX * numY));
   solver.writeSmoke(mData);
-  solver.device.queue.writeBuffer(solver.uNew, 0, new Float32Array(numX * numY));
-  solver.device.queue.writeBuffer(solver.vNew, 0, new Float32Array(numX * numY));
-  solver.device.queue.writeBuffer(solver.mNew, 0, mData);
 
   // Resize interaction arrays if grid size changed
   const iSize = numX * numY;
