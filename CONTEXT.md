@@ -73,7 +73,7 @@ _Avoid_: sprite, tracer particle
 A fixed location that continuously spawns Particles (a few per frame), producing a steady visible stream.
 
 **Colormap**:
-A scientific color lookup table (magma, viridis, coolwarm) mapping scalar values to color.
+A scientific color lookup table mapping scalar values to color. Two are loaded as GPU LUT textures: magma (Smoke) and coolwarm (pressure). `static/colormaps/viridis.png` ships in the repo but nothing loads it.
 
 **Confinement (ε)**:
 An explicitly-labeled, default-off control that injects artificial vorticity for visual effect. Always presented as artificial — never silently on.
