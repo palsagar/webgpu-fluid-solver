@@ -53,11 +53,11 @@
 // earlier version of this comment (and of commit 321e5a6's message) claimed.
 // u_stencil clamps x to [h, nx*h], so x0f = floor(x * h1) >= 1 and i0 can never
 // be 0; the u-face at i=1 never samples column 0, and its corner range always
-// includes u[1, j0] and u[1, j1]. presets.js:97 writes the inflow into u[1, j]
+// includes u[1, j0] and u[1, j1]. presets.js writes the inflow into u[1, j]
 // for EVERY j, solid rows included, so both of those corners already equal the
 // face's own value: the range brackets the inflow and the clamp is the identity
 // with or without the seed. What preserves the inflow BC is the REVERT, not the
-// seed. (backwardStep, presets.js:124, fills column 1 only above the step, so
+// seed. (backwardStep in presets.js fills column 1 only above the step, so
 // that column is not uniform and the seed can matter within a cell or so of the
 // step lip. The uniform-column argument is windTunnel-specific.)
 //

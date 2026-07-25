@@ -46,7 +46,7 @@
 //
 // Both helpers below classify i == 0 and j == 0 as BURIED **by index**, before
 // consulting the solid mask. Every preset already marks those lines solid
-// (presets.js:94,119) so the mask would usually agree, but making it structural
+// (presets.js) so the mask would usually agree, but making it structural
 // rather than contingent means the viscous stencil cannot read a stale entry
 // even if a future preset opens one of those lines. The index test also avoids
 // the u32 underflow the mask test would hit at i-1 == -1 / j-1 == -1.

@@ -67,7 +67,7 @@ ES modules are cached aggressively by browsers. The server includes `NoCacheMidd
 Use discrete buttons (not a range slider) for grid resolution tiers. A continuous slider fires `input` events during drag, each triggering expensive GPU buffer destruction/recreation. Discrete buttons fire once per click. Tiers: 64–1024 (1024 added with GPU field rendering).
 
 ### Screenshots
-`static/screenshots/` holds README images (karman-smoke, karman-pressure, windtunnel-streamlines). `.gitignore` blocks `*.png` globally but has `!static/screenshots/*.png` exception.
+`static/screenshots/` holds README images (karman-smoke, karman-pressure). `.gitignore` blocks `*.png` globally but has `!static/screenshots/*.png` exception.
 
 ### Author Link
 Title bar includes an "Author" link to sagar-pal.dev — same pattern as the Gray-Scott sibling project. Order: Author | GitHub pill | Guide(?).
@@ -78,7 +78,7 @@ Title bar includes an "Author" link to sagar-pal.dev — same pattern as the Gra
 
 ## Presets
 
-Three working presets (default: Kármán Vortex). All use `windTunnel` or `backwardStep` boundary types with inflow velocity at column `i=1`. No gravity — removed from solver for simplicity.
+Two working presets (default: Kármán Vortex). The presets use `windTunnel` or `backwardStep` boundary types with inflow velocity at column `i=1`. No gravity — removed from solver for simplicity.
 
 ### Known Limitation: Lid-Driven Cavity
 The solver's `extrapolate` boundary step copies interior velocities to wall cells, overwriting any forced velocity. This makes lid-driven cavity (which requires a fixed velocity at the top wall) infeasible without modifying the boundary shader. Removed from presets for now.

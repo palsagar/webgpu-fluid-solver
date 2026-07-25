@@ -14,10 +14,7 @@ Drag obstacles through the flow. Watch a vortex street form — and die when you
 
 ![Kármán vortex street — periodic vortex shedding behind a cylinder](static/screenshots/karman-smoke.png)
 
-<p align="center">
-  <img src="static/screenshots/windtunnel-streamlines.png" width="49%" alt="Wind tunnel — streamlines and smoke around a bluff body">
-  <img src="static/screenshots/karman-pressure.png" width="49%" alt="Pressure field — coolwarm colormap showing high and low pressure regions">
-</p>
+![Pressure field — coolwarm colormap showing high and low pressure regions](static/screenshots/karman-pressure.png)
 
 ## Features
 
@@ -26,7 +23,7 @@ Drag obstacles through the flow. Watch a vortex street form — and die when you
 - **Measured, not asserted** — the Reynolds slider shows a badge when the requested Re leaves the range this grid can honestly deliver, and the Strouhal number is recovered live from the wake instead of quoted from a textbook
 - **Interactive obstacles** — Drag circles, squares, airfoils, or wedges through the fluid with velocity coupling
 - **Multiple visualizations** — Smoke dye (magma colormap), pressure field (coolwarm), streamlines, velocity arrows, tracer particles
-- **Curated presets** — Wind tunnel, Karman vortex street, backward-facing step
+- **Curated presets** — Karman vortex street, backward-facing step
 - **Advanced controls** — Adjust timestep, relaxation, iterations, inflow velocity, Reynolds number, grid resolution
 - **Adaptive resolution** — Auto-scales the grid between 64 and 512 based on measured frame time; 1024 is selectable manually
 
@@ -107,7 +104,7 @@ WebGPU support required: Chrome 113+, Edge 113+, or Firefox Nightly with `dom.we
 |-----|--------|
 | `P` | Play / Pause |
 | `M` | Step one frame |
-| `1-3` | Load preset |
+| `1-2` | Load preset |
 
 ## Documentation
 

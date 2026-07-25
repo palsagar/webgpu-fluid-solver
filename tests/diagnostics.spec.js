@@ -337,8 +337,10 @@ test('the empty-grid reason still fires when the grid itself is the obstacle', a
 test('a projection ceiling above the converged one is refused, not min()-ed away', async ({ page }) => {
   await page.goto('/');
 
-  // The `windTunnel` preset's real operating point: U = 2.0, D = 2*0.15,
-  // dt = 1/60, 40 pressure iterations. NU_NUM_ITERS256 is measured at dt =
+  // A since-removed preset's real operating point (ADR-0009): U = 2.0,
+  // D = 2*0.15, dt = 1/60, 40 pressure iterations. The preset is gone; its
+  // parameter set stays as the adversarial case — nothing else exercises both
+  // off-slice axes at once. NU_NUM_ITERS256 is measured at dt =
   // 1/240 AND 256 iterations, so carrying it here is carrying it off both
   // axes at once — and it produces a physically impossible pair.
   const wt = await page.evaluate(async () => {

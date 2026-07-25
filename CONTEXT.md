@@ -23,7 +23,7 @@ The passive dye carried by the flow, used purely for visualization. Full concent
 _Avoid_: dye, marker, density (— "density" means the fluid's physical density, a solver parameter)
 
 **Preset**:
-A named, self-contained scenario: solver parameters, Boundary Type, Inflow, optional Obstacle, and default visualization toggles. Current presets: Wind Tunnel, Kármán Vortex, Backward Step.
+A named, self-contained scenario: solver parameters, Boundary Type, Inflow, optional Obstacle, and default visualization toggles. Current presets: Kármán Vortex, Backward Step.
 _Avoid_: scene, demo, example
 
 **Boundary Type**:
