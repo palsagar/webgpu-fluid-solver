@@ -271,7 +271,7 @@ See [Three-Slot Rotation](gpu-pipeline.md#4-the-three-slot-rotation) for why inf
 
 ### Open Outflow
 
-The right boundary uses the boundary extrapolation step (v copied from interior) combined with advection naturally carrying flow out of the domain. `diffuse.wgsl` copies the last column and row through unchanged, so those two lines carry no viscous update — which is why the Strouhal probe refuses to sit in them (§8).
+The right boundary uses the boundary extrapolation step (v copied from interior) combined with advection naturally carrying flow out of the domain. `diffuse.wgsl` copies the domain ring (first and last rows and columns) through unchanged, so those boundary lines carry no viscous update and the cells just inside them diffuse against frozen neighbors — which is why the Strouhal probe refuses to sit in the frozen outflow columns or rows (§9).
 
 ### Domain walls: free-slip or no-slip, depending on `nu`
 

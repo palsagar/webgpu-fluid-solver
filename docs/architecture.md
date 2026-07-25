@@ -6,11 +6,11 @@ Overview of the WebGPU Eulerian fluid solver: how the pieces fit together, the f
 
 | Layer | Technology | Notes |
 |-------|-----------|-------|
-| **Backend** | FastAPI + Uvicorn | ~10 lines of Python; serves static files only, plus a `/api/health` endpoint |
+| **Backend** | FastAPI + Uvicorn | ~40 lines of Python; serves static files only, plus a `/api/health` endpoint |
 | **Frontend** | Vanilla ES modules | No build step, no bundler, no framework |
 | **Compute** | WebGPU compute shaders (WGSL) | 7 shader files, 8 pipelines: pressure, boundary (two entry points), velocity advect, smoke advect, velocity combine, smoke combine, diffuse |
 | **Rendering** | WebGPU render pass (field) + 2D canvas (overlays) | Field View: fullscreen triangle, bilinear buffer sampling, colormap LUT texture, in-shader solids. Overlays: transparent Canvas 2D layer on top. See ADR-0005. |
-| **Colormaps** | 256x1 PNG LUT textures | Scientific colormaps (magma, coolwarm, viridis) loaded from `static/colormaps/` |
+| **Colormaps** | 256x1 PNG LUT textures | Scientific colormaps (magma, coolwarm) loaded from `static/colormaps/` |
 
 ## 2. Module Dependency Graph
 
@@ -90,7 +90,7 @@ Defined in `static/js/presets.js`. The `PRESETS` object holds configuration and 
 1. **Set solver params** -- `dt`, `omega`, `density` from the preset.
 2. **Reset all fields** -- velocity (u, v), pressure, and smoke are zeroed / set to defaults (`m = 1.0` everywhere = clear).
 3. **Build solid mask and inflow** -- iterates the grid to set boundary cells (`s = 0` for walls) and inflow velocity at column `i = 1`, based on `boundaryType`.
-4. **Write to every rotation slot** -- calls `solver.resetFlipState()`, then writes velocity and smoke through `writeU` / `writeV` / `writeSmoke`, which fan out to all three slots so no stale slot survives.
+Write to every rotation slot -- calls `solver.resetFlipState()`, then writes velocity and smoke through `writeVelocityU` / `writeVelocityV` / `writeSmoke`, which fan out to all three slots so no stale slot survives.
 5. **Resize interaction arrays** if the grid size changed; stores the boundary mask for later obstacle rasterization.
 6. **Rasterize obstacle** if the preset defines one (via `interaction.rasterizeObstacle()`).
 7. **Return** `{ show, numIters, smokeInletData, boundaryVelData }` -- the caller (`UI`) stores these and uses them each frame.

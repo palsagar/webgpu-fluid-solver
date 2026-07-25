@@ -55,6 +55,7 @@ graph TD
 | [System Architecture](architecture.md) | Tech stack, module graph, frame loop, presets, adaptive resolution, particle tracer |
 | [Numerical Methods](numerical-methods.md) | Governing equations, MAC grid, pressure solver, MacCormack advection, explicit diffusion, measured numerical viscosity, Strouhal measurement |
 | [GPU Pipeline](gpu-pipeline.md) | Buffer layout, the three-slot rotation, compute dispatch, bind groups and the storage budget, rendering |
+| [Roadmap](ROADMAP.md) | Shipped milestones, planned features (Blow/Draw modes, Confinement), and known gaps |
 | [Decision Records](adr/README.md) | Index of ADRs — what was decided, and what has actually shipped |
 
 ## Quick Start

@@ -80,7 +80,7 @@ graph LR
 | `maccormack.wgsl` | `maccormack_smoke` | Limited combine for smoke |
 | `diffuse.wgsl` | `diffuse` | Explicit five-point viscous update |
 
-Velocity and smoke need separate trace shaders because velocity's advected-field bindings must be read-write while smoke's are read-only.
+Velocity and smoke need separate trace shaders because velocity has two components and the backward pass keeps phi^n on the advecting-velocity bindings rather than using a separate origin binding like smoke; the combine shaders also differ (velocity carries no solid mask).
 
 **Dispatch counts per frame:** `2×numIters` (pressure) + 2 (boundary H, V) + 3 (velocity MacCormack) + 3 (smoke MacCormack) + `N` (viscous substeps, 0 when `nu = 0`, at most 32).
 
@@ -178,7 +178,7 @@ The `s` buffer (solid mask: 0.0 = solid, 1.0 = fluid) is rasterized on the CPU v
 
 **maccormack_velocity.wgsl:** Binds no solid mask at all. The `phi^` seed makes the clamp the identity wherever a face reverted, so a guard would be a provable no-op.
 
-**diffuse.wgsl:** Classifies each velocity *face* three ways — FLUID (both flanking cells fluid, diffused), WALL (exactly one solid, copied through, preserving the no-penetration BC and the inflow column), BURIED (both solid, **or** `i == 0` / `j == 0`, read as a ghost `-center`). The index-based part of the BURIED test is load-bearing: at `j = 0` for `u` and `i = 0` for `v` both flanking cells are fluid, so the FLUID predicate does not block the read, and the mask test itself would underflow. The domain ring's last column and row are copied through unchanged, which is why they carry no viscous update.
+**diffuse.wgsl:** Classifies each velocity *face* three ways — FLUID (both flanking cells fluid, diffused), WALL (exactly one solid, copied through, preserving the no-penetration BC and the inflow column), BURIED (both solid, **or** `i == 0` / `j == 0`, read as a ghost `-center`). The index-based part of the BURIED test is load-bearing: at `j = 0` for `u` and `i = 0` for `v` both flanking cells are fluid, so the FLUID predicate does not block the read, and the mask test itself would underflow. The domain ring (first and last rows and columns) is copied through unchanged, which is why those boundary lines carry no viscous update.
 
 ---
 
@@ -207,7 +207,7 @@ Pipeline layout is explicit, never `layout: 'auto'` (see [ADR-0002](adr/0002-exp
 
 ### Colormap LUTs
 
-`_loadLuts(['magma', 'coolwarm', 'viridis'])` runs once in the async `FieldRenderer.create()` factory. Each `static/colormaps/<name>.png` is fetched as a blob, decoded with `createImageBitmap()`, and uploaded to a 256x1 `rgba8unorm` texture via `device.queue.copyExternalImageToTexture()`. One bind group is cached per colormap name. Until the textures resolve, `draw()` returns early and skips the frame — there is no grayscale fallback.
+`_loadLuts(['magma', 'coolwarm'])` runs once in the async `FieldRenderer.create()` factory. Each `static/colormaps/<name>.png` is fetched as a blob, decoded with `createImageBitmap()`, and uploaded to a 256x1 `rgba8unorm` texture via `device.queue.copyExternalImageToTexture()`. One bind group is cached per colormap name. Until the textures resolve, `draw()` returns early and skips the frame — there is no grayscale fallback.
 
 **Display ranges:**
 

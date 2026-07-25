@@ -67,7 +67,7 @@ These run as WebGPU compute shaders dispatched into a single command buffer — 
 ## Project Structure
 
 ```
-server.py                  # FastAPI server (~10 lines)
+server.py                  # FastAPI server (~40 lines)
 static/
   index.html               # UI shell
   css/style.css             # Dark theme
