@@ -47,7 +47,7 @@ The gaps below are not independent of the features — three of them sit on the 
 - **PR C — Blow mode** (step 4). Small, self-contained, no defect dependencies.
 - **PR D — Draw mode + eraser + ε slider** (step 5). Lands on PR A's rasterizer. If Draw ever adds shareable/serialized state, the deployment-hardening note below applies: re-clamp resolution and iteration count on the restore path.
 
-Deferred / rejected: GPU compute particles (revisit at ~100× particle counts, ADR-0003), multigrid pressure, 2048 tier, multiple parametric obstacles (subsumed by Draw mode), nominal-Re readout (rejected permanently, ADR-0007), smoke diffusion, a GPU-side probe ring buffer.
+Deferred / rejected: GPU compute particles (revisit at ~100× particle counts, ADR-0003), multigrid pressure, 2048 tier, multiple parametric obstacles (subsumed by Draw mode), nominal-Re readout (rejected permanently, ADR-0007), smoke diffusion, a GPU-side probe ring buffer, a uniform-flow bluff-body preset (removed, ADR-0009).
 
 ## Known gaps
 
@@ -63,7 +63,7 @@ Recorded here so nothing above reads as more settled than it is, and so the list
 
 ### Gaps in the measured numbers
 
-- **Amplitude (`U`) dependence of `ν_num` was never measured.** Every Taylor–Green fit ran at `A = 1.0`, and not even the *sign* of the correction is established — a plausible `ν_num ~ A²` scaling would make the true ceiling *fall* as `U` rises, i.e. the quoted ceiling is optimistic exactly where a user reaches by turning the flow up. Kármán ships `inVel = 1.0` so the app opens on the measured slice, but the inflow slider spans 0.5–5.0. `U` is now part of the measured-point gate (`ui.js`), so leaving 1.0 badges `unmeasured` rather than quoting a ceiling; `windTunnel` (`U = 2.0`) and `backwardStep` (`U = 1.5`) are off-slice on the `dt`/iterations axes too. Measuring `ν_num` across `A` is the way to close it — no correction is applied in the meantime, by design.
+- **Amplitude (`U`) dependence of `ν_num` was never measured.** Every Taylor–Green fit ran at `A = 1.0`, and not even the *sign* of the correction is established — a plausible `ν_num ~ A²` scaling would make the true ceiling *fall* as `U` rises, i.e. the quoted ceiling is optimistic exactly where a user reaches by turning the flow up. Kármán ships `inVel = 1.0` so the app opens on the measured slice, but the inflow slider spans 0.5–5.0. `U` is now part of the measured-point gate (`ui.js`), so leaving 1.0 badges `unmeasured` rather than quoting a ceiling; `backwardStep` (`U = 1.5`) is off-slice on the `dt`/iterations axes too. Measuring `ν_num` across `A` is the way to close it — no correction is applied in the meantime, by design.
 - **Tier 512 and 1024 converged values are extrapolated**, not measured — the browser died at 4096 iterations.
 - **St is measured at one probe position, one tier, and one preset.** Sensitivity to any of the three is unmeasured.
 - **`adaptive.js`'s `UPSCALE_MS = 12` is calibrated on one machine and one display.** It sits between the 120 Hz dev machine's vsync period (8.33 ms) and its first GPU-bound tier (17.75 ms). On a 60 Hz display no tier can beat 16.67 ms, so nothing auto-promotes and adaptive resolution silently does nothing in the upward direction. Conservative, and deliberate, but uncalibrated anywhere but here.

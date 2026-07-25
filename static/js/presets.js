@@ -11,13 +11,6 @@
  * - boundaryType: 'windTunnel' (open right) or 'backwardStep' (step geometry on left wall)
  */
 export const PRESETS = {
-  windTunnel: {
-    name: 'Wind Tunnel',
-    numIters: 40, dt: 1/60, omega: 1.9, inVel: 2.0,
-    obstacle: { shape: 'circle', x: 0.4, y: 0.5, radius: 0.15 },
-    boundaryType: 'windTunnel',
-    show: { pressure: false, smoke: true, streamlines: false, velocities: false },
-  },
   karmanVortex: {
     name: 'Kármán Vortex',
     // Higher iteration count and smaller timestep for resolving vortex shedding.

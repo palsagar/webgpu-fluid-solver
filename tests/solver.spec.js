@@ -342,8 +342,8 @@ test('velocity advection leaves the inflow BC and solid-cell velocities bit-exac
     const uAfter = await readBuf(out.u);
     const vAfter = await readBuf(out.v);
 
-    // Column i=1 carries the inflow (presets.js:97) and is preserved only
-    // because i=0 is solid (presets.js:94), so the u-face there never advects.
+    // Column i=1 carries the inflow (presets.js) and is preserved only
+    // because i=0 is solid (presets.js), so the u-face there never advects.
     let inflowDrift = 0, inflowMag = 0;
     for (let j = 1; j < n; j++) {
       const k = 1 * n + j;
@@ -371,7 +371,7 @@ test('velocity advection leaves the inflow BC and solid-cell velocities bit-exac
   // What holds the INFLOW in PRODUCTION is that revert alone -- NOT the
   // limiter's phi^ seed. u_stencil clamps x to [h, nx*h], so its i0 is never 0
   // and the i=1 u-face never samples column 0; its corner range always contains
-  // u[1, j0] and u[1, j1], and presets.js:97 writes inVel into u[1, j] for every
+  // u[1, j0] and u[1, j1], and presets.js writes inVel into u[1, j] for every
   // j. Both corners therefore equal the face's own value, so the clamp is the
   // identity with or without the seed.
   //

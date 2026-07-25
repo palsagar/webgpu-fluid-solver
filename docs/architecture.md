@@ -99,13 +99,14 @@ Write to every rotation slot -- calls `solver.resetFlipState()`, then writes vel
 
 | Preset | `numIters` | `dt` | `inVel` | `omega` | Obstacle | Boundary Type |
 |--------|-----------|------|---------|---------|----------|---------------|
-| **Wind Tunnel** | 40 | 1/60 | 2.0 | 1.9 | Circle, r=0.15 at (0.4, 0.5) | `windTunnel` |
 | **Karman Vortex** | 256 | 1/240 | 1.0 | 1.9 | Circle, r=0.06 at (0.3, 0.5) | `windTunnel` |
 | **Backward Step** | 60 | 1/60 | 1.5 | 1.9 | None | `backwardStep` (step block x<0.3, y<0.5) |
 
+(A third preset was removed — see [ADR-0009](adr/0009-no-wind-tunnel-preset.md).)
+
 All presets use `density = 1000`. Smoke inlet is a narrow central band of dark dye (`m = 0`) at the left edge.
 
-**Only Kármán is calibrated.** The numerical-viscosity table in `diagnostics.js` was measured on one slice — `dt = 1/240`, 256 pressure iterations, `U = 1.0` — which is the Kármán preset and only the Kármán preset. Wind Tunnel and Backward Step run a different `dt`, a different iteration count and a different `U`, so the Re badge reports the ceiling there as **`unmeasured`** rather than carrying the table across. That is a visible product change (two of three presets open with a badge) and it is the honest state: the carry previously produced a physically impossible pair on Wind Tunnel — a projection ceiling of Re 771 against a converged scheme ceiling of Re 297, i.e. an under-converged solve dissipating *less* than a converged one. Measuring the table at each preset's own operating point is what would close it.
+**Only Kármán is calibrated.** The numerical-viscosity table in `diagnostics.js` was measured on one slice — `dt = 1/240`, 256 pressure iterations, `U = 1.0` — which is the Kármán preset and only the Kármán preset. Backward Step runs a different `dt` (1/60), a different iteration count (60) and a different `U` (1.5), so the Re badge reports the ceiling there as **`unmeasured`** rather than carrying the table across. That is a visible product choice (the non-flagship preset opens with a badge) and it is the honest state: the carry previously produced a physically impossible pair on a since-removed preset (ADR-0009) — a projection ceiling of Re 771 against a converged scheme ceiling of Re 297, i.e. an under-converged solve dissipating *less* than a converged one. Measuring the table at each preset's own operating point is what would close it.
 
 ## 5. Adaptive Resolution
 

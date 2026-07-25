@@ -271,44 +271,12 @@
         <div class="guide-section-header">
           <div>
             <span class="guide-section-title">Presets &amp; Flow Phenomena</span>
-            <span class="guide-section-summary">Three classic configurations to explore</span>
+            <span class="guide-section-summary">Two classic configurations to explore</span>
           </div>
           <span class="guide-chevron">&#9656;</span>
         </div>
         <div class="guide-section-body">
           <div class="guide-section-content">
-            <div class="guide-preset-block">
-              <h4>Wind Tunnel</h4>
-              <p>Uniform flow past a bluff body. Watch for flow separation in the wake and the pressure difference between the upstream and downstream faces of the obstacle.</p>
-              <div class="guide-illustration">
-                <svg width="280" height="80" viewBox="0 0 280 80">
-                  <!-- Parallel flow lines -->
-                  <line x1="10" y1="15" x2="90" y2="15" stroke="#8b949e" stroke-width="1.5"/>
-                  <line x1="10" y1="30" x2="90" y2="30" stroke="#8b949e" stroke-width="1.5"/>
-                  <line x1="10" y1="50" x2="90" y2="50" stroke="#8b949e" stroke-width="1.5"/>
-                  <line x1="10" y1="65" x2="90" y2="65" stroke="#8b949e" stroke-width="1.5"/>
-                  <!-- Deflected lines around obstacle -->
-                  <path d="M90,15 Q110,10 130,12 Q150,8 170,12 Q190,15 210,15 L270,15" fill="none" stroke="#8b949e" stroke-width="1.5"/>
-                  <path d="M90,30 Q105,26 115,25 Q125,28 135,32" fill="none" stroke="#8b949e" stroke-width="1.5"/>
-                  <path d="M175,32 Q185,28 200,30 Q230,34 270,30" fill="none" stroke="#8b949e" stroke-width="1.5"/>
-                  <path d="M90,50 Q105,54 115,55 Q125,52 135,48" fill="none" stroke="#8b949e" stroke-width="1.5"/>
-                  <path d="M175,48 Q185,52 200,50 Q230,46 270,50" fill="none" stroke="#8b949e" stroke-width="1.5"/>
-                  <path d="M90,65 Q110,70 130,68 Q150,72 170,68 Q190,65 210,65 L270,65" fill="none" stroke="#8b949e" stroke-width="1.5"/>
-                  <!-- Wake region (spread lines) -->
-                  <path d="M175,36 Q195,32 215,38 Q235,44 255,36" fill="none" stroke="#8b949e" stroke-width="1" opacity="0.5" stroke-dasharray="4,3"/>
-                  <path d="M175,44 Q195,48 215,42 Q235,36 255,44" fill="none" stroke="#8b949e" stroke-width="1" opacity="0.5" stroke-dasharray="4,3"/>
-                  <!-- Obstacle -->
-                  <circle cx="155" cy="40" r="16" fill="#58a6ff" opacity="0.9"/>
-                </svg>
-              </div>
-              <div class="guide-learn-more">
-                <div class="guide-learn-more-toggle">&#9656; Learn more about wake transition</div>
-                <div class="guide-learn-more-body">
-                  <p>At low Reynolds number the wake is steady and symmetric. Raise Re and the wake becomes unsteady — you'll see vortex shedding begin. The textbook figure for an <em>unconfined</em> circular cylinder is Re &#8776; 47; in this solver's channel the onset was <em>measured</em> at Re 52.2 &#177; 0.3, which sits above the textbook value in the direction the 12% blockage and the staircased cylinder both predict. Try it: drag the <strong>Re</strong> slider in the Flow Info panel below 52 and the street dies out, then bring it back up and watch it grow again — slowly, because the growth rate vanishes near onset. Use that slider and not the inflow velocity: the Re control sets &nu; = U&middot;D/Re, so moving U moves &nu; with it and holds Re fixed. Grid resolution does not raise Re either.</p>
-                </div>
-              </div>
-            </div>
-
             <div class="guide-preset-block">
               <h4>K&aacute;rm&aacute;n Vortex Street</h4>
               <p>A small cylinder sheds alternating vortices in a beautiful periodic pattern — one of the most iconic phenomena in fluid dynamics.</p>
@@ -331,6 +299,12 @@
                 <div class="guide-learn-more-body">
                   <p>Named after Theodore von K&aacute;rm&aacute;n, this alternating vortex pattern explains why power lines hum in the wind and why certain bridges oscillate. The shedding frequency is reported as the Strouhal number, St = fD/U, where f is frequency, D is diameter, and U is freestream velocity.</p>
                   <p>The familiar &#8220;St &#8776; 0.2 for a circular cylinder&#8221; is the <em>high-Re plateau</em>, not a constant: below Re &#8776; 300 the Strouhal number falls with Reynolds number. FlowLab does not assume a value &mdash; the St readout in the Flow Info panel is measured from this simulation&#8217;s own wake by a downstream probe, and in the Re range the app runs it reads below 0.2.</p>
+                </div>
+              </div>
+              <div class="guide-learn-more">
+                <div class="guide-learn-more-toggle">&#9656; Learn more about wake transition</div>
+                <div class="guide-learn-more-body">
+                  <p>At low Reynolds number the wake is steady and symmetric. Raise Re and the wake becomes unsteady — you'll see vortex shedding begin. The textbook figure for an <em>unconfined</em> circular cylinder is Re &#8776; 47; in this solver's channel the onset was <em>measured</em> at Re 52.2 &#177; 0.3, which sits above the textbook value in the direction the 12% blockage and the staircased cylinder both predict. Try it: drag the <strong>Re</strong> slider in the Flow Info panel below 52 and the street dies out, then bring it back up and watch it grow again — slowly, because the growth rate vanishes near onset. Use that slider and not the inflow velocity: the Re control sets &nu; = U&middot;D/Re, so moving U moves &nu; with it and holds Re fixed. Grid resolution does not raise Re either.</p>
                 </div>
               </div>
             </div>
@@ -431,14 +405,10 @@
             </div>
             <div class="guide-shortcut-row">
               <span class="guide-shortcut-key">1</span>
-              <span class="guide-shortcut-desc">Load Wind Tunnel preset</span>
-            </div>
-            <div class="guide-shortcut-row">
-              <span class="guide-shortcut-key">2</span>
               <span class="guide-shortcut-desc">Load K&aacute;rm&aacute;n Vortex preset</span>
             </div>
             <div class="guide-shortcut-row">
-              <span class="guide-shortcut-key">3</span>
+              <span class="guide-shortcut-key">2</span>
               <span class="guide-shortcut-desc">Load Backward Step preset</span>
             </div>
           </div>
@@ -459,7 +429,6 @@
 
   <div id="preset-bar">
     <span class="preset-label">Preset:</span>
-    <button class="preset-btn" data-preset="wind-tunnel">Wind Tunnel</button>
     <button class="preset-btn active" data-preset="karman-vortex">Kármán Vortex</button>
     <button class="preset-btn" data-preset="backward-step">Backward Step</button>
   </div>
@@ -545,7 +514,7 @@
 
         <div class="slider-row">
           <div class="slider-header">
-            <span class="slider-name">St <span class="hint" title="Strouhal number St = f&#183;D/U, MEASURED &#8212; not prescribed. A probe 2 diameters downstream on the wake centreline samples the transverse velocity every 10 solver steps, timestamped in simulation time, and the shedding frequency is recovered by counting zero crossings across the stored window. The first number appears once the window is half full &#8212; about 9 shedding periods, ~21 s of wall clock at the K&#225;rm&#225;n preset &#8212; and a full window is ~18 periods. It reports a number only when it has one: &#8216;steady&#8217; below the amplitude gate, &#8216;under-sampled&#8217; when the sample interval does not resolve the period it just found (which the upper part of the dt slider does), and &#8216;no signal&#8217; when the probe reads a constant field. WHERE THE CALIBRATION APPLIES: the values below were measured on the K&#225;rm&#225;n preset ONLY &#8212; a cylinder blocking D/H = 12% of the channel, U = 1.0, dt = 1/240, 256 pressure iterations, tier 256, on saturated wakes. St rises 0.166 at Re 55 to 0.200 at Re 140 (&#177;0.001), and shedding starts at a measured onset of Re 52.2 &#177;0.3. &#8216;St &#8776; 0.2&#8217; is the high-Re plateau, not the value in this range. On any other preset, or after dragging or resizing the obstacle, the readout is still a live measurement of that wake &#8212; but nothing here has validated it against a reference, and the blockage and onset figures above do not apply. Wind Tunnel in particular runs D/H = 30% and U = 2.0, neither of which was measured. The channel walls go no-slip whenever the Re control applies a viscosity, so these values run above the unconfined-cylinder correlation and the onset sits above the textbook unconfined Re 47.">(?)</span></span>
+            <span class="slider-name">St <span class="hint" title="Strouhal number St = f&#183;D/U, MEASURED &#8212; not prescribed. A probe 2 diameters downstream on the wake centreline samples the transverse velocity every 10 solver steps, timestamped in simulation time, and the shedding frequency is recovered by counting zero crossings across the stored window. The first number appears once the window is half full &#8212; about 9 shedding periods, ~21 s of wall clock at the K&#225;rm&#225;n preset &#8212; and a full window is ~18 periods. It reports a number only when it has one: &#8216;steady&#8217; below the amplitude gate, &#8216;under-sampled&#8217; when the sample interval does not resolve the period it just found (which the upper part of the dt slider does), and &#8216;no signal&#8217; when the probe reads a constant field. WHERE THE CALIBRATION APPLIES: the values below were measured on the K&#225;rm&#225;n preset ONLY &#8212; a cylinder blocking D/H = 12% of the channel, U = 1.0, dt = 1/240, 256 pressure iterations, tier 256, on saturated wakes. St rises 0.166 at Re 55 to 0.200 at Re 140 (&#177;0.001), and shedding starts at a measured onset of Re 52.2 &#177;0.3. &#8216;St &#8776; 0.2&#8217; is the high-Re plateau, not the value in this range. On any other preset, or after dragging or resizing the obstacle, the readout is still a live measurement of that wake &#8212; but nothing here has validated it against a reference, and the blockage and onset figures above do not apply. The channel walls go no-slip whenever the Re control applies a viscosity, so these values run above the unconfined-cylinder correlation and the onset sits above the textbook unconfined Re 47.">(?)</span></span>
             <span class="slider-value" id="val-st">measuring…</span>
           </div>
         </div>

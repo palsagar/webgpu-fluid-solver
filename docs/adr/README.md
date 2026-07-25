@@ -12,5 +12,6 @@ Each ADR records one load-bearing decision and why the alternatives lost. "Imple
 | [0006](0006-honest-numerics-maccormack-over-confinement.md) | Honest numerics: MacCormack advection; artificial terms labeled and default-off | Accepted | Partly — MacCormack shipped; Confinement (ε) is [ROADMAP](../ROADMAP.md) step 5 |
 | [0007](0007-explicit-viscosity-bounded-re.md) | Explicit viscosity with a bounded Reynolds slider; Strouhal measured, never prescribed | Accepted, partially superseded by 0008 | Yes — several of its numbers corrected by measurement |
 | [0008](0008-viscous-substepping-and-resolution-aware-window.md) | Viscous substepping and a resolution-aware honest window | Accepted | Yes |
+| [0009](0009-no-wind-tunnel-preset.md) | No Wind Tunnel preset | Accepted | Yes |
 
 The vocabulary in [CONTEXT.md](../../CONTEXT.md) covers both shipped and target-state features. What remains target-state is Confinement (ε) from ADR-0006, plus the Blow and Draw mouse modes — [ROADMAP](../ROADMAP.md) steps 4–5. Everything in ADRs 0007 and 0008 has shipped.

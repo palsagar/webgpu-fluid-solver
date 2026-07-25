@@ -30,9 +30,9 @@
  *
  * Stated as a coefficient rather than a bare constant because `nu_num` is
  * LINEAR in dt, so a flat number is only correct at the one timestep it was
- * measured at. The three shipped presets do not share a timestep — Karman runs
- * dt = 1/240, windTunnel and backwardStep run dt = 1/60 — and a 1/120-derived
- * constant made the ceiling optimistic by ~2x on the latter two.
+ * measured at. The two shipped presets do not share a timestep — Karman runs
+ * dt = 1/240, backwardStep runs dt = 1/60 — and a 1/120-derived
+ * constant made the ceiling optimistic by ~2x on the latter.
  *
  * ─── The measurement ────────────────────────────────────────────────────────
  *
@@ -60,9 +60,9 @@
  * ─── What is NOT measured ───────────────────────────────────────────────────
  *
  * The AMPLITUDE dependence. Every fit above used A = 1.0, matching Karman's
- * U = 1.0. `windTunnel` runs U = 2.0 and `backwardStep` U = 1.5, and a
- * plausible `nu_num ~ A^2 dt` scaling would move the ceiling by up to 4x on
- * those presets. NOTHING here corrects for that, because nothing measured it.
+ * U = 1.0. `backwardStep` runs U = 1.5, and a
+ * plausible `nu_num ~ A^2 dt` scaling would move the ceiling by ~2x there.
+ * NOTHING here corrects for that, because nothing measured it.
  * The ceiling is therefore approximate — and optimistic — for any preset whose
  * U differs from 1.0. Measuring `nu_num` across A is the next thing to do.
  */
@@ -159,19 +159,20 @@ export const NU_NUM_MEASURED_U = 1.0;
  * ─── Where this table is VALID, and what happens outside it ────────────────
  *
  * At dt = 1/240 AND numIters = 256 — which is the Karman preset and only the
- * Karman preset. `windTunnel` runs dt = 1/60 at 40 iterations and
- * `backwardStep` dt = 1/60 at 60 iterations, so on both counts the true nu_num
- * there is HIGHER and the real projection ceiling LOWER than this table.
+ * Karman preset. `backwardStep` runs dt = 1/60 at 60 iterations, so on both
+ * counts the true nu_num there is HIGHER and the real projection ceiling
+ * LOWER than this table.
  *
- * These numbers used to be quoted on those presets anyway, with only a prose
- * caveat. They no longer are. The carry produced a physically impossible pair:
- * on `windTunnel` it gave a projection ceiling of Re 771 against a converged
- * scheme ceiling of Re 297 — an under-converged solve dissipating LESS than a
- * converged one. `windowState` now checks exactly that (`reMaxProjection <=
- * reMax`) and refuses to claim a ceiling it has not measured, and `ui.js` only
- * supplies this table at the operating point it was measured at. Measuring the
- * table at each preset's own operating point is the way to close it; until
- * then the badge says "unmeasured" rather than quoting the wrong grid.
+ * These numbers used to be quoted on that preset anyway, with only a prose
+ * caveat. They no longer are. The carry produced a physically impossible
+ * pair: on a since-removed preset (ADR-0009) it gave a projection
+ * ceiling of Re 771 against a converged scheme ceiling of Re 297 — an
+ * under-converged solve dissipating LESS than a converged one. `windowState`
+ * now checks exactly that (`reMaxProjection <= reMax`) and refuses to claim a
+ * ceiling it has not measured, and `ui.js` only supplies this table at the
+ * operating point it was measured at. Measuring the table at each preset's own
+ * operating point is the way to close it; until then the badge says
+ * "unmeasured" rather than quoting the wrong grid.
  */
 export const NU_NUM_ITERS256 = {
   64:   5.0801e-4,

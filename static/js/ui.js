@@ -26,7 +26,6 @@ const MEASURED_U_REL_TOL = 1e-3;
 
 // Map kebab-case data-preset attribute values to PRESETS object keys
 const PRESET_KEY_MAP = {
-    'wind-tunnel':    'windTunnel',
     'karman-vortex':  'karmanVortex',
     'backward-step':  'backwardStep',
 };
@@ -230,7 +229,7 @@ export class UI {
             D, U,
             nMax: this.solver.constructor.N_MAX,
             // Scaled by the LIVE dt, not a constant: nu_num is linear in dt and
-            // the presets do not share one. Karman runs 1/240, the other two
+            // the presets do not share one. Karman runs 1/240, backwardStep
             // 1/60, where a fixed constant made the ceiling ~2x optimistic.
             nuNum: nuNumConverged(this.solver.params.dt),
             // The solver's own saturation limit rather than a re-derivation of
@@ -247,13 +246,14 @@ export class UI {
         // inventing the number this branch exists to measure.
         //
         // So it is quoted ONLY where it was measured. Off that slice — the
-        // other two presets (dt = 1/60 at 40 and 60 iters, U = 2.0 and 1.5), or
+        // backwardStep preset (dt = 1/60 at 60 iters, U = 1.5), or
         // any move of the dt / iterations / inflow sliders — no projection
         // ceiling is supplied, and `windowState` reports the ceiling as
         // unmeasured instead. Carrying it off-slice used to produce an
-        // impossible pair: on `windTunnel` a projection ceiling of Re 771
-        // against a converged ceiling of Re 297, i.e. an under-converged solve
-        // dissipating less than a converged one.
+        // impossible pair: on a since-removed preset (ADR-0009), a
+        // projection ceiling of Re 771 against a converged ceiling of
+        // Re 297 — an under-converged solve dissipating less than a
+        // converged one.
         //
         // The AMPLITUDE axis is the one added last and the one with the least
         // behind it. dt and numIters are each measured at two settings, so the
@@ -388,7 +388,6 @@ export class UI {
         const el = document.getElementById('flow-info');
         if (!el) return;
         const info = {
-            windTunnel:    'Uniform flow past a bluff body — wake separation and drag',
             karmanVortex:  'Periodic vortex shedding behind a small cylinder',
             backwardStep:  'Sudden expansion — recirculation and flow reattachment',
         };
@@ -630,8 +629,9 @@ export class UI {
     }
 
     /**
-     * Bind keyboard shortcuts: 'p' = play/pause, 'm' = step once,
-     * '1'-'6' = switch preset by index. Ignores keypresses inside input fields.
+     * Bind keyboard shortcuts: 'p' = play/pause, 'm' = step once, digit keys =
+     * switch preset by 1-based index into PRESETS (no-op past the preset count).
+     * Ignores keypresses inside input fields.
      */
     _bindKeyboard() {
         document.addEventListener('keydown', (e) => {

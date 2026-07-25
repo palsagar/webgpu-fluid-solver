@@ -338,7 +338,7 @@ Combined with the substep floor from §5, the honest window at each tier is 0.26
 
 ### What is not measured
 
-- **Amplitude dependence.** Every fit used `A = 1.0`. `windTunnel` (`U = 2.0`) and `backwardStep` (`U = 1.5`) run outside that, so their ceiling is approximate and both show an `unmeasured` badge rather than a number.
+- **Amplitude dependence.** Every fit used `A = 1.0`. `backwardStep` (`U = 1.5`) runs outside that, so its ceiling is approximate and it shows an `unmeasured` badge rather than a number.
 - **Tier 512 and 1024 converged values** are extrapolated from the flatness at 64–256; the browser died at 4096 iterations.
 - **Fit-window sensitivity** is roughly ±10% systematic (at tier 256 converged: 1.02e-3 / 9.87e-4 / 9.36e-4 at 120 / 300 / 600 steps). The window is fixed at 300 steps for every number above.
 - All values are from **one Apple M-series GPU in float32**; the SOR residual floor is hardware-dependent.
