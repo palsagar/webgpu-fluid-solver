@@ -25,7 +25,7 @@ Drag obstacles through the flow. Watch a vortex street form — and die when you
 - **Multiple visualizations** — Smoke dye (magma colormap), pressure field (coolwarm), streamlines, velocity arrows, tracer particles
 - **Curated presets** — Karman vortex street, backward-facing step
 - **Advanced controls** — Adjust timestep, relaxation, iterations, inflow velocity, Reynolds number, grid resolution
-- **Adaptive resolution** — Auto-scales the grid between 64 and 512 based on measured frame time; 1024 is selectable manually
+- **Resolution tiers 64–1024** — switch the grid live; an adaptive controller (off by default) can auto-scale between 64 and 512 from measured frame time, and 1024 is always manual-only
 
 ## Quick Start
 
@@ -57,7 +57,7 @@ The solver implements a staggered MAC grid with:
 3. **MacCormack advection** — a semi-Lagrangian backtrace, a reversed retrace, and a min/max-limited combine that cancels most of the backtrace's numerical diffusion
 4. **Explicit viscous diffusion** — a five-point Laplacian, substepped so the stability limit is never violated
 
-These run as WebGPU compute shaders dispatched into a single command buffer — `2 × numIters + 8 + N` per frame, which is 522 at the Kármán preset's 256 pressure iterations. The field view is then drawn by a WebGPU render pass straight from the simulation buffers — data stays on the GPU. The CPU reads back only what the overlays and the Strouhal probe need.
+These run as WebGPU compute shaders dispatched into a single command buffer — `2 × numIters + 8 + N` per frame, which is 522 at the Kármán preset's 256 pressure iterations and default Re ≈ 75 (N = 2; N rises as Re falls). The field view is then drawn by a WebGPU render pass straight from the simulation buffers — data stays on the GPU. The CPU reads back only what the overlays, the Strouhal probe, and the pressure auto-range need. Deeper detail: [Numerical Methods](docs/numerical-methods.md) for the schemes and measurements, [GPU Pipeline](docs/gpu-pipeline.md) for buffers and dispatches, [System Architecture](docs/architecture.md) for the frame loop.
 
 **On the numbers this app shows.** The advection scheme contributes an unrequested numerical viscosity on top of whatever you ask for. Rather than hand-wave it, it is measured — by fitting the decay of a Taylor–Green vortex with physical viscosity switched off — and that measurement is what bounds the Reynolds range the UI is willing to claim. At the startup resolution the honest window is Re 4.1 … 154; outside it, a badge says which bound you crossed and why, rather than the slider silently clamping. The Kármán preset sheds above a measured onset of **Re 52.2 ± 0.3** at a measured **St 0.166 … 0.200** across Re 55 … 140. Full derivations, and an explicit list of what has *not* been measured, are in [ADR-0008](docs/adr/0008-viscous-substepping-and-resolution-aware-window.md).
 
@@ -108,7 +108,16 @@ WebGPU support required: Chrome 113+, Edge 113+, or Firefox Nightly with `dom.we
 
 ## Documentation
 
-For detailed technical documentation, see the **[Documentation Hub](docs/README.md)** — covering system architecture, numerical methods, and the GPU compute pipeline.
+The **[Documentation Hub](docs/README.md)** is the entry point for the technical docs:
+
+|Document|What's inside|
+|---|---|
+|[System Architecture](docs/architecture.md)|Tech stack, module graph, frame loop, preset system, adaptive resolution, interaction model|
+|[Numerical Methods](docs/numerical-methods.md)|Governing equations, MAC grid, pressure solver, MacCormack limiter, viscous substepping, measured numerical viscosity, Strouhal measurement|
+|[GPU Pipeline](docs/gpu-pipeline.md)|Buffer layout, three-slot rotation, dispatch counts, bind-group budget, rendering|
+|[Decision Records](docs/adr/README.md)|Nine ADRs — what was decided, and what has actually shipped|
+|[Roadmap](docs/ROADMAP.md)|Shipped milestones, planned features, known gaps|
+|[CONTEXT.md](CONTEXT.md)|Project vocabulary — shipped and target-state terms|
 
 ## Contributing
 

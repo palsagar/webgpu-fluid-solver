@@ -26,7 +26,7 @@ Pressure is a single buffer because the red-black sweep updates it in place, alt
 
 ### Uniform Buffers
 
-**Five** uniform buffers, each 32 bytes with usage `UNIFORM | COPY_DST`. They share one `Params` struct and differ only in which fields are overridden:
+**Five** uniform buffers, each 32 bytes with usage `UNIFORM | COPY_DST | COPY_SRC` — `COPY_SRC` lets tests read back what was uploaded (the sign of `dt` in `uniformBufNegDt` is not observable any other way). They share one `Params` struct and differ only in which fields are overridden:
 
 | Buffer | Overrides | Used by |
 |--------|-----------|---------|
@@ -51,7 +51,7 @@ Pressure is a single buffer because the red-black sweep updates it in place, alt
 | 24 | `color` | u32 | 0 = red, 1 = black (pressure solver only) |
 | 28 | `nu` | f32 | Kinematic viscosity (diffusion only) |
 
-A test asserts the `Params` struct is byte-identical across all five shader files that declare it, and the `Stencil` struct across the four advection shaders — a field reorder would otherwise re-trace with the wrong values and stay invisible to every behavioural test.
+A test asserts the `Params` struct is byte-identical across the four advection shaders plus `diffuse.wgsl` (the only `nu` reader), and the `Stencil` struct across the four advection shaders — a field reorder would otherwise re-trace with the wrong values and stay invisible to every behavioural test.
 
 ---
 
@@ -191,7 +191,7 @@ Rendering is split across two stacked, display-resolution canvases (see [ADR-000
 | Bottom (z-index 0) | `#field-canvas` | `webgpu` | `FieldRenderer` (`field-renderer.js`) | Colormapped scalar field — smoke or pressure |
 | Top (z-index 1) | `#overlay-canvas` | `2d` | `Renderer` (`renderer.js`) | Streamlines, velocity arrows, particles, obstacle |
 
-Both canvases are sized to `container.clientWidth/Height × devicePixelRatio` — display pixels, independent of grid resolution. Neither is resized when the grid changes tier.
+Both canvases are created in JS (`field-renderer.js`, `renderer.js`) and sized to `container.clientWidth/Height × devicePixelRatio`, clamped so the larger dimension stays within `MAX_BACKING_DIM` (3840) — display pixels, independent of grid resolution. Neither is resized when the grid changes tier.
 
 ### Field Render Pass
 
@@ -220,7 +220,7 @@ Three independent readbacks feed the CPU side. None of them is needed to draw th
 
 **1. Pressure (throttled, temporary staging buffer).** Only issued when the pressure view is active and only on `_frameCount % 10 === 1`. A fresh staging buffer (`MAP_READ | COPY_DST`) is created per cycle; `copyBufferToBuffer()` from `solver.pressureBuffer` into it, then `mapAsync`; the resolved data goes to `_computePressureRange()`, which returns `[mean - range, mean + range]` for the next frames' `minVal`/`maxVal`. The buffer is destroyed on both the success and error paths, so — like the velocity and solid readbacks below — a resize cannot free it mid-map. The `readbackPending` flag keeps at most one map in flight. Smoke needs no equivalent — its range is fixed.
 
-**2. Velocity (throttled, temporary staging buffers).** Every 10 frames, gated on `showStreamlines || showVelocities || showParticles`. Two staging buffers are created and destroyed per cycle for `u` and `v`. On completion `_velDataGen` increments, which is what triggers streamline and arrow geometry to be recomputed.
+**2. Velocity (throttled, temporary staging buffers).** Every 10 frames, gated on `showStreamlines || showVelocities || showParticles || showProbe`. Two staging buffers are created and destroyed per cycle for `u` and `v`. On completion `_velDataGen` increments, which is what triggers streamline and arrow geometry to be recomputed.
 
 **3. Solid mask (lazy, one-shot staging buffer).** Read once after init and again whenever `invalidateSolid()` marks it stale (preset change, obstacle drag, resize). The Field View no longer needs this — it reads the solid buffer directly on the GPU — but the particle system still needs `solidData` on the CPU to kill particles that enter solids.
 
@@ -236,7 +236,7 @@ All overlays are drawn with the Canvas 2D API on the transparent `#overlay-canva
 
 ### Velocity Readback
 
-Separate from the field readback. Uses two temporary staging buffers (one for `u`, one for `v`), created and destroyed per readback. Throttled by `_velReadbackPending` flag and triggered every 10 frames. The readback gate condition fires when streamlines, velocity arrows, **or the particle system** are active — particles need velocity data even when the other overlays are off.
+Separate from the field readback. Uses two temporary staging buffers (one for `u`, one for `v`), created and destroyed per readback. Throttled by `_velReadbackPending` flag and triggered every 10 frames. The readback gate condition fires when streamlines, velocity arrows, the particle system, **or the probe** are active — particles and the probe need velocity data even when the other overlays are off.
 
 ### Streamlines
 
@@ -291,4 +291,4 @@ The display is 120 Hz, so rAF deltas quantize to multiples of 8.33 ms; the GPU c
 
 **Lazy solid mask readback.** The solid mask (`s` buffer) is read back once after initialization. It is re-read only when `invalidateSolid()` is called — triggered by preset changes or obstacle drags. Since the solid mask changes infrequently compared to velocity/smoke fields, this avoids unnecessary GPU-CPU transfers.
 
-**Velocity readback is destructive/temporary.** Unlike the field readback (which reuses a persistent staging buffer), velocity readback creates and destroys two staging buffers per readback cycle. This is acceptable because it happens at most every 10 frames and only when overlays are enabled.
+**Velocity readback is destructive/temporary.** It creates and destroys two staging buffers per readback cycle. This is acceptable because it happens at most every 10 frames and only when overlays are enabled.
