@@ -8,7 +8,7 @@ Overview of the WebGPU Eulerian fluid solver: how the pieces fit together, the f
 |-------|-----------|-------|
 | **Backend** | FastAPI + Uvicorn | ~40 lines of Python; serves static files only, plus a `/api/health` endpoint |
 | **Frontend** | Vanilla ES modules | No build step, no bundler, no framework |
-| **Compute** | WebGPU compute shaders (WGSL) | 7 shader files, 8 pipelines: pressure, boundary (two entry points), velocity advect, smoke advect, velocity combine, smoke combine, diffuse |
+| **Compute** | WebGPU compute shaders (WGSL) | 7 compute shader files, 8 compute pipelines: pressure, boundary (two entry points), velocity advect, smoke advect, velocity combine, smoke combine, diffuse |
 | **Rendering** | WebGPU render pass (field) + 2D canvas (overlays) | Field View: fullscreen triangle, bilinear buffer sampling, colormap LUT texture, in-shader solids. Overlays: transparent Canvas 2D layer on top. See ADR-0005. |
 | **Colormaps** | 256x1 PNG LUT textures | Scientific colormaps (magma, coolwarm) loaded from `static/colormaps/` |
 
@@ -65,7 +65,7 @@ sequenceDiagram
     Note right of Renderer: GPU render pass for the field (every frame)<br/>+ Canvas 2D overlays<br/>+ throttled readbacks (every 10 frames)
 
     Main->>UI: ui.tick()
-    Note right of UI: samples the Strouhal probe in<br/>simulation time; updates #val-st
+    Note right of UI: samples the Strouhal probe in<br/>simulation time#59; updates #val-st
 
     Main->>Main: frameTime = ts - lastFrameTs
     Main->>Adaptive: adaptive.tick(frameTime)
@@ -77,7 +77,7 @@ sequenceDiagram
     Main->>RAF: requestAnimationFrame(frame)
 ```
 
-**Frame time is the rAF timestamp delta, not a `performance.now()` bracket.** It used to be the latter, wrapped around `step()` + `draw()` — both of which return before the GPU has done the work, so the HUD read CPU *encode* time and was wrong by 28x to 640x depending on tier (0.4 ms reported against 257 ms actual at tier 1024). The same bad signal was fed to `AdaptiveController`, whose `> 20 ms` downscale condition was consequently unreachable. A `visibilitychange` handler drops one sample rather than feeding the controller a multi-second "frame" when a hidden tab resumes.
+**Frame time is the rAF timestamp delta, not a `performance.now()` bracket.** It used to be the latter, wrapped around `step()` + `draw()` — both of which return before the GPU has done the work, so the HUD read CPU *encode* time and was wrong by a tier-dependent factor topping out at ~640× (0.4 ms reported against 257 ms actual at tier 1024). The same bad signal was fed to `AdaptiveController`, whose `> 20 ms` downscale condition was consequently unreachable. A `visibilitychange` handler drops one sample rather than feeding the controller a multi-second "frame" when a hidden tab resumes.
 
 > See [GPU Pipeline](gpu-pipeline.md) for details on `solver.step()` and `renderer.draw()`.
 
@@ -90,7 +90,7 @@ Defined in `static/js/presets.js`. The `PRESETS` object holds configuration and 
 1. **Set solver params** -- `dt`, `omega`, `density` from the preset.
 2. **Reset all fields** -- velocity (u, v), pressure, and smoke are zeroed / set to defaults (`m = 1.0` everywhere = clear).
 3. **Build solid mask and inflow** -- iterates the grid to set boundary cells (`s = 0` for walls) and inflow velocity at column `i = 1`, based on `boundaryType`.
-Write to every rotation slot -- calls `solver.resetFlipState()`, then writes velocity and smoke through `writeVelocityU` / `writeVelocityV` / `writeSmoke`, which fan out to all three slots so no stale slot survives.
+4. **Write all fields to every rotation slot** -- calls `solver.resetFlipState()`, then writes the solid mask, velocity, and smoke through `writeSolidMask` / `writeVelocityU` / `writeVelocityV` / `writeSmoke`; the velocity and smoke writes fan out to all three rotation slots so no stale slot survives.
 5. **Resize interaction arrays** if the grid size changed; stores the boundary mask for later obstacle rasterization.
 6. **Rasterize obstacle** if the preset defines one (via `interaction.rasterizeObstacle()`).
 7. **Return** `{ show, numIters, smokeInletData, boundaryVelData }` -- the caller (`UI`) stores these and uses them each frame.
@@ -115,13 +115,10 @@ Defined in `static/js/adaptive.js`. Disabled by default; can be enabled programm
 ```mermaid
 stateDiagram-v2
     [*] --> Warmup
-    Warmup --> Measuring : 120 frames elapsed (~2s)
+    Warmup --> Measuring : ~2s elapsed (wall-clock)
     Measuring --> Measuring : collecting frameTimes (ring buffer, 120 samples)
     Measuring --> Downscale : avg > 20ms AND tier > 0
-    Measuring --> Upscale : avg < 12ms AND tier < max AND 5s cooldown passed
-    Measuring --> Steady : within thresholds
-    Steady --> Measuring : continues sampling
-
+    Measuring --> Upscale : avg < 12ms AND tier < maxAutoTier AND 5s cooldown passed
     Downscale --> Warmup : applyTier() resets counters
     Upscale --> Warmup : applyTier() resets counters
 
@@ -177,7 +174,7 @@ user state. Only the canvas backing stores are resized.
 1. `solver.resize(numX, numY, h)` -- reallocates GPU buffers
 2. `ui.reapplyCurrentPreset()` -- re-runs `loadPreset` with the current preset name
 3. `renderer.resize(numX, numY, h)` -- recreates the staging buffer, clears cached readbacks/overlay geometry, and drops `FieldRenderer`'s stale bind groups. Canvas dimensions are **not** touched: both canvases are display-resolution and independent of grid size.
-4. Resets `frameTimes` and `warmupFrames` so measurement restarts clean
+4. Resets `frameTimes` and the warmup timer (`tierStartTime`) so measurement restarts clean
 
 ### Manual Override
 
@@ -208,11 +205,11 @@ After rasterization, the solid mask and velocity fields are written to the GPU (
 | Shape | Test |
 |-------|------|
 | **Circle** | `dx^2 + dy^2 < r^2` |
-| **Square** | `|dx| < r` and `|dy| < r` |
-| **Airfoil** | NACA 0012 thickness profile; chord = `4r`, checks `|dy| < y_t(x/chord)` |
-| **Wedge** | Half-angle = 15 degrees; length = `3r`, checks `|dy| < x * tan(15deg)` |
+| **Square** | \`|ldx| < r\` and \`|ldy| < r\` |
+| **Airfoil** | NACA 0012 thickness profile; chord = `4r`, checks \`|ly| < y_t(lx/chord)\` |
+| **Wedge** | Half-angle = 15 degrees; length = `3r`, checks \`|ly| < lx * tan(15deg)\` |
 
-`dx` and `dy` are cell-center offsets from the obstacle center.
+`dx` and `dy` are cell-center offsets from the obstacle center. `ldx`/`ldy` (and the chordwise `lx` / crosswise `ly`) are those offsets inverse-rotated into the obstacle's local frame by `obstacleAngle`; the circle test is rotation-invariant and uses `dx`/`dy` directly.
 
 ### Velocity Coupling
 
