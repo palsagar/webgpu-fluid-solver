@@ -2330,4 +2330,49 @@ test('the viscous stencil cannot read the stale i=0 / j=0 ring', async ({ page }
   expect(r.gainVisc).toBeLessThan(r.gainInv * 3);
 });
 
+test('the boundary mask buffer holds the preset boundary mask after load', async ({ page }) => {
+  await boot(page);
+  const r = await page.evaluate(async () => {
+    const { solver, device } = window.__flowlab;
+    const { numX, numY } = solver;
+    const n = numY;
+    const size = numX * numY * 4;
+    const readBuf = async (src) => {
+      const staging = device.createBuffer({
+        size, usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST,
+      });
+      const enc = device.createCommandEncoder();
+      enc.copyBufferToBuffer(src, 0, staging, 0, size);
+      device.queue.submit([enc.finish()]);
+      await staging.mapAsync(GPUMapMode.READ);
+      const out = new Float32Array(staging.getMappedRange().slice(0));
+      staging.unmap();
+      staging.destroy();
+      return out;
+    };
+    const sb = await readBuf(solver.sBoundary);
+    const s = await readBuf(solver.solidBuffer);
+
+    // s == boundary mask everywhere except the obstacle footprint, which is
+    // rasterized into s only.
+    let diffs = 0;
+    for (let k = 0; k < sb.length; k++) if (sb[k] !== s[k]) diffs++;
+    // Every diff must be sBoundary fluid (1) -> s solid (0): the rasterizer
+    // adds solids, it never removes the boundary's.
+    let badDiff = 0;
+    for (let k = 0; k < sb.length; k++) {
+      if (sb[k] !== s[k] && !(sb[k] === 1 && s[k] === 0)) badDiff++;
+    }
+    // The permanent walls: i = 0 column is all solid in the boundary mask.
+    let col0Solid = true;
+    for (let j = 0; j < n; j++) if (sb[0 * n + j] !== 0) col0Solid = false;
+    return { diffs, badDiff, col0Solid };
+  });
+  // Guards against a vacuous test: the Kármán circle is ~46 cells even at
+  // tier 64, so a missing obstacle readback can't sneak past.
+  expect(r.diffs).toBeGreaterThan(10);
+  expect(r.badDiff).toBe(0);
+  expect(r.col0Solid).toBe(true);
+});
+
 

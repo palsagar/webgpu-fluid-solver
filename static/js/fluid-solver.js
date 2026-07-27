@@ -98,6 +98,10 @@ export class FluidSolver {
 
     this.p = device.createBuffer({ size: size * 4, usage: storageUsage });
     this.s = device.createBuffer({ size: size * 4, usage: storageUsage });
+    // Boundary mask: the preset's permanent solids (walls, step), uploaded
+    // once per preset load. The obstacle rasterizer reads it to restore
+    // vacated cells and to never carve permanent boundary cells.
+    this.sBoundary = device.createBuffer({ size: size * 4, usage: storageUsage });
 
     // Uniform buffers: red/black variants carry color=0 and color=1 respectively.
     // COPY_SRC so tests can read back what was actually uploaded -- the sign of
@@ -202,6 +206,7 @@ export class FluidSolver {
     for (const b of this.smokeBufs) b.destroy();
     this.p.destroy();
     this.s.destroy();
+    this.sBoundary.destroy();
     this.uniformBuf.destroy();
     this.uniformBufRed.destroy();
     this.uniformBufBlack.destroy();
@@ -689,6 +694,7 @@ export class FluidSolver {
   }
 
   writeSolidMask(data) { this.device.queue.writeBuffer(this.s, 0, data); }
+  writeBoundaryMask(data) { this.device.queue.writeBuffer(this.sBoundary, 0, data); }
 
   /** Writes u to every velocity pair, so no pair holds stale data. */
   writeVelocityU(data) {

@@ -166,6 +166,7 @@ export function loadPreset(name, solver, interaction) {
   // Write all fields — the solver writes every buffer in the rotation
   solver.resetFlipState();
   solver.writeSolidMask(sData);
+  solver.writeBoundaryMask(sData); // permanent solids only — obstacle not yet rasterized
   solver.writeVelocityU(uData);
   solver.writeVelocityV(new Float32Array(numX * numY));
   solver.writeSmoke(mData);
