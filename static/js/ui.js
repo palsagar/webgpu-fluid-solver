@@ -614,7 +614,8 @@ export class UI {
         if (!this.boundaryVelData) return;
         const n = this.solver.numY;
         const col = this.boundaryVelData.uData;
-        for (let j = 0; j < n; j++) col[1 * n + j] = inVel;
+        const mask = this.boundaryVelData.col1Mask;
+        for (let j = 0; j < n; j++) col[1 * n + j] = mask[j] ? inVel : 0;
         this.solver.writeInflowColumn(1, col, 1 * n, n);
     }
 

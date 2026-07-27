@@ -2672,6 +2672,86 @@ test('the inflow slider writes only column 1, in every rotation slot', async ({ 
   expect(r.bvBad).toBe(0);
 });
 
+test('the inflow slider respects the backwardStep column-1 mask', async ({ page }) => {
+  await boot(page);
+  const r = await page.evaluate(async () => {
+    const { solver, device, ui } = window.__flowlab;
+    solver.paused = true;
+
+    // Switch to the backward-step preset so the step block makes the lower
+    // half of column 1 solid and the original preset inflow is masked there.
+    ui._loadAndApplyPreset('backwardStep');
+
+    const { numX, numY, h } = solver;
+    const n = numY;
+    const domainHeight = numY * h;
+    const sg = (await import('/js/presets.js')).PRESETS.backwardStep.stepGeometry;
+
+    const size = numX * numY * 4;
+    const readBuf = async (src) => {
+      const staging = device.createBuffer({
+        size, usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST,
+      });
+      const enc = device.createCommandEncoder();
+      enc.copyBufferToBuffer(src, 0, staging, 0, size);
+      device.queue.submit([enc.finish()]);
+      await staging.mapAsync(GPUMapMode.READ);
+      const out = new Float32Array(staging.getMappedRange().slice(0));
+      staging.unmap();
+      staging.destroy();
+      return out;
+    };
+
+    ui._setInflowVelocity(2.5);
+
+    const after = [];
+    for (const pair of solver.velPairs) after.push(await readBuf(pair.u));
+
+    // Rows inside the step block: cell-center y is below the step top, so the
+    // preset's loadPreset() never wrote an inflow u-face there. The slider
+    // must leave these buried faces at 0 in every slot.
+    // Rows above the step: the inflow boundary condition applies, so the
+    // slider must write the new value 2.5 in every slot.
+    let maskedBad = 0;
+    let fluidBad = 0;
+    for (let k = 0; k < 3; k++) {
+      for (let j = 0; j < n; j++) {
+        const cy = (j + 0.5) * h / domainHeight;
+        const val = after[k][1 * n + j];
+        if (cy < sg.y1) {
+          if (val !== 0) maskedBad++;
+        } else {
+          if (val !== 2.5) fluidBad++;
+        }
+      }
+    }
+
+    // The persistent boundaryVelData.uData slice is what main.js re-applies
+    // every frame after the pressure solve; it must carry the same mask.
+    let bvMaskedBad = 0;
+    let bvFluidBad = 0;
+    for (let j = 0; j < n; j++) {
+      const cy = (j + 0.5) * h / domainHeight;
+      const val = ui.boundaryVelData.uData[1 * n + j];
+      if (cy < sg.y1) {
+        if (val !== 0) bvMaskedBad++;
+      } else {
+        if (val !== 2.5) bvFluidBad++;
+      }
+    }
+
+    return { maskedBad, fluidBad, bvMaskedBad, bvFluidBad };
+  });
+
+  // Mutation caught: unconditional slider write stuffs inVel into solid/buried
+  // faces inside the step block, which advect.wgsl then bilinearly samples.
+  expect(r.maskedBad).toBe(0);
+  // Mutation caught: the mask accidentally zeros rows that should inflow.
+  expect(r.fluidBad).toBe(0);
+  expect(r.bvMaskedBad).toBe(0);
+  expect(r.bvFluidBad).toBe(0);
+});
+
 
 test('an obstacle drag leaves the field outside both bounding boxes bit-identical', async ({ page }) => {
   await boot(page);

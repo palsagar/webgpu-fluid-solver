@@ -192,8 +192,13 @@ export function loadPreset(name, solver, interaction) {
   }
 
   // Boundary velocity data (inflow at i=1, re-applied each frame after pressure solve)
+  // col1Mask captures which rows of column 1 actually carry inflow in this preset
+  // (e.g. backwardStep masks out the step block), so slider updates cannot overwrite
+  // buried solid faces with inVel.
+  const col1Mask = new Float32Array(n);
+  for (let j = 0; j < n; j++) col1Mask[j] = uData[1 * n + j] !== 0 ? 1.0 : 0.0;
   const boundaryVelData = preset.inVel > 0
-    ? { type: 'inflow', uData: uData.slice() }
+    ? { type: 'inflow', uData: uData.slice(), col1Mask }
     : null;
 
   return { show: preset.show, numIters: preset.numIters, smokeInletData, boundaryVelData };
