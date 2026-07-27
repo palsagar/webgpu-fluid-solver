@@ -2375,4 +2375,241 @@ test('the boundary mask buffer holds the preset boundary mask after load', async
   expect(r.col0Solid).toBe(true);
 });
 
+// ---------------------------------------------------------------------------
+// GPU obstacle rasterizer (PR A). The oracle below is the CPU inside-test
+// code deleted from interaction.js, transcribed verbatim: same cell-center
+// coordinates, same rotation, same NACA 0012 coefficients. Positions and
+// angles are chosen off grid lines and away from axis alignment so no cell
+// center sits within f32/f64 disagreement of a shape boundary — exact-match
+// comparison pins the GEOMETRY, not floating-point noise.
+// ---------------------------------------------------------------------------
+
+test('the GPU rasterizer matches the CPU oracle mask and wall velocity', async ({ page }) => {
+  await boot(page);
+  const r = await page.evaluate(async () => {
+    const { solver, device, interaction } = window.__flowlab;
+    solver.paused = true;
+    const { numX, numY, h } = solver;
+    const n = numY;
+    const size = numX * numY * 4;
+    const readBuf = async (src) => {
+      const staging = device.createBuffer({
+        size, usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST,
+      });
+      const enc = device.createCommandEncoder();
+      enc.copyBufferToBuffer(src, 0, staging, 0, size);
+      device.queue.submit([enc.finish()]);
+      await staging.mapAsync(GPUMapMode.READ);
+      const out = new Float32Array(staging.getMappedRange().slice(0));
+      staging.unmap();
+      staging.destroy();
+      return out;
+    };
+
+    const sBoundaryArr = await readBuf(solver.sBoundary);
+
+    // The GPU stores velocities as f32; compare against the exact f32 values
+    // rather than the JS f64 literals 0.7 / -0.3.
+    const VX = Math.fround(0.7);
+    const VY = Math.fround(-0.3);
+
+    // CPU oracle — verbatim port of the pre-PR-A interaction.js inside-tests.
+    const insideAt = (shapeIdx, centerX, centerY, radius, angle, i, j) => {
+      const r = radius, chord = r * 4, wedgeLen = r * 3;
+      const tanHA = Math.tan(15 * Math.PI / 180);
+      const cosA = Math.cos(-angle), sinA = Math.sin(-angle);
+      const dx = (i + 0.5) * h - centerX;
+      const dy = (j + 0.5) * h - centerY;
+      const ldx = dx * cosA - dy * sinA;
+      const ldy = dx * sinA + dy * cosA;
+      if (shapeIdx === 0) return dx * dx + dy * dy < r * r;
+      if (shapeIdx === 1) return Math.abs(ldx) < r && Math.abs(ldy) < r;
+      if (shapeIdx === 2) {
+        const lx = ldx + chord * 0.5;
+        if (lx < 0 || lx > chord) return false;
+        const xc = lx / chord;
+        const yt = 5 * 0.12 * chord * (0.2969 * Math.sqrt(xc) - 0.1260 * xc
+          - 0.3516 * xc * xc + 0.2843 * xc * xc * xc - 0.1015 * xc * xc * xc * xc);
+        return Math.abs(ldy) < yt;
+      }
+      const lx = ldx + wedgeLen * 0.5;
+      return lx >= 0 && lx < wedgeLen && Math.abs(ldy) < lx * tanHA;
+    };
+
+    const W = numX * h, H = numY * h;
+    const cases = [
+      { shape: 0, cx: 0.62 * W, cy: 0.37 * H, r: 0.055, angle: 0.73 },
+      { shape: 1, cx: 0.55 * W, cy: 0.61 * H, r: 0.070, angle: 0.50 },
+      { shape: 2, cx: 0.48 * W, cy: 0.42 * H, r: 0.045, angle: -0.31 },
+      { shape: 3, cx: 0.70 * W, cy: 0.55 * H, r: 0.060, angle: 1.19 },
+    ];
+
+    // Same conservative bounding-box formula interaction.js uses.
+    const bboxOf = (cx, cy, r) => {
+      const maxExtent = Math.max(r, r * 4 * 0.5, r * 3 * 0.5);
+      return [
+        Math.max(1, Math.floor((cx - maxExtent) / h - 1)),
+        Math.min(numX - 2, Math.ceil((cx + maxExtent) / h + 1)),
+        Math.max(1, Math.floor((cy - maxExtent) / h - 1)),
+        Math.min(numY - 2, Math.ceil((cy + maxExtent) / h + 1)),
+      ];
+    };
+
+    const results = [];
+    // Thread prevBBox through the cases exactly as interaction.js will:
+    // the boot obstacle's bbox first, then each case's own bbox, so every
+    // case starts from the clean boundary mask.
+    let prevBB = (() => {
+      const p = interaction._prevBBox;
+      return [p.iMin, p.iMax, p.jMin, p.jMax];
+    })();
+    for (const c of cases) {
+      solver.rasterizeObstacle({
+        shape: c.shape, centerX: c.cx, centerY: c.cy, vx: VX, vy: VY,
+        radius: c.r, angle: c.angle, prevBBox: prevBB,
+      });
+      prevBB = bboxOf(c.cx, c.cy, c.r);
+      const s = await readBuf(solver.solidBuffer);
+      const u = await readBuf(solver.velPairs[solver._velCur].u);
+      const v = await readBuf(solver.velPairs[solver._velCur].v);
+
+      let maskMismatch = 0, carvedBoundary = 0, uMismatch = 0, vMismatch = 0;
+      for (let i = 0; i < numX; i++) {
+        for (let j = 0; j < numY; j++) {
+          const idx = i * n + j;
+          const bnd = sBoundaryArr[idx] === 0;
+          const inHere = !bnd && insideAt(c.shape, c.cx, c.cy, c.r, c.angle, i, j);
+          const inLeft = i > 0 && sBoundaryArr[(i - 1) * n + j] !== 0
+            && insideAt(c.shape, c.cx, c.cy, c.r, c.angle, i - 1, j);
+          const expectS = bnd ? 0 : (inHere ? 0 : 1);
+          if (s[idx] !== expectS) maskMismatch++;
+          if (bnd && s[idx] !== 0) carvedBoundary++;
+          // u faces: inside cells AND faces right of an inside cell carry vx.
+          if (inHere || inLeft) { if (u[idx] !== VX) uMismatch++; }
+          // v: cell-owned only — the CPU rasterizer writes no neighbour v face.
+          if (inHere) { if (v[idx] !== VY) vMismatch++; }
+        }
+      }
+      results.push({ shape: c.shape, maskMismatch, carvedBoundary, uMismatch, vMismatch });
+    }
+    return results;
+  });
+  for (const res of r) {
+    expect(res.maskMismatch, `shape ${res.shape} mask`).toBe(0);
+    expect(res.carvedBoundary, `shape ${res.shape} boundary`).toBe(0);
+    expect(res.uMismatch, `shape ${res.shape} u`).toBe(0);
+    expect(res.vMismatch, `shape ${res.shape} v`).toBe(0);
+  }
+});
+
+test('a vacated footprint is restored: fluid, zero velocity/pressure, smoke cleared', async ({ page }) => {
+  await boot(page);
+  const r = await page.evaluate(async () => {
+    const { solver, device, interaction } = window.__flowlab;
+    solver.paused = true;
+    const { numX, numY, h } = solver;
+    const n = numY;
+    const size = numX * numY * 4;
+    const readBuf = async (src) => {
+      const staging = device.createBuffer({
+        size, usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST,
+      });
+      const enc = device.createCommandEncoder();
+      enc.copyBufferToBuffer(src, 0, staging, 0, size);
+      device.queue.submit([enc.finish()]);
+      await staging.mapAsync(GPUMapMode.READ);
+      const out = new Float32Array(staging.getMappedRange().slice(0));
+      staging.unmap();
+      staging.destroy();
+      return out;
+    };
+
+    const sBoundaryArr = await readBuf(solver.sBoundary);
+
+    // Square oracle (same port as the test above).
+    const insideSquare = (centerX, centerY, radius, angle, i, j) => {
+      const cosA = Math.cos(-angle), sinA = Math.sin(-angle);
+      const dx = (i + 0.5) * h - centerX;
+      const dy = (j + 0.5) * h - centerY;
+      const ldx = dx * cosA - dy * sinA;
+      const ldy = dx * sinA + dy * cosA;
+      return Math.abs(ldx) < radius && Math.abs(ldy) < radius;
+    };
+
+    const W = numX * h, H = numY * h;
+    const rSq = 0.07;
+    const A = { cx: 0.50 * W, cy: 0.50 * H, angle: 0.50 };
+    const B = { cx: 0.56 * W, cy: 0.57 * H, angle: 0.50 };
+
+    const bboxOf = (cx, cy) => {
+      const maxExtent = Math.max(rSq, rSq * 4 * 0.5, rSq * 3 * 0.5);
+      return [
+        Math.max(1, Math.floor((cx - maxExtent) / h - 1)),
+        Math.min(numX - 2, Math.ceil((cx + maxExtent) / h + 1)),
+        Math.max(1, Math.floor((cy - maxExtent) / h - 1)),
+        Math.min(numY - 2, Math.ceil((cy + maxExtent) / h + 1)),
+      ];
+    };
+    const bbA = bboxOf(A.cx, A.cy);
+    const bbB = bboxOf(B.cx, B.cy);
+
+    // Dirty the state first: non-zero pressure and smoke=0 (dye) everywhere,
+    // so "restored to zero / cleared" cannot pass vacuously.
+    const pDirty = new Float32Array(numX * numY).fill(3.25);
+    device.queue.writeBuffer(solver.p, 0, pDirty);
+    const smokeDirty = new Float32Array(numX * numY).fill(0.0);
+    for (const b of solver.smokeBufs) device.queue.writeBuffer(b, 0, smokeDirty);
+
+    const prev = interaction._prevBBox;
+    solver.rasterizeObstacle({
+      shape: 1, centerX: A.cx, centerY: A.cy, vx: 0.7, vy: -0.3, radius: rSq,
+      angle: A.angle, prevBBox: [prev.iMin, prev.iMax, prev.jMin, prev.jMax],
+    });
+    solver.rasterizeObstacle({
+      shape: 1, centerX: B.cx, centerY: B.cy, vx: 0.4, vy: 0.2, radius: rSq,
+      angle: B.angle, prevBBox: bbA,
+    });
+
+    const s = await readBuf(solver.solidBuffer);
+    const u = await readBuf(solver.velPairs[solver._velCur].u);
+    const v = await readBuf(solver.velPairs[solver._velCur].v);
+    const p = await readBuf(solver.pressureBuffer);
+    const smoke = await readBuf(solver.smokeBufs[solver._smokeCur]);
+
+    let sBad = 0, uBad = 0, vBad = 0, pBad = 0, smokeBad = 0, boundaryCarved = 0, checked = 0;
+    for (let i = bbA[0]; i <= bbA[1]; i++) {
+      for (let j = bbA[2]; j <= bbA[3]; j++) {
+        const inB = i >= bbB[0] && i <= bbB[1] && j >= bbB[2] && j <= bbB[3]
+          && insideSquare(B.cx, B.cy, rSq, B.angle, i, j);
+        // A cell in A∩B stays solid — checked by the oracle test. A cell
+        // whose LEFT neighbour is inside B legitimately carries vx on its u
+        // face (the wall-velocity face write), so it is not a "vacated, zero"
+        // cell either.
+        const leftInB = i > 0 && insideSquare(B.cx, B.cy, rSq, B.angle, i - 1, j);
+        if (inB || leftInB) continue;
+        const idx = i * n + j;
+        const bnd = sBoundaryArr[idx] === 0;
+        if (bnd) {
+          if (s[idx] !== 0) boundaryCarved++;
+          continue;
+        }
+        checked++;
+        if (s[idx] !== 1) sBad++;
+        if (u[idx] !== 0) uBad++;
+        if (v[idx] !== 0) vBad++;
+        if (p[idx] !== 0) pBad++;
+        // Smoke cleared only where the OLD mask was solid obstacle.
+        if (insideSquare(A.cx, A.cy, rSq, A.angle, i, j) && smoke[idx] !== 1.0) smokeBad++;
+      }
+    }
+    return { sBad, uBad, vBad, pBad, smokeBad, boundaryCarved, checked };
+  });
+  expect(r.checked).toBeGreaterThan(50);
+  expect(r.sBad).toBe(0);
+  expect(r.uBad).toBe(0);
+  expect(r.vBad).toBe(0);
+  expect(r.pBad).toBe(0);
+  expect(r.smokeBad).toBe(0);
+  expect(r.boundaryCarved).toBe(0);
+});
 
