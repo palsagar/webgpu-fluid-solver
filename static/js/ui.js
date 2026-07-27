@@ -603,29 +603,20 @@ export class UI {
     }
 
     /**
-     * Update the inflow velocity at column i=1 in both the GPU buffers and
-     * the persistent boundaryVelData so it survives across frames.
+     * Update the inflow velocity at column i=1 on the GPU and in the
+     * persistent boundaryVelData so it survives across frames. Bounded: one
+     * column write per rotation slot via writeInflowColumn — the old path
+     * rebuilt a whole field from interaction's stale CPU mirror and pushed
+     * it over the live one (a second instance of the field-reset defect).
      * @param {number} inVel - New inflow velocity value
      */
     _setInflowVelocity(inVel) {
-        const { solver, interaction } = this;
-        const { numX, numY } = solver;
-        // Build a full velocity array based on interaction's stored _uData,
-        // then override the i=1 inflow column.
-        const full = new Float32Array(interaction._uData);
-        const mask = interaction.boundaryMask;
-        for (let j = 0; j < numY; j++) {
-            const idx = 1 * numY + j;
-            if (!mask || mask[idx] !== 0) {
-                full[idx] = inVel;
-            }
-        }
-        interaction._uData.set(full);
-        solver.writeVelocityU(full);
-        // Update boundary vel data so it persists across frames
-        if (this.boundaryVelData) {
-            this.boundaryVelData.uData = full.slice();
-        }
+        if (!this.boundaryVelData) return;
+        const n = this.solver.numY;
+        const col = this.boundaryVelData.uData;
+        const mask = this.boundaryVelData.col1Mask;
+        for (let j = 0; j < n; j++) col[1 * n + j] = mask[j] ? inVel : 0;
+        this.solver.writeInflowColumn(1, col, 1 * n, n);
     }
 
     /**

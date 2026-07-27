@@ -8,7 +8,7 @@ Overview of the WebGPU Eulerian fluid solver: how the pieces fit together, the f
 |-------|-----------|-------|
 | **Backend** | FastAPI + Uvicorn | ~40 lines of Python; serves static files only, plus a `/api/health` endpoint |
 | **Frontend** | Vanilla ES modules | No build step, no bundler, no framework |
-| **Compute** | WebGPU compute shaders (WGSL) | 7 compute shader files, 8 compute pipelines: pressure, boundary (two entry points), velocity advect, smoke advect, velocity combine, smoke combine, diffuse |
+| **Compute** | WebGPU compute shaders (WGSL) | 8 compute shader files, 9 compute pipelines: pressure, boundary (two entry points), velocity advect, smoke advect, velocity combine, smoke combine, diffuse, obstacle rasterizer |
 | **Rendering** | WebGPU render pass (field) + 2D canvas (overlays) | Field View: fullscreen triangle, bilinear buffer sampling, colormap LUT texture, in-shader solids. Overlays: transparent Canvas 2D layer on top. See ADR-0005. |
 | **Colormaps** | 256x1 PNG LUT textures | Scientific colormaps (magma, coolwarm) loaded from `static/colormaps/` |
 
@@ -91,7 +91,8 @@ Defined in `static/js/presets.js`. The `PRESETS` object holds configuration and 
 2. **Reset all fields** -- velocity (u, v), pressure, and smoke are zeroed / set to defaults (`m = 1.0` everywhere = clear).
 3. **Build solid mask and inflow** -- iterates the grid to set boundary cells (`s = 0` for walls) and inflow velocity at column `i = 1`, based on `boundaryType`.
 4. **Write all fields to every rotation slot** -- calls `solver.resetFlipState()`, then writes the solid mask, velocity, and smoke through `writeSolidMask` / `writeVelocityU` / `writeVelocityV` / `writeSmoke`; the velocity and smoke writes fan out to all three rotation slots so no stale slot survives.
-5. **Resize interaction arrays** if the grid size changed; stores the boundary mask for later obstacle rasterization.
+5. **Upload the boundary-mask buffer** -- `solver.writeBoundaryMask(sData)` writes the permanent wall geometry to the solver-owned `sBoundary` buffer once per preset load; the obstacle itself is not rasterized yet.
+
 6. **Rasterize obstacle** if the preset defines one (via `interaction.rasterizeObstacle()`).
 7. **Return** `{ show, numIters, smokeInletData, boundaryVelData }` -- the caller (`UI`) stores these and uses them each frame.
 
@@ -192,13 +193,15 @@ Defined in `static/js/interaction.js`. Handles mouse/touch drag to place and mov
 
 ### Obstacle Rasterization
 
-`rasterizeObstacle(centerX, centerY, vx, vy)` follows three steps:
+`rasterizeObstacle(centerX, centerY, vx, vy)` now runs entirely on the GPU. `interaction.js` packs the center, velocity, shape, radius, angle, and previous bounding box into a 64-byte uniform and calls `solver.rasterizeObstacle()`. The solver snapshots the solid mask into `sOld` via a GPU-side `copyBufferToBuffer`, uploads the uniform, and dispatches `rasterize_obstacle.wgsl` once per rotation slot (three dispatches total). Each slot binds its own velocity pair and smoke buffer; writes to `s` and `p` are idempotent across the three, so every slot ends with the same mask and pressure.
 
-1. **Restore old bounding box** -- cells from the previous obstacle position are reset to their boundary mask values. Former obstacle cells get their smoke cleared to `m = 1.0` (via `writeSmokeCell`, which writes all three slots). Pressure is zeroed for the old columns.
-2. **Rasterize new shape** -- iterates cells within the new bounding box, applies the shape test, and marks hits as solid (`s = 0`) with the drag velocity (`vx`, `vy`). Velocity is written to both `u[i]` and `u[i+1]` for proper staggered-grid coupling.
-3. **Save bounding box** -- stores `{iMin, iMax, jMin, jMax}` for the next call.
+The shader performs the old three steps in one pass:
 
-After rasterization, the solid mask and velocity fields are written to the GPU (every rotation slot), and `renderer.invalidateSolid()` is called. The drag also clears the Strouhal probe's sample series — a wake that has just had its obstacle moved is no longer the wake the accumulated samples describe.
+1. **Restore old footprint** — non-boundary cells inside the previous bounding box are returned to fluid (`s = 1.0`) with zero velocity and zero pressure. Boundary cells (`sBoundary == 0`) are never carved or restored.
+2. **Rasterize the new shape** — cells whose center passes the shape test become solid (`s = 0.0`) and carry the obstacle drag velocity on the cell-owned velocity face and the face to the right.
+3. **Clear smoke imprints** — cells that were solid in the frozen `sOld` snapshot but are now vacated have their smoke reset to `m = 1.0`. `sOld` is needed because `s` itself is updated by each dispatch; without the snapshot, later dispatches would see an already-restored mask and skip the clear.
+
+After the dispatches, `renderer.invalidateSolid()` is called. The drag also clears the Strouhal probe's sample series — a wake that has just had its obstacle moved is no longer the wake the accumulated samples describe.
 
 ### Shape Tests
 
@@ -209,15 +212,15 @@ After rasterization, the solid mask and velocity fields are written to the GPU (
 | **Airfoil** | NACA 0012 thickness profile; chord = `4r`, checks \`|ly| < y_t(lx/chord)\` |
 | **Wedge** | Half-angle = 15 degrees; length = `3r`, checks \`|ly| < lx * tan(15deg)\` |
 
-`dx` and `dy` are cell-center offsets from the obstacle center. `ldx`/`ldy` (and the chordwise `lx` / crosswise `ly`) are those offsets inverse-rotated into the obstacle's local frame by `obstacleAngle`; the circle test is rotation-invariant and uses `dx`/`dy` directly.
+`dx` and `dy` are cell-center offsets from the obstacle center. `ldx`/`ldy` (and the chordwise `lx` / crosswise `ly`) are those offsets inverse-rotated into the obstacle's local frame by `obstacleAngle`; the circle test is rotation-invariant and uses `dx`/`dy` directly. The same tests now live in `static/shaders/rasterize_obstacle.wgsl`.
 
 ### Velocity Coupling
 
-During drag, velocity is computed as `(currentPos - prevPos) / dt` and passed to `rasterizeObstacle`. All cells inside the obstacle (and `u` at `i+1`) receive this velocity, coupling the obstacle motion to the fluid.
+During drag, velocity is computed as `(currentPos - prevPos) / dt` and passed to `rasterizeObstacle`. The shader writes this velocity into solid cells and the face to their right for each rotation slot, coupling obstacle motion to the fluid. MacCormack advection preserves the moving-wall BC during the inviscid step; the viscous pass still ghosts a buried face to `-center`, pinning it at zero (disclosed in the Known gaps).
 
 ### Smoke Clearing
 
-When an obstacle moves away from cells it previously occupied, those cells have their smoke reset to `m = 1.0` (clear), preventing stale dye imprints from lingering in the flow field.
+When an obstacle moves away from cells it previously occupied, the shader resets smoke to `m = 1.0` (clear) only where the old solid mask was solid, preventing stale dye imprints from lingering in the flow field.
 
 ## 7. Particle Tracer
 

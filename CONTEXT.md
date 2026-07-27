@@ -16,7 +16,10 @@ One unit of the Grid. Every cell is either fluid or solid, per the Solid Mask.
 
 **Solid Mask**:
 The per-cell classification of solid vs. fluid. Walls, the step, and Obstacles all exist only as entries in the Solid Mask.
-_Avoid_: obstacle mask, boundary mask
+_Avoid_: obstacle mask (— and do not confuse it with the Boundary Mask below: the Solid Mask = Boundary Mask + Obstacle footprint)
+
+**Boundary Mask**:
+The per-cell record of a Preset's permanent solids (walls, the step) — everything in the Solid Mask except the Obstacle footprint. Uploaded to the GPU once per preset load; the obstacle rasterizer restores vacated cells to it and never carves it (ADR-0010).
 
 **Smoke**:
 The passive dye carried by the flow, used purely for visualization. Full concentration is dark; absence is clear.
@@ -36,7 +39,7 @@ The fixed horizontal velocity injected just inside the left wall, re-applied eve
 The band of cells at the left edge where Smoke is re-injected each frame.
 
 **Obstacle**:
-A user-draggable solid shape (circle, etc.) rasterized into the Solid Mask. Moving it re-rasterizes the mask and clears stale Smoke in its old footprint.
+A user-draggable solid shape (circle, square, airfoil, wedge) rasterized into the Solid Mask. Moving it re-rasterizes the mask on the GPU (`rasterize_obstacle.wgsl`, ADR-0010): the new footprint is carved with the drag velocity, the old footprint is restored from the Boundary Mask (zero velocity/pressure), and stale Smoke in the old footprint is cleared. The live field outside both bounding boxes is untouched — a drag perturbs the flow, it does not restart it.
 
 **Pressure Iteration**:
 One red-black Gauss-Seidel (SOR) sweep of the pressure projection. Presets choose how many run per step. Not a free knob: the count sets the delivered Numerical Viscosity, and therefore the top of the honest Reynolds window.

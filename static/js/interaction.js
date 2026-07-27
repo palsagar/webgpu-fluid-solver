@@ -3,6 +3,9 @@
  * and particle emitter placement.
  */
 export class Interaction {
+    /** Shape enum order — index is the WGSL `shape` in rasterize_obstacle.wgsl. */
+    static SHAPES = ['circle', 'square', 'airfoil', 'wedge'];
+
     /**
      * @param {HTMLCanvasElement} canvas - The simulation canvas element.
      * @param {Object} solver - The GPU fluid solver instance.
@@ -18,17 +21,9 @@ export class Interaction {
         this.dragging = false;
         this.prevX = 0;
         this.prevY = 0;
-        this.boundaryMask = null;
-        this.paintMode = false;
-        this._paintFrame = 0;
         this._particleSystem = null;
         this.obstacleAngle = 0;
         this._shiftHeld = false;
-
-        const size = solver.numX * solver.numY;
-        this._sData = new Float32Array(size);
-        this._uData = new Float32Array(size);
-        this._vData = new Float32Array(size);
 
         this.mode = 'obstacle'; // 'obstacle' or 'particles'
 
@@ -62,14 +57,11 @@ export class Interaction {
 
     /**
      * Rasterizes the active obstacle shape onto the solver's grid at the given
-     * center position. Clears the previous obstacle footprint, writes the new
-     * solid mask, and sets obstacle velocity in all three rotation slots
-     * (`writeVelocityU`/`writeVelocityV` write every `velPairs` entry).
-     *
-     * Three-step process:
-     *   1. Restore cells from the previous bounding box to their boundary-mask state.
-     *   2. Mark new obstacle cells as solid (s=0) and assign obstacle velocity.
-     *   3. Save the new bounding box for the next call.
+     * center position — on the GPU, via solver.rasterizeObstacle (ADR-0010).
+     * The previous bounding box is handed over as uniforms; the shader
+     * restores it from the boundary mask and writes the new footprint with
+     * the drag velocity, in every rotation slot. No CPU field mirrors exist:
+     * the live field outside both footprints is untouched.
      *
      * @param {number} centerX - Obstacle center X in simulation units.
      * @param {number} centerY - Obstacle center Y in simulation units.
@@ -81,156 +73,27 @@ export class Interaction {
         this.obstacleY = centerY;
 
         const { numX, numY, h } = this.solver;
-        const n = numY;
-        const sData = this._sData;
-        const uData = this._uData;
-        const vData = this._vData;
-
         const r = this.obstacleRadius;
-        const shape = this.activeShape;
 
-        // Shape-specific geometry constants used for inside-test and bounding box
-        const chord = r * 4;            // airfoil chord length
-        const wedgeLen = r * 3;         // wedge length
-        const tanHA = Math.tan(15 * Math.PI / 180); // wedge half-angle (15 degrees)
+        // Same conservative bounding extent the CPU rasterizer used
+        const maxExtent = Math.max(r, r * 4 * 0.5, r * 3 * 0.5);
+        const iMin = Math.max(1, Math.floor((centerX - maxExtent) / h - 1));
+        const iMax = Math.min(numX - 2, Math.ceil((centerX + maxExtent) / h + 1));
+        const jMin = Math.max(1, Math.floor((centerY - maxExtent) / h - 1));
+        const jMax = Math.min(numY - 2, Math.ceil((centerY + maxExtent) / h + 1));
 
-        // Conservative bounding extent covering all possible shapes
-        const maxExtent = Math.max(r, chord * 0.5, wedgeLen * 0.5);
+        this.solver.rasterizeObstacle({
+            shape: Interaction.SHAPES.indexOf(this.activeShape),
+            centerX, centerY, vx, vy,
+            radius: r,
+            angle: this.obstacleAngle,
+            prevBBox: this._prevBBox
+                ? [this._prevBBox.iMin, this._prevBBox.iMax, this._prevBBox.jMin, this._prevBBox.jMax]
+                : null,
+        });
 
-        const angle = this.obstacleAngle;
-        const cosA = Math.cos(-angle);
-        const sinA = Math.sin(-angle);
-
-        // Grid-cell bounding box for the new obstacle, clamped to interior cells
-        const newIMin = Math.max(1, Math.floor((centerX - maxExtent) / h - 1));
-        const newIMax = Math.min(numX - 2, Math.ceil((centerX + maxExtent) / h + 1));
-        const newJMin = Math.max(1, Math.floor((centerY - maxExtent) / h - 1));
-        const newJMax = Math.min(numY - 2, Math.ceil((centerY + maxExtent) / h + 1));
-
-        // Step 1: Restore the previous obstacle bounding box to boundary mask values
-        // and clear stale velocity/pressure/smoke imprint left by the old obstacle position.
-        if (this._prevBBox) {
-            const { iMin, iMax, jMin, jMax } = this._prevBBox;
-            const clearSmoke = new Float32Array([1.0]);
-            for (let i = iMin; i <= iMax; i++) {
-                for (let j = jMin; j <= jMax; j++) {
-                    const idx = i * n + j;
-                    if (this.boundaryMask && this.boundaryMask[idx] === 0) continue;
-                    const wasObstacle = sData[idx] === 0.0;
-                    sData[idx] = this.boundaryMask ? this.boundaryMask[idx] : 1.0;
-                    uData[idx] = 0.0;
-                    vData[idx] = 0.0;
-                    if (i + 1 < numX) {
-                        uData[(i + 1) * n + j] = 0.0;
-                    }
-                    // Clear smoke in former obstacle cells to prevent stale dye imprints
-                    if (wasObstacle) {
-                        this.solver.writeSmokeCell(idx, clearSmoke);
-                    }
-                }
-                // Zero pressure for this column slice (contiguous in memory)
-                const colStart = i * n + jMin;
-                const colLen = jMax - jMin + 1;
-                this.solver.device.queue.writeBuffer(
-                    this.solver.p, colStart * 4,
-                    new Float32Array(colLen)
-                );
-            }
-        } else {
-            // First call: initialise from boundaryMask (or all-fluid)
-            if (this.boundaryMask) {
-                sData.set(this.boundaryMask);
-            } else {
-                sData.fill(1.0);
-            }
-        }
-
-        // Step 2: Rasterize new obstacle within its bounding box
-        const obstacleCells = [];
-
-        for (let i = newIMin; i <= newIMax; i++) {
-            for (let j = newJMin; j <= newJMax; j++) {
-                const idx = i * n + j;
-
-                // Skip permanent boundary cells
-                if (this.boundaryMask && this.boundaryMask[idx] === 0) continue;
-
-                // Cell center in simulation coordinates
-                const cx = (i + 0.5) * h;
-                const cy = (j + 0.5) * h;
-                // Offset from obstacle center
-                const dx = cx - centerX;
-                const dy = cy - centerY;
-
-                // Inverse-rotate into obstacle's local frame
-                const ldx = dx * cosA - dy * sinA;
-                const ldy = dx * sinA + dy * cosA;
-
-                // Test whether this cell falls inside the active shape
-                let inside = false;
-
-                if (shape === 'circle') {
-                    inside = dx * dx + dy * dy < r * r;
-                } else if (shape === 'square') {
-                    inside = Math.abs(ldx) < r && Math.abs(ldy) < r;
-                } else if (shape === 'airfoil') {
-                    // NACA 0012 symmetric airfoil.
-                    // lx is the chordwise coordinate in the obstacle's local frame
-                    // (0 at leading edge, chord at trailing edge).
-                    const lx = ldx + chord * 0.5; // shift so leading edge is at lx=0
-                    const ly = ldy;
-                    if (lx >= 0 && lx <= chord) {
-                        const xc = lx / chord; // normalized chordwise position [0,1]
-                        // NACA 0012 thickness distribution (half-thickness at xc)
-                        const yt = 5 * 0.12 * chord * (
-                            0.2969 * Math.sqrt(xc)
-                            - 0.1260 * xc
-                            - 0.3516 * xc * xc
-                            + 0.2843 * xc * xc * xc
-                            - 0.1015 * xc * xc * xc * xc
-                        );
-                        inside = Math.abs(ly) < yt;
-                    }
-                } else if (shape === 'wedge') {
-                    // Wedge points right in local frame; apex at center
-                    const lx = ldx + wedgeLen * 0.5;
-                    const ly = ldy;
-                    inside = lx >= 0 && lx < wedgeLen && Math.abs(ly) < lx * tanHA;
-                }
-
-                if (inside) {
-                    sData[idx] = 0.0; // mark cell as solid
-                    uData[idx] = vx;
-                    vData[idx] = vy;
-                    // Also set u at the right face of this cell for staggered grid consistency
-                    if (i + 1 < numX) {
-                        uData[(i + 1) * n + j] = vx;
-                    }
-                    if (this.paintMode) obstacleCells.push(idx);
-                }
-            }
-        }
-
-        // Step 3: Save the new bounding box for the next call
-        this._prevBBox = { iMin: newIMin, iMax: newIMax, jMin: newJMin, jMax: newJMax };
-
-        this.solver.writeSolidMask(sData);
-        this.solver.writeVelocityU(uData);
-        this.solver.writeVelocityV(vData);
-
-        // Notify renderer that solid mask changed
+        this._prevBBox = { iMin, iMax, jMin, jMax };
         if (this._renderer) this._renderer.invalidateSolid();
-
-        // Paint mode: write oscillating dye values to obstacle cells for visual feedback
-        if (this.paintMode && obstacleCells.length > 0) {
-            const val = 0.5 + 0.5 * Math.sin(0.1 * this._paintFrame);
-            const buf = new Float32Array(1);
-            buf[0] = val;
-            for (const idx of obstacleCells) {
-                this.solver.device.queue.writeBuffer(this.solver.smokeBuffer, idx * 4, buf);
-            }
-            this._paintFrame++;
-        }
     }
 
     /**

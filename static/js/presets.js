@@ -166,19 +166,10 @@ export function loadPreset(name, solver, interaction) {
   // Write all fields — the solver writes every buffer in the rotation
   solver.resetFlipState();
   solver.writeSolidMask(sData);
+  solver.writeBoundaryMask(sData); // permanent solids only — obstacle not yet rasterized
   solver.writeVelocityU(uData);
   solver.writeVelocityV(new Float32Array(numX * numY));
   solver.writeSmoke(mData);
-
-  // Resize interaction arrays if grid size changed
-  const iSize = numX * numY;
-  if (!interaction._sData || interaction._sData.length !== iSize) {
-    interaction._sData = new Float32Array(iSize);
-    interaction._uData = new Float32Array(iSize);
-    interaction._vData = new Float32Array(iSize);
-  }
-  interaction.boundaryMask = sData.slice();
-  interaction._uData.set(uData);
 
   // Rasterize obstacle(s), or hide obstacle overlay if none
   interaction._prevBBox = null; // Clear stale bbox from previous grid size
@@ -201,8 +192,13 @@ export function loadPreset(name, solver, interaction) {
   }
 
   // Boundary velocity data (inflow at i=1, re-applied each frame after pressure solve)
+  // col1Mask captures which rows of column 1 actually carry inflow in this preset
+  // (e.g. backwardStep masks out the step block), so slider updates cannot overwrite
+  // buried solid faces with inVel.
+  const col1Mask = new Float32Array(n);
+  for (let j = 0; j < n; j++) col1Mask[j] = uData[1 * n + j] !== 0 ? 1.0 : 0.0;
   const boundaryVelData = preset.inVel > 0
-    ? { type: 'inflow', uData: uData.slice() }
+    ? { type: 'inflow', uData: uData.slice(), col1Mask }
     : null;
 
   return { show: preset.show, numIters: preset.numIters, smokeInletData, boundaryVelData };

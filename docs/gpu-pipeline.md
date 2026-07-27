@@ -68,7 +68,7 @@ graph LR
     F --> G["Diffuse<br/>×N substeps"]
 ```
 
-**Seven compute shader files, eight pipelines:**
+**Eight compute shader files, nine pipelines:**
 
 | Shader file | Entry point | Role |
 |---|---|---|
@@ -79,6 +79,7 @@ graph LR
 | `maccormack_velocity.wgsl` | `maccormack_velocity` | Limited combine for velocity |
 | `maccormack.wgsl` | `maccormack_smoke` | Limited combine for smoke |
 | `diffuse.wgsl` | `diffuse` | Explicit five-point viscous update |
+| `rasterize_obstacle.wgsl` | `rasterize` | Obstacle drag/rotation rasterization (not per-frame; one dispatch per slot, three total on interaction)
 
 Velocity and smoke need separate trace shaders because velocity has two components and the backward pass keeps phi^n on the advecting-velocity bindings rather than using a separate origin binding like smoke; the combine shaders also differ (velocity carries no solid mask).
 
@@ -107,11 +108,11 @@ At the Kármán preset's 256 iterations with 2 substeps: **522 dispatches** in a
 
 ## 3. Bind Group Strategy
 
-The solver creates **7 explicit `GPUBindGroupLayout` objects**. Explicit layouts are required because `layout: 'auto'` only includes bindings that are **statically used** by the shader entry point. For example, `boundary.wgsl`'s `extrapolate_horizontal` uses `u` but not `v` — an auto-layout would omit the `v` binding, and bind group creation would fail with a layout mismatch. See [ADR-0002](adr/0002-explicit-bind-group-layouts.md).
+The solver creates **8 explicit `GPUBindGroupLayout` objects**. Explicit layouts are required because `layout: 'auto'` only includes bindings that are **statically used** by the shader entry point. For example, `boundary.wgsl`'s `extrapolate_horizontal` uses `u` but not `v` — an auto-layout would omit the `v` binding, and bind group creation would fail with a layout mismatch. See [ADR-0002](adr/0002-explicit-bind-group-layouts.md).
 
 ### The storage-buffer budget
 
-Every layout was designed against `maxStorageBuffersPerShaderStage`, whose guaranteed minimum is **8**. Uniforms do not count toward it. The two advection layouts are the tight ones:
+Every layout was designed against `maxStorageBuffersPerShaderStage`, whose guaranteed minimum is **8**. Uniforms do not count toward it. The advection layouts and the new rasterizer are the tight ones:
 
 | Layout | Bindings | Storage buffers |
 |--------|----------|-----------------|
@@ -122,6 +123,7 @@ Every layout was designed against `maxStorageBuffersPerShaderStage`, whose guara
 | `_advectSmokeBGL` | uniform(0), read-only(1–5), storage(6) | 6 |
 | `_mcSmokeBGL` | uniform(0), read-only(1–4), storage(5), read-only(6) | 6 |
 | `_diffuseBGL` | uniform(0), read-only(1–3), storage(4,5) | 5 |
+| `_rasterizeBGL` | uniform(0), storage(1), read-only(2), storage(3,4,5,6), read-only(7) | **7** |
 
 `_advectVelBGL` reaches 7 because the backward pass needs the advecting velocity (`u^n, v^n`), the solid mask, the field being advected (`phi^`), *and* the origin field (`phi^n`) all bound at once — the origin field is what makes a reverted face write `phi^n` rather than `phi^`. On the forward pass the same buffers alias onto both read-only pairs, which is legal.
 
@@ -158,7 +160,7 @@ The combine writes `phi^{n+1}` **in place into tilde**, so the inviscid step adv
 
 The `smokeBuffer` and `velocityBuffers` getters return the currently published slot for readback.
 
-**Critical rule:** when writing boundary conditions, inflow velocities, or obstacle velocities from JavaScript (e.g. `writeBuffer` calls in preset setup or `rasterizeObstacle`), **write to all three slots**. `writeU`, `writeV`, `writeSmoke` and `writeSmokeCell` do this; reaching for a raw buffer does not.
+**Critical rule:** when writing boundary conditions, inflow velocities, or obstacle velocities from JavaScript (e.g. `writeBuffer` calls in preset setup), **write to all three slots**. `writeU`, `writeV`, and `writeSmoke` do this; the rasterizer's per-slot dispatches do it implicitly. Reaching for a raw buffer does not.
 
 See [Boundary Conditions](numerical-methods.md#7-boundary-conditions) for the numerical rationale.
 
@@ -166,7 +168,7 @@ See [Boundary Conditions](numerical-methods.md#7-boundary-conditions) for the nu
 
 ## 5. Solid Mask Through the Pipeline
 
-The `s` buffer (solid mask: 0.0 = solid, 1.0 = fluid) is rasterized on the CPU via `rasterizeObstacle()` in `interaction.js` and uploaded to the GPU with `device.queue.writeBuffer()`. Each compute stage reads it differently:
+The `s` buffer (solid mask: 0.0 = solid, 1.0 = fluid) is initialized from the CPU at preset load via `writeSolidMask`, then rasterized on the GPU by `rasterize_obstacle.wgsl` during interaction. The solver-owned `sBoundary` buffer is uploaded once per preset load and read by the rasterizer so permanent wall cells are never carved or restored. Each compute stage reads `s` differently:
 
 **pressure.wgsl:** Counts fluid neighbors via `sx0 + sx1 + sy0 + sy1` (the s-values of the 4 cardinal neighbors). Skips cells where `s[idx] == 0` (solid cell) or where `sTotal == 0` (all neighbors are solid). The divergence correction is divided by `sTotal`, naturally handling partial fluid neighborhoods near boundaries.
 

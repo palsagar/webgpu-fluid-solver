@@ -98,6 +98,15 @@ export class FluidSolver {
 
     this.p = device.createBuffer({ size: size * 4, usage: storageUsage });
     this.s = device.createBuffer({ size: size * 4, usage: storageUsage });
+    // Boundary mask: the preset's permanent solids (walls, step), uploaded
+    // once per preset load. The obstacle rasterizer reads it to restore
+    // vacated cells and to never carve permanent boundary cells.
+    this.sBoundary = device.createBuffer({ size: size * 4, usage: storageUsage });
+    // Frozen snapshot of s at the start of rasterizeObstacle. The three
+    // per-slot dispatches all update s, so the smoke-clear test cannot read
+    // the live s without seeing progressively restored values; sOld gives
+    // every dispatch the original mask.
+    this.sOld = device.createBuffer({ size: size * 4, usage: storageUsage });
 
     // Uniform buffers: red/black variants carry color=0 and color=1 respectively.
     // COPY_SRC so tests can read back what was actually uploaded -- the sign of
@@ -112,6 +121,10 @@ export class FluidSolver {
     // Identical to uniformBuf but with dt replaced by the viscous substep dt.
     // Written per step, only when the viscous pass is actually dispatched.
     this.uniformBufVisc  = device.createBuffer({ size: 32, usage: uniformUsage });
+    // Rasterizer uniforms: 64 bytes. Layout must match RasterParams in
+    // rasterize_obstacle.wgsl: numX(0) numY(4) h(8) shape(12) center(16,20)
+    // vel(24,28) radius(32) angle(36) pad(40-48) prevBBox vec4i(48-64).
+    this.uniformBufRaster = device.createBuffer({ size: 64, usage: uniformUsage });
   }
 
   /**
@@ -202,11 +215,14 @@ export class FluidSolver {
     for (const b of this.smokeBufs) b.destroy();
     this.p.destroy();
     this.s.destroy();
+    this.sBoundary.destroy();
+    this.sOld.destroy();
     this.uniformBuf.destroy();
     this.uniformBufRed.destroy();
     this.uniformBufBlack.destroy();
     this.uniformBufNegDt.destroy();
     this.uniformBufVisc.destroy();
+    this.uniformBufRaster.destroy();
   }
 
   /**
@@ -223,7 +239,7 @@ export class FluidSolver {
   static async create(device, numX, numY, h) {
     const solver = new FluidSolver(device, numX, numY, h);
 
-    const [pressureWgsl, boundaryWgsl, advectWgsl, advectSmokeWgsl, maccormackWgsl, maccormackVelWgsl, diffuseWgsl] = await Promise.all([
+    const [pressureWgsl, boundaryWgsl, advectWgsl, advectSmokeWgsl, maccormackWgsl, maccormackVelWgsl, diffuseWgsl, rasterizeWgsl] = await Promise.all([
       fetch('/shaders/pressure.wgsl').then(r => r.text()),
       fetch('/shaders/boundary.wgsl').then(r => r.text()),
       fetch('/shaders/advect.wgsl').then(r => r.text()),
@@ -231,6 +247,7 @@ export class FluidSolver {
       fetch('/shaders/maccormack.wgsl').then(r => r.text()),
       fetch('/shaders/maccormack_velocity.wgsl').then(r => r.text()),
       fetch('/shaders/diffuse.wgsl').then(r => r.text()),
+      fetch('/shaders/rasterize_obstacle.wgsl').then(r => r.text()),
     ]);
 
     const pressureMod      = device.createShaderModule({ code: pressureWgsl });
@@ -240,6 +257,7 @@ export class FluidSolver {
     const maccormackMod    = device.createShaderModule({ code: maccormackWgsl });
     const maccormackVelMod = device.createShaderModule({ code: maccormackVelWgsl });
     const diffuseMod       = device.createShaderModule({ code: diffuseWgsl });
+    const rasterizeMod     = device.createShaderModule({ code: rasterizeWgsl });
 
     // Create explicit bind group layouts so all declared bindings are included
     // (auto-layout only includes statically-used bindings, which breaks shared bind groups)
@@ -307,6 +325,17 @@ export class FluidSolver {
                 bglEntry(4, STORAGE), bglEntry(5, STORAGE)],
     });
 
+    // Obstacle rasterizer: uniform + s(rw) + sBoundary(ro) + u,v(rw) + p(rw)
+    // + smoke(rw) + sOld(ro) = 7 storage buffers, at but not over
+    // maxStorageBuffersPerShaderStage (8). One dispatch per rotation slot;
+    // writes to s and p are idempotent. sOld is a frozen snapshot of s so
+    // the smoke-clear test sees the original mask on every slot.
+    solver._rasterizeBGL = device.createBindGroupLayout({
+      entries: [bglEntry(0, UNIFORM), bglEntry(1, STORAGE), bglEntry(2, RO_STORAGE),
+                bglEntry(3, STORAGE), bglEntry(4, STORAGE), bglEntry(5, STORAGE),
+                bglEntry(6, STORAGE), bglEntry(7, RO_STORAGE)],
+    });
+
     const makePipelineLayout = (bgl) => device.createPipelineLayout({ bindGroupLayouts: [bgl] });
 
     solver.pressurePipeline    = device.createComputePipeline({ layout: makePipelineLayout(solver._pressureBGL),    compute: { module: pressureMod,     entryPoint: 'main' } });
@@ -317,6 +346,7 @@ export class FluidSolver {
     solver.mcSmokePipeline     = device.createComputePipeline({ layout: makePipelineLayout(solver._mcSmokeBGL),     compute: { module: maccormackMod,   entryPoint: 'maccormack_smoke' } });
     solver.mcVelPipeline       = device.createComputePipeline({ layout: makePipelineLayout(solver._mcVelBGL),      compute: { module: maccormackVelMod, entryPoint: 'maccormack_velocity' } });
     solver.diffusePipeline     = device.createComputePipeline({ layout: makePipelineLayout(solver._diffuseBGL),   compute: { module: diffuseMod,      entryPoint: 'diffuse' } });
+    solver.rasterizePipeline   = device.createComputePipeline({ layout: makePipelineLayout(solver._rasterizeBGL), compute: { module: rasterizeMod,   entryPoint: 'rasterize' } });
 
     solver._createBindGroups();
 
@@ -472,6 +502,17 @@ export class FluidSolver {
                     entry(4, this.velPairs[dst].u), entry(5, this.velPairs[dst].v)],
         }));
       }
+    }
+
+    // One rasterizer bind group per rotation slot.
+    this.rasterize = [];
+    for (let k = 0; k < 3; k++) {
+      this.rasterize.push(device.createBindGroup({
+        layout: this._rasterizeBGL,
+        entries: [entry(0, this.uniformBufRaster), entry(1, this.s), entry(2, this.sBoundary),
+                  entry(3, this.velPairs[k].u), entry(4, this.velPairs[k].v),
+                  entry(5, this.p), entry(6, this.smokeBufs[k]), entry(7, this.sOld)],
+      }));
     }
 
     this._velCur = 0;
@@ -689,6 +730,7 @@ export class FluidSolver {
   }
 
   writeSolidMask(data) { this.device.queue.writeBuffer(this.s, 0, data); }
+  writeBoundaryMask(data) { this.device.queue.writeBuffer(this.sBoundary, 0, data); }
 
   /** Writes u to every velocity pair, so no pair holds stale data. */
   writeVelocityU(data) {
@@ -717,12 +759,62 @@ export class FluidSolver {
   }
 
   /**
-   * Writes smoke values at a single cell index to every smoke buffer.
-   * @param {number} index - flat cell index (i * numY + j)
-   * @param {Float32Array} data - values to write at that index
+   * Rasterizes the obstacle on the GPU: writes the new footprint into the
+   * solid mask with the drag velocity, restores the previous footprint from
+   * the boundary mask (zero velocity/pressure, smoke cleared), in every
+   * rotation slot. One uniform upload + three dispatches; no CPU field
+   * arrays are involved, so the live field outside the footprints is
+   * untouched (the field-reset defect, ADR-0010).
+   *
+   * @param {Object} o
+   * @param {number} o.shape - 0 circle, 1 square, 2 airfoil, 3 wedge
+   * @param {number} o.centerX - obstacle centre X, sim units
+   * @param {number} o.centerY - obstacle centre Y, sim units
+   * @param {number} o.vx - obstacle velocity X (drag), sim units/s
+   * @param {number} o.vy - obstacle velocity Y (drag), sim units/s
+   * @param {number} o.radius - shape radius, sim units
+   * @param {number} o.angle - rotation, radians
+   * @param {number[]|null} o.prevBBox - [iMin,iMax,jMin,jMax] or null for
+   *   "no previous footprint" (first rasterize after preset load; `s` must
+   *   already equal the boundary mask).
    */
-  writeSmokeCell(index, data) {
-    for (const b of this.smokeBufs) this.device.queue.writeBuffer(b, index * 4, data);
+  rasterizeObstacle(o) {
+    const ab = new ArrayBuffer(64);
+    const dv = new DataView(ab);
+    dv.setUint32(0, this.numX, true);
+    dv.setUint32(4, this.numY, true);
+    dv.setFloat32(8, this.h, true);
+    dv.setUint32(12, o.shape, true);
+    dv.setFloat32(16, o.centerX, true);
+    dv.setFloat32(20, o.centerY, true);
+    dv.setFloat32(24, o.vx, true);
+    dv.setFloat32(28, o.vy, true);
+    dv.setFloat32(32, o.radius, true);
+    dv.setFloat32(36, o.angle, true);
+    const bb = o.prevBBox ?? [1, 0, 0, 0]; // iMin > iMax = no previous
+    dv.setInt32(48, bb[0], true);
+    dv.setInt32(52, bb[1], true);
+    dv.setInt32(56, bb[2], true);
+    dv.setInt32(60, bb[3], true);
+
+    const encoder = this.device.createCommandEncoder();
+    // Snapshot the solid mask so every per-slot dispatch sees the original
+    // mask when deciding where to clear smoke. s itself is updated by each
+    // dispatch (idempotently), so without the snapshot the second and third
+    // dispatches would see an already-restored mask and skip the clear.
+    encoder.copyBufferToBuffer(this.s, 0, this.sOld, 0, this.numX * this.numY * 4);
+    this.device.queue.writeBuffer(this.uniformBufRaster, 0, ab);
+
+    const dx = Math.ceil(this.numX / 8);
+    const dy = Math.ceil(this.numY / 8);
+    for (let k = 0; k < 3; k++) {
+      const pass = encoder.beginComputePass();
+      pass.setPipeline(this.rasterizePipeline);
+      pass.setBindGroup(0, this.rasterize[k]);
+      pass.dispatchWorkgroups(dx, dy, 1);
+      pass.end();
+    }
+    this.device.queue.submit([encoder.finish()]);
   }
 
   get pressureBuffer()  { return this.p; }

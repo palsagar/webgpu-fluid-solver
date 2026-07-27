@@ -2330,4 +2330,773 @@ test('the viscous stencil cannot read the stale i=0 / j=0 ring', async ({ page }
   expect(r.gainVisc).toBeLessThan(r.gainInv * 3);
 });
 
+test('the boundary mask buffer holds the preset boundary mask after load', async ({ page }) => {
+  await boot(page);
+  const r = await page.evaluate(async () => {
+    const { solver, device } = window.__flowlab;
+    const { numX, numY } = solver;
+    const n = numY;
+    const size = numX * numY * 4;
+    const readBuf = async (src) => {
+      const staging = device.createBuffer({
+        size, usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST,
+      });
+      const enc = device.createCommandEncoder();
+      enc.copyBufferToBuffer(src, 0, staging, 0, size);
+      device.queue.submit([enc.finish()]);
+      await staging.mapAsync(GPUMapMode.READ);
+      const out = new Float32Array(staging.getMappedRange().slice(0));
+      staging.unmap();
+      staging.destroy();
+      return out;
+    };
+    const sb = await readBuf(solver.sBoundary);
+    const s = await readBuf(solver.solidBuffer);
 
+    // s == boundary mask everywhere except the obstacle footprint, which is
+    // rasterized into s only.
+    let diffs = 0;
+    for (let k = 0; k < sb.length; k++) if (sb[k] !== s[k]) diffs++;
+    // Every diff must be sBoundary fluid (1) -> s solid (0): the rasterizer
+    // adds solids, it never removes the boundary's.
+    let badDiff = 0;
+    for (let k = 0; k < sb.length; k++) {
+      if (sb[k] !== s[k] && !(sb[k] === 1 && s[k] === 0)) badDiff++;
+    }
+    // The permanent walls: i = 0 column is all solid in the boundary mask.
+    let col0Solid = true;
+    for (let j = 0; j < n; j++) if (sb[0 * n + j] !== 0) col0Solid = false;
+    return { diffs, badDiff, col0Solid };
+  });
+  // Guards against a vacuous test: the Kármán circle is ~46 cells even at
+  // tier 64, so a missing obstacle readback can't sneak past.
+  expect(r.diffs).toBeGreaterThan(10);
+  expect(r.badDiff).toBe(0);
+  expect(r.col0Solid).toBe(true);
+});
+
+// ---------------------------------------------------------------------------
+// GPU obstacle rasterizer (PR A). The oracle below is the CPU inside-test
+// code deleted from interaction.js, transcribed verbatim: same cell-center
+// coordinates, same rotation, same NACA 0012 coefficients. Positions and
+// angles are chosen off grid lines and away from axis alignment so no cell
+// center sits within f32/f64 disagreement of a shape boundary — exact-match
+// comparison pins the GEOMETRY, not floating-point noise.
+// ---------------------------------------------------------------------------
+
+test('the GPU rasterizer matches the CPU oracle mask and wall velocity', async ({ page }) => {
+  await boot(page);
+  const r = await page.evaluate(async () => {
+    const { solver, device, interaction } = window.__flowlab;
+    solver.paused = true;
+    const { numX, numY, h } = solver;
+    const n = numY;
+    const size = numX * numY * 4;
+    const readBuf = async (src) => {
+      const staging = device.createBuffer({
+        size, usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST,
+      });
+      const enc = device.createCommandEncoder();
+      enc.copyBufferToBuffer(src, 0, staging, 0, size);
+      device.queue.submit([enc.finish()]);
+      await staging.mapAsync(GPUMapMode.READ);
+      const out = new Float32Array(staging.getMappedRange().slice(0));
+      staging.unmap();
+      staging.destroy();
+      return out;
+    };
+
+    const sBoundaryArr = await readBuf(solver.sBoundary);
+
+    // The GPU stores velocities as f32; compare against the exact f32 values
+    // rather than the JS f64 literals 0.7 / -0.3.
+    const VX = Math.fround(0.7);
+    const VY = Math.fround(-0.3);
+
+    // CPU oracle — verbatim port of the pre-PR-A interaction.js inside-tests.
+    const insideAt = (shapeIdx, centerX, centerY, radius, angle, i, j) => {
+      const r = radius, chord = r * 4, wedgeLen = r * 3;
+      const tanHA = Math.tan(15 * Math.PI / 180);
+      const cosA = Math.cos(-angle), sinA = Math.sin(-angle);
+      const dx = (i + 0.5) * h - centerX;
+      const dy = (j + 0.5) * h - centerY;
+      const ldx = dx * cosA - dy * sinA;
+      const ldy = dx * sinA + dy * cosA;
+      if (shapeIdx === 0) return dx * dx + dy * dy < r * r;
+      if (shapeIdx === 1) return Math.abs(ldx) < r && Math.abs(ldy) < r;
+      if (shapeIdx === 2) {
+        const lx = ldx + chord * 0.5;
+        if (lx < 0 || lx > chord) return false;
+        const xc = lx / chord;
+        const yt = 5 * 0.12 * chord * (0.2969 * Math.sqrt(xc) - 0.1260 * xc
+          - 0.3516 * xc * xc + 0.2843 * xc * xc * xc - 0.1015 * xc * xc * xc * xc);
+        return Math.abs(ldy) < yt;
+      }
+      const lx = ldx + wedgeLen * 0.5;
+      return lx >= 0 && lx < wedgeLen && Math.abs(ldy) < lx * tanHA;
+    };
+
+    const W = numX * h, H = numY * h;
+    const cases = [
+      { shape: 0, cx: 0.62 * W, cy: 0.37 * H, r: 0.055, angle: 0.73 },
+      { shape: 1, cx: 0.55 * W, cy: 0.61 * H, r: 0.070, angle: 0.50 },
+      { shape: 2, cx: 0.48 * W, cy: 0.42 * H, r: 0.045, angle: -0.31 },
+      { shape: 3, cx: 0.70 * W, cy: 0.55 * H, r: 0.060, angle: 1.19 },
+    ];
+
+    // Same conservative bounding-box formula interaction.js uses.
+    const bboxOf = (cx, cy, r) => {
+      const maxExtent = Math.max(r, r * 4 * 0.5, r * 3 * 0.5);
+      return [
+        Math.max(1, Math.floor((cx - maxExtent) / h - 1)),
+        Math.min(numX - 2, Math.ceil((cx + maxExtent) / h + 1)),
+        Math.max(1, Math.floor((cy - maxExtent) / h - 1)),
+        Math.min(numY - 2, Math.ceil((cy + maxExtent) / h + 1)),
+      ];
+    };
+
+    const results = [];
+    // Thread prevBBox through the cases exactly as interaction.js will:
+    // the boot obstacle's bbox first, then each case's own bbox, so every
+    // case starts from the clean boundary mask.
+    let prevBB = (() => {
+      const p = interaction._prevBBox;
+      return [p.iMin, p.iMax, p.jMin, p.jMax];
+    })();
+    for (const c of cases) {
+      solver.rasterizeObstacle({
+        shape: c.shape, centerX: c.cx, centerY: c.cy, vx: VX, vy: VY,
+        radius: c.r, angle: c.angle, prevBBox: prevBB,
+      });
+      prevBB = bboxOf(c.cx, c.cy, c.r);
+      const s = await readBuf(solver.solidBuffer);
+      const u = await readBuf(solver.velPairs[solver._velCur].u);
+      const v = await readBuf(solver.velPairs[solver._velCur].v);
+
+      let maskMismatch = 0, carvedBoundary = 0, uMismatch = 0, vMismatch = 0;
+      for (let i = 0; i < numX; i++) {
+        for (let j = 0; j < numY; j++) {
+          const idx = i * n + j;
+          const bnd = sBoundaryArr[idx] === 0;
+          const inHere = !bnd && insideAt(c.shape, c.cx, c.cy, c.r, c.angle, i, j);
+          const inLeft = i > 0 && sBoundaryArr[(i - 1) * n + j] !== 0
+            && insideAt(c.shape, c.cx, c.cy, c.r, c.angle, i - 1, j);
+          const expectS = bnd ? 0 : (inHere ? 0 : 1);
+          if (s[idx] !== expectS) maskMismatch++;
+          if (bnd && s[idx] !== 0) carvedBoundary++;
+          // u faces: inside cells AND faces right of an inside cell carry vx.
+          if (inHere || inLeft) { if (u[idx] !== VX) uMismatch++; }
+          // v: cell-owned only — the CPU rasterizer writes no neighbour v face.
+          if (inHere) { if (v[idx] !== VY) vMismatch++; }
+        }
+      }
+      results.push({ shape: c.shape, maskMismatch, carvedBoundary, uMismatch, vMismatch });
+    }
+    return results;
+  });
+  for (const res of r) {
+    expect(res.maskMismatch, `shape ${res.shape} mask`).toBe(0);
+    expect(res.carvedBoundary, `shape ${res.shape} boundary`).toBe(0);
+    expect(res.uMismatch, `shape ${res.shape} u`).toBe(0);
+    expect(res.vMismatch, `shape ${res.shape} v`).toBe(0);
+  }
+});
+
+test('a vacated footprint is restored: fluid, zero velocity/pressure, smoke cleared', async ({ page }) => {
+  await boot(page);
+  const r = await page.evaluate(async () => {
+    const { solver, device, interaction } = window.__flowlab;
+    solver.paused = true;
+    const { numX, numY, h } = solver;
+    const n = numY;
+    const size = numX * numY * 4;
+    const readBuf = async (src) => {
+      const staging = device.createBuffer({
+        size, usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST,
+      });
+      const enc = device.createCommandEncoder();
+      enc.copyBufferToBuffer(src, 0, staging, 0, size);
+      device.queue.submit([enc.finish()]);
+      await staging.mapAsync(GPUMapMode.READ);
+      const out = new Float32Array(staging.getMappedRange().slice(0));
+      staging.unmap();
+      staging.destroy();
+      return out;
+    };
+
+    const sBoundaryArr = await readBuf(solver.sBoundary);
+
+    // Square oracle (same port as the test above).
+    const insideSquare = (centerX, centerY, radius, angle, i, j) => {
+      const cosA = Math.cos(-angle), sinA = Math.sin(-angle);
+      const dx = (i + 0.5) * h - centerX;
+      const dy = (j + 0.5) * h - centerY;
+      const ldx = dx * cosA - dy * sinA;
+      const ldy = dx * sinA + dy * cosA;
+      return Math.abs(ldx) < radius && Math.abs(ldy) < radius;
+    };
+
+    const W = numX * h, H = numY * h;
+    const rSq = 0.07;
+    const A = { cx: 0.50 * W, cy: 0.50 * H, angle: 0.50 };
+    const B = { cx: 0.56 * W, cy: 0.57 * H, angle: 0.50 };
+
+    const bboxOf = (cx, cy) => {
+      const maxExtent = Math.max(rSq, rSq * 4 * 0.5, rSq * 3 * 0.5);
+      return [
+        Math.max(1, Math.floor((cx - maxExtent) / h - 1)),
+        Math.min(numX - 2, Math.ceil((cx + maxExtent) / h + 1)),
+        Math.max(1, Math.floor((cy - maxExtent) / h - 1)),
+        Math.min(numY - 2, Math.ceil((cy + maxExtent) / h + 1)),
+      ];
+    };
+    const bbA = bboxOf(A.cx, A.cy);
+    const bbB = bboxOf(B.cx, B.cy);
+
+    // Dirty the state first: non-zero pressure and smoke=0 (dye) everywhere,
+    // so "restored to zero / cleared" cannot pass vacuously.
+    const pDirty = new Float32Array(numX * numY).fill(3.25);
+    device.queue.writeBuffer(solver.p, 0, pDirty);
+    const smokeDirty = new Float32Array(numX * numY).fill(0.0);
+    for (const b of solver.smokeBufs) device.queue.writeBuffer(b, 0, smokeDirty);
+
+    const prev = interaction._prevBBox;
+    solver.rasterizeObstacle({
+      shape: 1, centerX: A.cx, centerY: A.cy, vx: 0.7, vy: -0.3, radius: rSq,
+      angle: A.angle, prevBBox: [prev.iMin, prev.iMax, prev.jMin, prev.jMax],
+    });
+    solver.rasterizeObstacle({
+      shape: 1, centerX: B.cx, centerY: B.cy, vx: 0.4, vy: 0.2, radius: rSq,
+      angle: B.angle, prevBBox: bbA,
+    });
+
+    const s = await readBuf(solver.solidBuffer);
+    const u = await readBuf(solver.velPairs[solver._velCur].u);
+    const v = await readBuf(solver.velPairs[solver._velCur].v);
+    const p = await readBuf(solver.pressureBuffer);
+    const smoke = await readBuf(solver.smokeBufs[solver._smokeCur]);
+
+    let sBad = 0, uBad = 0, vBad = 0, pBad = 0, smokeBad = 0, boundaryCarved = 0, checked = 0;
+    for (let i = bbA[0]; i <= bbA[1]; i++) {
+      for (let j = bbA[2]; j <= bbA[3]; j++) {
+        const inB = i >= bbB[0] && i <= bbB[1] && j >= bbB[2] && j <= bbB[3]
+          && insideSquare(B.cx, B.cy, rSq, B.angle, i, j);
+        // A cell in A∩B stays solid — checked by the oracle test. A cell
+        // whose LEFT neighbour is inside B legitimately carries vx on its u
+        // face (the wall-velocity face write), so it is not a "vacated, zero"
+        // cell either.
+        const leftInB = i > 0 && insideSquare(B.cx, B.cy, rSq, B.angle, i - 1, j);
+        if (inB || leftInB) continue;
+        const idx = i * n + j;
+        const bnd = sBoundaryArr[idx] === 0;
+        if (bnd) {
+          if (s[idx] !== 0) boundaryCarved++;
+          continue;
+        }
+        checked++;
+        if (s[idx] !== 1) sBad++;
+        if (u[idx] !== 0) uBad++;
+        if (v[idx] !== 0) vBad++;
+        if (p[idx] !== 0) pBad++;
+        // Smoke cleared only where the OLD mask was solid obstacle.
+        if (insideSquare(A.cx, A.cy, rSq, A.angle, i, j) && smoke[idx] !== 1.0) smokeBad++;
+      }
+    }
+    return { sBad, uBad, vBad, pBad, smokeBad, boundaryCarved, checked };
+  });
+  expect(r.checked).toBeGreaterThan(50);
+  expect(r.sBad).toBe(0);
+  expect(r.uBad).toBe(0);
+  expect(r.vBad).toBe(0);
+  expect(r.pBad).toBe(0);
+  expect(r.smokeBad).toBe(0);
+  expect(r.boundaryCarved).toBe(0);
+});
+
+test('the inflow slider writes only column 1, in every rotation slot', async ({ page }) => {
+  await boot(page);
+  const r = await page.evaluate(async () => {
+    const { solver, device, ui } = window.__flowlab;
+    solver.paused = true;
+    const { numX, numY } = solver;
+    const n = numY;
+    const size = numX * numY * 4;
+    const readBuf = async (src) => {
+      const staging = device.createBuffer({
+        size, usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST,
+      });
+      const enc = device.createCommandEncoder();
+      enc.copyBufferToBuffer(src, 0, staging, 0, size);
+      device.queue.submit([enc.finish()]);
+      await staging.mapAsync(GPUMapMode.READ);
+      const out = new Float32Array(staging.getMappedRange().slice(0));
+      staging.unmap();
+      staging.destroy();
+      return out;
+    };
+
+    const before = [];
+    for (const pair of solver.velPairs) before.push(await readBuf(pair.u));
+
+    ui._setInflowVelocity(2.5);
+
+    const after = [];
+    for (const pair of solver.velPairs) after.push(await readBuf(pair.u));
+
+    // The regression this pins: _setInflowVelocity used to rebuild a whole
+    // field from the STALE CPU mirror and push it over the live one — a
+    // second instance of the field-reset defect. Outside column 1 every slot
+    // must be bit-identical to its own pre-slider state.
+    let outsideDrift = 0;
+    for (let k = 0; k < 3; k++) {
+      for (let idx = 0; idx < before[k].length; idx++) {
+        const i = Math.floor(idx / n);
+        if (i === 1) continue;
+        if (after[k][idx] !== before[k][idx]) outsideDrift++;
+      }
+    }
+    // Column 1 itself: the new inflow in all three slots, and the persistent
+    // boundaryVelData slice the per-frame re-application reads.
+    let col1Bad = 0;
+    for (let k = 0; k < 3; k++) {
+      for (let j = 0; j < n; j++) if (after[k][1 * n + j] !== 2.5) col1Bad++;
+    }
+    let bvBad = 0;
+    for (let j = 0; j < n; j++) {
+      if (ui.boundaryVelData.uData[1 * n + j] !== 2.5) bvBad++;
+    }
+    return { outsideDrift, col1Bad, bvBad };
+  });
+  expect(r.outsideDrift).toBe(0);
+  expect(r.col1Bad).toBe(0);
+  expect(r.bvBad).toBe(0);
+});
+
+test('the inflow slider respects the backwardStep column-1 mask', async ({ page }) => {
+  await boot(page);
+  const r = await page.evaluate(async () => {
+    const { solver, device, ui } = window.__flowlab;
+    solver.paused = true;
+
+    // Switch to the backward-step preset so the step block makes the lower
+    // half of column 1 solid and the original preset inflow is masked there.
+    ui._loadAndApplyPreset('backwardStep');
+
+    const { numX, numY, h } = solver;
+    const n = numY;
+    const domainHeight = numY * h;
+    const sg = (await import('/js/presets.js')).PRESETS.backwardStep.stepGeometry;
+
+    const size = numX * numY * 4;
+    const readBuf = async (src) => {
+      const staging = device.createBuffer({
+        size, usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST,
+      });
+      const enc = device.createCommandEncoder();
+      enc.copyBufferToBuffer(src, 0, staging, 0, size);
+      device.queue.submit([enc.finish()]);
+      await staging.mapAsync(GPUMapMode.READ);
+      const out = new Float32Array(staging.getMappedRange().slice(0));
+      staging.unmap();
+      staging.destroy();
+      return out;
+    };
+
+    ui._setInflowVelocity(2.5);
+
+    const after = [];
+    for (const pair of solver.velPairs) after.push(await readBuf(pair.u));
+
+    // Rows inside the step block: cell-center y is below the step top, so the
+    // preset's loadPreset() never wrote an inflow u-face there. The slider
+    // must leave these buried faces at 0 in every slot.
+    // Rows above the step: the inflow boundary condition applies, so the
+    // slider must write the new value 2.5 in every slot.
+    let maskedBad = 0;
+    let fluidBad = 0;
+    for (let k = 0; k < 3; k++) {
+      for (let j = 0; j < n; j++) {
+        const cy = (j + 0.5) * h / domainHeight;
+        const val = after[k][1 * n + j];
+        if (cy < sg.y1) {
+          if (val !== 0) maskedBad++;
+        } else {
+          if (val !== 2.5) fluidBad++;
+        }
+      }
+    }
+
+    // The persistent boundaryVelData.uData slice is what main.js re-applies
+    // every frame after the pressure solve; it must carry the same mask.
+    let bvMaskedBad = 0;
+    let bvFluidBad = 0;
+    for (let j = 0; j < n; j++) {
+      const cy = (j + 0.5) * h / domainHeight;
+      const val = ui.boundaryVelData.uData[1 * n + j];
+      if (cy < sg.y1) {
+        if (val !== 0) bvMaskedBad++;
+      } else {
+        if (val !== 2.5) bvFluidBad++;
+      }
+    }
+
+    return { maskedBad, fluidBad, bvMaskedBad, bvFluidBad };
+  });
+
+  // Mutation caught: unconditional slider write stuffs inVel into solid/buried
+  // faces inside the step block, which advect.wgsl then bilinearly samples.
+  expect(r.maskedBad).toBe(0);
+  // Mutation caught: the mask accidentally zeros rows that should inflow.
+  expect(r.fluidBad).toBe(0);
+  expect(r.bvMaskedBad).toBe(0);
+  expect(r.bvFluidBad).toBe(0);
+});
+
+
+test('an obstacle drag leaves the field outside both bounding boxes bit-identical', async ({ page }) => {
+  await boot(page);
+  const r = await page.evaluate(async () => {
+    const { solver, device, interaction } = window.__flowlab;
+    solver.paused = true;
+    const { numX, numY, h } = solver;
+    const n = numY;
+    const size = numX * numY * 4;
+    const readBuf = async (src) => {
+      const staging = device.createBuffer({
+        size, usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST,
+      });
+      const enc = device.createCommandEncoder();
+      enc.copyBufferToBuffer(src, 0, staging, 0, size);
+      device.queue.submit([enc.finish()]);
+      await staging.mapAsync(GPUMapMode.READ);
+      const out = new Float32Array(staging.getMappedRange().slice(0));
+      staging.unmap();
+      staging.destroy();
+      return out;
+    };
+
+    // Snapshot every buffer the rasterizer may touch, per slot.
+    const bufs = [];
+    for (let k = 0; k < 3; k++) bufs.push({ u: solver.velPairs[k].u, v: solver.velPairs[k].v, m: solver.smokeBufs[k] });
+    const before = { s: await readBuf(solver.solidBuffer), p: await readBuf(solver.pressureBuffer), slots: [] };
+    for (const b of bufs) before.slots.push({ u: await readBuf(b.u), v: await readBuf(b.v), m: await readBuf(b.m) });
+
+    // A mid-field drag, like a user dragging the circle right and down.
+    interaction.rasterizeObstacle(
+      interaction.obstacleX + 0.15 * numX * h,
+      interaction.obstacleY - 0.10 * numY * h,
+      0.5, 0.25,
+    );
+
+    // Union of old and new bounding boxes (same formula interaction uses).
+    // interaction.obstacleX/Y already hold the NEW centre post-drag; the old
+    // centre is the drag delta back.
+    const r0 = interaction.obstacleRadius;
+    const maxExtent = Math.max(r0, r0 * 4 * 0.5, r0 * 3 * 0.5);
+    const newBB = interaction._prevBBox;
+    const oldBBRawIMax = Math.min(numX - 2, Math.ceil((interaction.obstacleX - 0.15 * numX * h + maxExtent) / h + 1));
+    const oldBB = {
+      iMin: Math.max(1, Math.floor((interaction.obstacleX - 0.15 * numX * h - maxExtent) / h - 1)),
+      // The restore zeroes the u-face one column right of the old bbox — the
+      // CPU rasterizer did the same (its restore loop wrote uData[(i+1)*n+j]
+      // at i=iMax). Include that face column in the union.
+      iMax: Math.min(numX - 1, oldBBRawIMax + 1),
+      jMin: Math.max(1, Math.floor((interaction.obstacleY + 0.10 * numY * h - maxExtent) / h - 1)),
+      jMax: Math.min(numY - 2, Math.ceil((interaction.obstacleY + 0.10 * numY * h + maxExtent) / h + 1)),
+    };
+    const inUnion = (i, j) =>
+      (i >= newBB.iMin && i <= newBB.iMax && j >= newBB.jMin && j <= newBB.jMax) ||
+      (i >= oldBB.iMin && i <= oldBB.iMax && j >= oldBB.jMin && j <= oldBB.jMax) ||
+      // The GPU rasterizer owns the u face by the cell to its right (the
+      // left neighbour's right face), so a one-cell i-shadow can change.
+      (i - 1 >= newBB.iMin && i - 1 <= newBB.iMax && j >= newBB.jMin && j <= newBB.jMax);
+
+    const after = { s: await readBuf(solver.solidBuffer), p: await readBuf(solver.pressureBuffer), slots: [] };
+    const sBoundaryAfter = await readBuf(solver.sBoundary);
+    for (const b of bufs) after.slots.push({ u: await readBuf(b.u), v: await readBuf(b.v), m: await readBuf(b.m) });
+
+    // THE field-reset regression test: outside the union bbox every buffer
+    // must be bit-identical to its own pre-drag state. On the pre-PR-A code
+    // the stale CPU mirrors were pushed over the whole field, so this fails
+    // on essentially every non-initial cell.
+    let drift = 0;
+    for (let i = 0; i < numX; i++) {
+      for (let j = 0; j < numY; j++) {
+        if (inUnion(i, j)) continue;
+        const idx = i * n + j;
+        if (after.s[idx] !== before.s[idx]) drift++;
+        if (after.p[idx] !== before.p[idx]) drift++;
+        for (let k = 0; k < 3; k++) {
+          if (after.slots[k].u[idx] !== before.slots[k].u[idx]) drift++;
+          if (after.slots[k].v[idx] !== before.slots[k].v[idx]) drift++;
+          if (after.slots[k].m[idx] !== before.slots[k].m[idx]) drift++;
+        }
+      }
+    }
+    // Three-slot fan-out: the cells the shader actually wrote (non-boundary
+    // solid obstacle cells inside the new bbox) must agree across slots.
+    // Fluid cells inside the bbox legitimately retain slot-specific advected
+    // values from the steps that ran before solver.paused was set, so the
+    // whole-bbox assertion cannot hold.
+    let slotSkew = 0;
+    for (let i = newBB.iMin; i <= newBB.iMax; i++) {
+      for (let j = newBB.jMin; j <= newBB.jMax; j++) {
+        const idx = i * n + j;
+        if (after.s[idx] !== 0.0 || sBoundaryAfter[idx] === 0.0) continue;
+        if (after.slots[0].u[idx] !== after.slots[1].u[idx] ||
+            after.slots[1].u[idx] !== after.slots[2].u[idx]) slotSkew++;
+        if (after.slots[0].m[idx] !== after.slots[1].m[idx] ||
+            after.slots[1].m[idx] !== after.slots[2].m[idx]) slotSkew++;
+      }
+    }
+    return { drift, slotSkew };
+  });
+  expect(r.drift).toBe(0);
+  expect(r.slotSkew).toBe(0);
+});
+
+test('the rasterizer never carves the i=numX-1 outflow column or j-ring cells', async ({ page }) => {
+  await boot(page);
+  const r = await page.evaluate(async () => {
+    const { solver, device, interaction } = window.__flowlab;
+    solver.paused = true;
+    const { numX, numY, h } = solver;
+    const n = numY;
+    const size = numX * numY * 4;
+    const readBuf = async (src) => {
+      const staging = device.createBuffer({
+        size, usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST,
+      });
+      const enc = device.createCommandEncoder();
+      enc.copyBufferToBuffer(src, 0, staging, 0, size);
+      device.queue.submit([enc.finish()]);
+      await staging.mapAsync(GPUMapMode.READ);
+      const out = new Float32Array(staging.getMappedRange().slice(0));
+      staging.unmap();
+      staging.destroy();
+      return out;
+    };
+
+    const sBoundaryArr = await readBuf(solver.sBoundary);
+    const VX = Math.fround(0.6);
+    const VY = Math.fround(-0.4);
+
+    // Center the circle so its footprint spills into the open outflow column
+    // i=numX-1, which the pre-PR CPU rasterizer never carved because its bbox
+    // was clamped to i <= numX-2. Cell (numX-2, jMid) center is exactly here.
+    const centerX = (numX - 1.5) * h;
+    const centerY = 0.5 * numY * h;
+    const radius = 4.0 * h;
+
+    const uBefore = await readBuf(solver.velPairs[solver._velCur].u);
+    const vBefore = await readBuf(solver.velPairs[solver._velCur].v);
+
+    solver.rasterizeObstacle({
+      shape: 0, centerX, centerY, vx: VX, vy: VY, radius, angle: 0,
+      prevBBox: [1, 0, 0, 0],
+    });
+
+    const s = await readBuf(solver.solidBuffer);
+    const u = await readBuf(solver.velPairs[solver._velCur].u);
+    const v = await readBuf(solver.velPairs[solver._velCur].v);
+
+    // CPU-oracle inside-test for the legitimate left-neighbour u-face write.
+    const insideCircle = (i, j) => {
+      const dx = (i + 0.5) * h - centerX;
+      const dy = (j + 0.5) * h - centerY;
+      return dx * dx + dy * dy < radius * radius;
+    };
+
+    let sCarved = 0;
+    let vChanged = 0;
+    let uWrong = 0;
+    let ringCarved = 0;
+
+    for (let j = 1; j < n - 1; j++) {
+      const idx = (numX - 1) * n + j;
+      if (sBoundaryArr[idx] === 0) continue; // belt-and-braces
+      if (s[idx] !== 1.0) sCarved++;
+      if (v[idx] !== vBefore[idx]) vChanged++;
+      const leftInside = insideCircle(numX - 2, j);
+      const expectU = leftInside ? VX : uBefore[idx];
+      if (u[idx] !== expectU) uWrong++;
+    }
+
+    // The top/bottom j-ring is boundary-mask solid and must stay that way.
+    for (let i = 0; i < numX; i++) {
+      if (s[i * n + 0] !== 0.0) ringCarved++;
+      if (s[i * n + (n - 1)] !== 0.0) ringCarved++;
+    }
+
+    return { sCarved, vChanged, uWrong, ringCarved };
+  });
+  expect(r.sCarved).toBe(0);
+  expect(r.vChanged).toBe(0);
+  expect(r.uWrong).toBe(0);
+  expect(r.ringCarved).toBe(0);
+});
+
+test('the Interaction.SHAPES name-to-enum mapping matches the WGSL shape cases', async ({ page }) => {
+  await boot(page);
+  const r = await page.evaluate(async () => {
+    const { solver, device, interaction } = window.__flowlab;
+    solver.paused = true;
+    const { numX, numY, h } = solver;
+    const n = numY;
+    const size = numX * numY * 4;
+    const readBuf = async (src) => {
+      const staging = device.createBuffer({
+        size, usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST,
+      });
+      const enc = device.createCommandEncoder();
+      enc.copyBufferToBuffer(src, 0, staging, 0, size);
+      device.queue.submit([enc.finish()]);
+      await staging.mapAsync(GPUMapMode.READ);
+      const out = new Float32Array(staging.getMappedRange().slice(0));
+      staging.unmap();
+      staging.destroy();
+      return out;
+    };
+
+    const sBoundaryArr = await readBuf(solver.sBoundary);
+
+    // CPU oracle inside-test (verbatim port of the pre-PR-A code).
+    const insideAt = (shapeIdx, centerX, centerY, radius, angle, i, j) => {
+      const r = radius, chord = r * 4, wedgeLen = r * 3;
+      const tanHA = Math.tan(15 * Math.PI / 180);
+      const cosA = Math.cos(-angle), sinA = Math.sin(-angle);
+      const dx = (i + 0.5) * h - centerX;
+      const dy = (j + 0.5) * h - centerY;
+      const ldx = dx * cosA - dy * sinA;
+      const ldy = dx * sinA + dy * cosA;
+      if (shapeIdx === 0) return dx * dx + dy * dy < r * r;
+      if (shapeIdx === 1) return Math.abs(ldx) < r && Math.abs(ldy) < r;
+      if (shapeIdx === 2) {
+        const lx = ldx + chord * 0.5;
+        if (lx < 0 || lx > chord) return false;
+        const xc = lx / chord;
+        const yt = 5 * 0.12 * chord * (0.2969 * Math.sqrt(xc) - 0.1260 * xc
+          - 0.3516 * xc * xc + 0.2843 * xc * xc * xc - 0.1015 * xc * xc * xc * xc);
+        return Math.abs(ldy) < yt;
+      }
+      const lx = ldx + wedgeLen * 0.5;
+      return lx >= 0 && lx < wedgeLen && Math.abs(ldy) < lx * tanHA;
+    };
+
+    const bboxOf = (cx, cy, r) => {
+      const maxExtent = Math.max(r, r * 4 * 0.5, r * 3 * 0.5);
+      return [
+        Math.max(1, Math.floor((cx - maxExtent) / h - 1)),
+        Math.min(numX - 2, Math.ceil((cx + maxExtent) / h + 1)),
+        Math.max(1, Math.floor((cy - maxExtent) / h - 1)),
+        Math.min(numY - 2, Math.ceil((cy + maxExtent) / h + 1)),
+      ];
+    };
+
+    // Pin the HTML picker list to the enum.
+    const SHAPES = interaction.constructor.SHAPES;
+    const pickerValues = Array.from(document.querySelectorAll('[data-shape]')).map(b => b.dataset.shape);
+    const pickerBad = pickerValues.filter(v => !SHAPES.includes(v));
+
+    const W = numX * h, H = numY * h;
+    // Same parameters as the existing CPU-oracle test, chosen off grid lines
+    // and away from axis alignment so the f32 WGSL trig and f64 JS oracle agree.
+    const paramsByShape = [
+      { cx: 0.62 * W, cy: 0.37 * H, r: 0.055, angle: 0.73 },
+      { cx: 0.55 * W, cy: 0.61 * H, r: 0.070, angle: 0.50 },
+      { cx: 0.48 * W, cy: 0.42 * H, r: 0.045, angle: -0.31 },
+      { cx: 0.70 * W, cy: 0.55 * H, r: 0.060, angle: 1.19 },
+    ];
+
+    const results = [];
+    for (let shapeIdx = 0; shapeIdx < SHAPES.length; shapeIdx++) {
+      const name = SHAPES[shapeIdx];
+      const p = paramsByShape[shapeIdx];
+      interaction.activeShape = name;
+      interaction.obstacleRadius = p.r;
+      interaction.obstacleAngle = p.angle;
+      interaction.rasterizeObstacle(p.cx, p.cy, 0, 0);
+
+      const s = await readBuf(solver.solidBuffer);
+      const [iMin, iMax, jMin, jMax] = bboxOf(p.cx, p.cy, p.r);
+      let maskMismatch = 0;
+      for (let i = iMin; i <= iMax; i++) {
+        for (let j = jMin; j <= jMax; j++) {
+          const idx = i * n + j;
+          const bnd = sBoundaryArr[idx] === 0;
+          const expectS = bnd ? 0 : (insideAt(shapeIdx, p.cx, p.cy, p.r, p.angle, i, j) ? 0 : 1);
+          if (s[idx] !== expectS) maskMismatch++;
+        }
+      }
+      results.push({ name, shapeIdx, maskMismatch });
+    }
+    return { pickerValues, pickerBad, results };
+  });
+
+  expect(r.pickerBad).toEqual([]);
+  for (const res of r.results) {
+    expect(res.maskMismatch, `${res.name} (shape ${res.shapeIdx}) mask mismatch`).toBe(0);
+  }
+});
+
+test('the three-slot rotation and boundary mask survive an applyTier buffer recreation', async ({ page }) => {
+  await boot(page);
+  const r = await page.evaluate(async () => {
+    const { solver, adaptive, ui, device } = window.__flowlab;
+    solver.paused = true;
+
+    adaptive.currentTierIndex = 0; // tier 64 — cheap; any tier exercises the path
+    adaptive.applyTier(); // resize -> reapplyCurrentPreset -> resetFlipState
+    solver.setParams({ nu: 0 }); // inviscid +2 rotation; reapplyCurrentPreset restores nonzero nu from slider
+
+    const afterReset = { vel: solver._velCur, smoke: solver._smokeCur };
+    const seq = [];
+    for (let k = 0; k < 3; k++) {
+      solver.step(ui.numIters);
+      seq.push([solver._velCur, solver._smokeCur]);
+    }
+
+    // The boundary-mask buffer was recreated at the new grid size and
+    // re-uploaded by loadPreset: its i=0 column is solid on the NEW grid.
+    const size = solver.numX * solver.numY * 4;
+    const staging = device.createBuffer({
+      size, usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST,
+    });
+    const enc = device.createCommandEncoder();
+    enc.copyBufferToBuffer(solver.sBoundary, 0, staging, 0, size);
+    device.queue.submit([enc.finish()]);
+    await staging.mapAsync(GPUMapMode.READ);
+    const sb = new Float32Array(staging.getMappedRange().slice(0));
+    staging.unmap();
+    staging.destroy();
+    let col0Solid = true;
+    for (let j = 0; j < solver.numY; j++) if (sb[0 * solver.numY + j] !== 0) col0Solid = false;
+
+    // And the rasterizer works on the recreated buffers: rasterize once and
+    // count solid non-boundary cells (the obstacle).
+    solver.rasterizeObstacle({
+      shape: 0, centerX: 0.4 * solver.numX * solver.h, centerY: 0.5 * solver.numY * solver.h,
+      vx: 0, vy: 0, radius: 0.06, angle: 0,
+      prevBBox: [1, 0, 0, 0], // s is already the fresh boundary mask post-reload
+    });
+    const staging2 = device.createBuffer({
+      size, usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST,
+    });
+    const enc2 = device.createCommandEncoder();
+    enc2.copyBufferToBuffer(solver.solidBuffer, 0, staging2, 0, size);
+    device.queue.submit([enc2.finish()]);
+    await staging2.mapAsync(GPUMapMode.READ);
+    const s = new Float32Array(staging2.getMappedRange().slice(0));
+    staging2.unmap();
+    staging2.destroy();
+    let extraSolids = 0;
+    for (let k = 0; k < s.length; k++) if (s[k] === 0 && sb[k] !== 0) extraSolids++;
+
+    return { afterReset, seq, col0Solid, extraSolids, sBoundarySize: solver.sBoundary.size, expectSize: size };
+  });
+  expect(r.afterReset).toEqual({ vel: 0, smoke: 0 });
+  expect(r.seq).toEqual([[2, 2], [1, 1], [0, 0]]);
+  expect(r.col0Solid).toBe(true);
+  expect(r.sBoundarySize).toBe(r.expectSize);
+  expect(r.extraSolids).toBeGreaterThan(10); // ~46 cells at tier 64
+});
