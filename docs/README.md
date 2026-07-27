@@ -27,18 +27,20 @@ graph TD
     end
 
     subgraph GPU["WebGPU Device"]
-        B["Storage Buffers — p, s + 3-slot rotation for u, v, m"]
+        B["Storage Buffers — p, s, sBoundary + 3-slot rotation for u, v, m"]
         C2[pressure.wgsl]
         C3[boundary.wgsl]
         C4["advect.wgsl / advect_smoke.wgsl"]
         C6["maccormack.wgsl / maccormack_velocity.wgsl"]
         C7[diffuse.wgsl]
+        C8[rasterize_obstacle.wgsl]
         C5[render_field.wgsl]
         C2 --> B
         C3 --> B
         C4 --> B
         C6 --> B
         C7 --> B
+        C8 --> B
     end
 
     S2 -->|HTTP| Browser

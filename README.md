@@ -21,7 +21,7 @@ Drag obstacles through the flow. Watch a vortex street form — and die when you
 - **GPU-accelerated solver** — Red-Black Gauss-Seidel pressure projection + MacCormack advection (second-order, min/max limited), all in WGSL compute shaders
 - **Real viscosity** — an explicit diffusion pass with automatic substepping, so the Reynolds control sets a physical parameter rather than a label
 - **Measured, not asserted** — the Reynolds slider shows a badge when the requested Re leaves the range this grid can honestly deliver, and the Strouhal number is recovered live from the wake instead of quoted from a textbook
-- **Interactive obstacles** — Drag circles, squares, airfoils, or wedges through the fluid with velocity coupling
+- **Interactive obstacles** — Drag circles, squares, airfoils, or wedges through the fluid with velocity coupling, rasterized on the GPU — a drag perturbs the flow instead of restarting it (ADR-0010)
 - **Multiple visualizations** — Smoke dye (magma colormap), pressure field (coolwarm), streamlines, velocity arrows, tracer particles
 - **Curated presets** — Karman vortex street, backward-facing step
 - **Advanced controls** — Adjust timestep, relaxation, iterations, inflow velocity, Reynolds number, grid resolution
@@ -73,7 +73,7 @@ static/
     fluid-solver.js         # GPU buffer management, compute dispatch
     field-renderer.js       # WebGPU render pass for the field view
     renderer.js             # Overlay canvas, GPU readbacks, colorbar
-    interaction.js           # Mouse/touch drag, shape rasterization
+    interaction.js           # Mouse/touch drag, obstacle shape/rotation input
     particles.js             # CPU Lagrangian tracer particles + emitters
     presets.js               # Preset configurations
     diagnostics.js           # Measured constants, honest-window logic, Strouhal detector
@@ -87,6 +87,7 @@ static/
     maccormack_velocity.wgsl # Limited MacCormack combine for velocity
     maccormack.wgsl          # Limited MacCormack combine for smoke
     diffuse.wgsl             # Explicit five-point viscous diffusion
+    rasterize_obstacle.wgsl  # Obstacle rasterization: footprint, wall velocity, restore
     render_field.wgsl        # Field view: bilinear sampling, colormap LUT, solids
   colormaps/
     viridis.png              # Scientific colormaps (256x1 LUT textures)
@@ -115,7 +116,7 @@ The **[Documentation Hub](docs/README.md)** is the entry point for the technical
 |[System Architecture](docs/architecture.md)|Tech stack, module graph, frame loop, preset system, adaptive resolution, interaction model|
 |[Numerical Methods](docs/numerical-methods.md)|Governing equations, MAC grid, pressure solver, MacCormack limiter, viscous substepping, measured numerical viscosity, Strouhal measurement|
 |[GPU Pipeline](docs/gpu-pipeline.md)|Buffer layout, three-slot rotation, dispatch counts, bind-group budget, rendering|
-|[Decision Records](docs/adr/README.md)|Nine ADRs — what was decided, and what has actually shipped|
+|[Decision Records](docs/adr/README.md)|Ten ADRs — what was decided, and what has actually shipped|
 |[Roadmap](docs/ROADMAP.md)|Shipped milestones, planned features, known gaps|
 |[CONTEXT.md](CONTEXT.md)|Project vocabulary — shipped and target-state terms|
 
