@@ -2774,3 +2774,65 @@ test('an obstacle drag leaves the field outside both bounding boxes bit-identica
   expect(r.drift).toBe(0);
   expect(r.slotSkew).toBe(0);
 });
+
+test('the three-slot rotation and boundary mask survive an applyTier buffer recreation', async ({ page }) => {
+  await boot(page);
+  const r = await page.evaluate(async () => {
+    const { solver, adaptive, ui, device } = window.__flowlab;
+    solver.paused = true;
+
+    adaptive.currentTierIndex = 0; // tier 64 — cheap; any tier exercises the path
+    adaptive.applyTier(); // resize -> reapplyCurrentPreset -> resetFlipState
+    solver.setParams({ nu: 0 }); // inviscid +2 rotation; reapplyCurrentPreset restores nonzero nu from slider
+
+    const afterReset = { vel: solver._velCur, smoke: solver._smokeCur };
+    const seq = [];
+    for (let k = 0; k < 3; k++) {
+      solver.step(ui.numIters);
+      seq.push([solver._velCur, solver._smokeCur]);
+    }
+
+    // The boundary-mask buffer was recreated at the new grid size and
+    // re-uploaded by loadPreset: its i=0 column is solid on the NEW grid.
+    const size = solver.numX * solver.numY * 4;
+    const staging = device.createBuffer({
+      size, usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST,
+    });
+    const enc = device.createCommandEncoder();
+    enc.copyBufferToBuffer(solver.sBoundary, 0, staging, 0, size);
+    device.queue.submit([enc.finish()]);
+    await staging.mapAsync(GPUMapMode.READ);
+    const sb = new Float32Array(staging.getMappedRange().slice(0));
+    staging.unmap();
+    staging.destroy();
+    let col0Solid = true;
+    for (let j = 0; j < solver.numY; j++) if (sb[0 * solver.numY + j] !== 0) col0Solid = false;
+
+    // And the rasterizer works on the recreated buffers: rasterize once and
+    // count solid non-boundary cells (the obstacle).
+    solver.rasterizeObstacle({
+      shape: 0, centerX: 0.4 * solver.numX * solver.h, centerY: 0.5 * solver.numY * solver.h,
+      vx: 0, vy: 0, radius: 0.06, angle: 0,
+      prevBBox: [1, 0, 0, 0], // s is already the fresh boundary mask post-reload
+    });
+    const staging2 = device.createBuffer({
+      size, usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST,
+    });
+    const enc2 = device.createCommandEncoder();
+    enc2.copyBufferToBuffer(solver.solidBuffer, 0, staging2, 0, size);
+    device.queue.submit([enc2.finish()]);
+    await staging2.mapAsync(GPUMapMode.READ);
+    const s = new Float32Array(staging2.getMappedRange().slice(0));
+    staging2.unmap();
+    staging2.destroy();
+    let extraSolids = 0;
+    for (let k = 0; k < s.length; k++) if (s[k] === 0 && sb[k] !== 0) extraSolids++;
+
+    return { afterReset, seq, col0Solid, extraSolids, sBoundarySize: solver.sBoundary.size, expectSize: size };
+  });
+  expect(r.afterReset).toEqual({ vel: 0, smoke: 0 });
+  expect(r.seq).toEqual([[2, 2], [1, 1], [0, 0]]);
+  expect(r.col0Solid).toBe(true);
+  expect(r.sBoundarySize).toBe(r.expectSize);
+  expect(r.extraSolids).toBeGreaterThan(10); // ~46 cells at tier 64
+});
