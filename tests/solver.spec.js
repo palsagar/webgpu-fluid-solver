@@ -2855,6 +2855,190 @@ test('an obstacle drag leaves the field outside both bounding boxes bit-identica
   expect(r.slotSkew).toBe(0);
 });
 
+test('the rasterizer never carves the i=numX-1 outflow column or j-ring cells', async ({ page }) => {
+  await boot(page);
+  const r = await page.evaluate(async () => {
+    const { solver, device, interaction } = window.__flowlab;
+    solver.paused = true;
+    const { numX, numY, h } = solver;
+    const n = numY;
+    const size = numX * numY * 4;
+    const readBuf = async (src) => {
+      const staging = device.createBuffer({
+        size, usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST,
+      });
+      const enc = device.createCommandEncoder();
+      enc.copyBufferToBuffer(src, 0, staging, 0, size);
+      device.queue.submit([enc.finish()]);
+      await staging.mapAsync(GPUMapMode.READ);
+      const out = new Float32Array(staging.getMappedRange().slice(0));
+      staging.unmap();
+      staging.destroy();
+      return out;
+    };
+
+    const sBoundaryArr = await readBuf(solver.sBoundary);
+    const VX = Math.fround(0.6);
+    const VY = Math.fround(-0.4);
+
+    // Center the circle so its footprint spills into the open outflow column
+    // i=numX-1, which the pre-PR CPU rasterizer never carved because its bbox
+    // was clamped to i <= numX-2. Cell (numX-2, jMid) center is exactly here.
+    const centerX = (numX - 1.5) * h;
+    const centerY = 0.5 * numY * h;
+    const radius = 4.0 * h;
+
+    const uBefore = await readBuf(solver.velPairs[solver._velCur].u);
+    const vBefore = await readBuf(solver.velPairs[solver._velCur].v);
+
+    solver.rasterizeObstacle({
+      shape: 0, centerX, centerY, vx: VX, vy: VY, radius, angle: 0,
+      prevBBox: [1, 0, 0, 0],
+    });
+
+    const s = await readBuf(solver.solidBuffer);
+    const u = await readBuf(solver.velPairs[solver._velCur].u);
+    const v = await readBuf(solver.velPairs[solver._velCur].v);
+
+    // CPU-oracle inside-test for the legitimate left-neighbour u-face write.
+    const insideCircle = (i, j) => {
+      const dx = (i + 0.5) * h - centerX;
+      const dy = (j + 0.5) * h - centerY;
+      return dx * dx + dy * dy < radius * radius;
+    };
+
+    let sCarved = 0;
+    let vChanged = 0;
+    let uWrong = 0;
+    let ringCarved = 0;
+
+    for (let j = 1; j < n - 1; j++) {
+      const idx = (numX - 1) * n + j;
+      if (sBoundaryArr[idx] === 0) continue; // belt-and-braces
+      if (s[idx] !== 1.0) sCarved++;
+      if (v[idx] !== vBefore[idx]) vChanged++;
+      const leftInside = insideCircle(numX - 2, j);
+      const expectU = leftInside ? VX : uBefore[idx];
+      if (u[idx] !== expectU) uWrong++;
+    }
+
+    // The top/bottom j-ring is boundary-mask solid and must stay that way.
+    for (let i = 0; i < numX; i++) {
+      if (s[i * n + 0] !== 0.0) ringCarved++;
+      if (s[i * n + (n - 1)] !== 0.0) ringCarved++;
+    }
+
+    return { sCarved, vChanged, uWrong, ringCarved };
+  });
+  expect(r.sCarved).toBe(0);
+  expect(r.vChanged).toBe(0);
+  expect(r.uWrong).toBe(0);
+  expect(r.ringCarved).toBe(0);
+});
+
+test('the Interaction.SHAPES name-to-enum mapping matches the WGSL shape cases', async ({ page }) => {
+  await boot(page);
+  const r = await page.evaluate(async () => {
+    const { solver, device, interaction } = window.__flowlab;
+    solver.paused = true;
+    const { numX, numY, h } = solver;
+    const n = numY;
+    const size = numX * numY * 4;
+    const readBuf = async (src) => {
+      const staging = device.createBuffer({
+        size, usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST,
+      });
+      const enc = device.createCommandEncoder();
+      enc.copyBufferToBuffer(src, 0, staging, 0, size);
+      device.queue.submit([enc.finish()]);
+      await staging.mapAsync(GPUMapMode.READ);
+      const out = new Float32Array(staging.getMappedRange().slice(0));
+      staging.unmap();
+      staging.destroy();
+      return out;
+    };
+
+    const sBoundaryArr = await readBuf(solver.sBoundary);
+
+    // CPU oracle inside-test (verbatim port of the pre-PR-A code).
+    const insideAt = (shapeIdx, centerX, centerY, radius, angle, i, j) => {
+      const r = radius, chord = r * 4, wedgeLen = r * 3;
+      const tanHA = Math.tan(15 * Math.PI / 180);
+      const cosA = Math.cos(-angle), sinA = Math.sin(-angle);
+      const dx = (i + 0.5) * h - centerX;
+      const dy = (j + 0.5) * h - centerY;
+      const ldx = dx * cosA - dy * sinA;
+      const ldy = dx * sinA + dy * cosA;
+      if (shapeIdx === 0) return dx * dx + dy * dy < r * r;
+      if (shapeIdx === 1) return Math.abs(ldx) < r && Math.abs(ldy) < r;
+      if (shapeIdx === 2) {
+        const lx = ldx + chord * 0.5;
+        if (lx < 0 || lx > chord) return false;
+        const xc = lx / chord;
+        const yt = 5 * 0.12 * chord * (0.2969 * Math.sqrt(xc) - 0.1260 * xc
+          - 0.3516 * xc * xc + 0.2843 * xc * xc * xc - 0.1015 * xc * xc * xc * xc);
+        return Math.abs(ldy) < yt;
+      }
+      const lx = ldx + wedgeLen * 0.5;
+      return lx >= 0 && lx < wedgeLen && Math.abs(ldy) < lx * tanHA;
+    };
+
+    const bboxOf = (cx, cy, r) => {
+      const maxExtent = Math.max(r, r * 4 * 0.5, r * 3 * 0.5);
+      return [
+        Math.max(1, Math.floor((cx - maxExtent) / h - 1)),
+        Math.min(numX - 2, Math.ceil((cx + maxExtent) / h + 1)),
+        Math.max(1, Math.floor((cy - maxExtent) / h - 1)),
+        Math.min(numY - 2, Math.ceil((cy + maxExtent) / h + 1)),
+      ];
+    };
+
+    // Pin the HTML picker list to the enum.
+    const SHAPES = interaction.constructor.SHAPES;
+    const pickerValues = Array.from(document.querySelectorAll('[data-shape]')).map(b => b.dataset.shape);
+    const pickerBad = pickerValues.filter(v => !SHAPES.includes(v));
+
+    const W = numX * h, H = numY * h;
+    // Same parameters as the existing CPU-oracle test, chosen off grid lines
+    // and away from axis alignment so the f32 WGSL trig and f64 JS oracle agree.
+    const paramsByShape = [
+      { cx: 0.62 * W, cy: 0.37 * H, r: 0.055, angle: 0.73 },
+      { cx: 0.55 * W, cy: 0.61 * H, r: 0.070, angle: 0.50 },
+      { cx: 0.48 * W, cy: 0.42 * H, r: 0.045, angle: -0.31 },
+      { cx: 0.70 * W, cy: 0.55 * H, r: 0.060, angle: 1.19 },
+    ];
+
+    const results = [];
+    for (let shapeIdx = 0; shapeIdx < SHAPES.length; shapeIdx++) {
+      const name = SHAPES[shapeIdx];
+      const p = paramsByShape[shapeIdx];
+      interaction.activeShape = name;
+      interaction.obstacleRadius = p.r;
+      interaction.obstacleAngle = p.angle;
+      interaction.rasterizeObstacle(p.cx, p.cy, 0, 0);
+
+      const s = await readBuf(solver.solidBuffer);
+      const [iMin, iMax, jMin, jMax] = bboxOf(p.cx, p.cy, p.r);
+      let maskMismatch = 0;
+      for (let i = iMin; i <= iMax; i++) {
+        for (let j = jMin; j <= jMax; j++) {
+          const idx = i * n + j;
+          const bnd = sBoundaryArr[idx] === 0;
+          const expectS = bnd ? 0 : (insideAt(shapeIdx, p.cx, p.cy, p.r, p.angle, i, j) ? 0 : 1);
+          if (s[idx] !== expectS) maskMismatch++;
+        }
+      }
+      results.push({ name, shapeIdx, maskMismatch });
+    }
+    return { pickerValues, pickerBad, results };
+  });
+
+  expect(r.pickerBad).toEqual([]);
+  for (const res of r.results) {
+    expect(res.maskMismatch, `${res.name} (shape ${res.shapeIdx}) mask mismatch`).toBe(0);
+  }
+});
+
 test('the three-slot rotation and boundary mask survive an applyTier buffer recreation', async ({ page }) => {
   await boot(page);
   const r = await page.evaluate(async () => {

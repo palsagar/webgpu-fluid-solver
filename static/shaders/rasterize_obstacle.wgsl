@@ -80,6 +80,10 @@ fn inside(i: u32, j: u32) -> bool {
     }
 }
 
+fn eligible(i: u32, j: u32) -> bool {
+    return i >= 1u && i <= params.numX - 2u && j >= 1u && j <= params.numY - 2u;
+}
+
 fn inPrevBBox(i: u32, j: u32) -> bool {
     let b = params.prevBBox;
     if (b.x > b.y) { return false; } // sentinel: no previous footprint
@@ -95,7 +99,7 @@ fn rasterize(@builtin(global_invocation_id) id: vec3u) {
     let idx = i * n + j;
 
     let boundaryHere = sBoundary[idx] == 0.0;
-    let insideHere = !boundaryHere && inside(i, j);
+    let insideHere = !boundaryHere && eligible(i, j) && inside(i, j);
     let zeroHere = !boundaryHere && inPrevBBox(i, j);
 
     // The left neighbour decides this thread's u face as its right face.
@@ -104,7 +108,7 @@ fn rasterize(@builtin(global_invocation_id) id: vec3u) {
     if (i > 0u) {
         let leftIdx = (i - 1u) * n + j;
         if (sBoundary[leftIdx] != 0.0) {
-            insideLeft = inside(i - 1u, j);
+            insideLeft = eligible(i - 1u, j) && inside(i - 1u, j);
             zeroLeft = inPrevBBox(i - 1u, j);
         }
     }
