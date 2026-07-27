@@ -1,5 +1,5 @@
 ---
-status: accepted; spec'd, not yet implemented (ROADMAP PR A)
+status: accepted
 ---
 
 # GPU-side obstacle rasterization; no CPU field mirrors
