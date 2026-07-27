@@ -2613,3 +2613,62 @@ test('a vacated footprint is restored: fluid, zero velocity/pressure, smoke clea
   expect(r.boundaryCarved).toBe(0);
 });
 
+test('the inflow slider writes only column 1, in every rotation slot', async ({ page }) => {
+  await boot(page);
+  const r = await page.evaluate(async () => {
+    const { solver, device, ui } = window.__flowlab;
+    solver.paused = true;
+    const { numX, numY } = solver;
+    const n = numY;
+    const size = numX * numY * 4;
+    const readBuf = async (src) => {
+      const staging = device.createBuffer({
+        size, usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST,
+      });
+      const enc = device.createCommandEncoder();
+      enc.copyBufferToBuffer(src, 0, staging, 0, size);
+      device.queue.submit([enc.finish()]);
+      await staging.mapAsync(GPUMapMode.READ);
+      const out = new Float32Array(staging.getMappedRange().slice(0));
+      staging.unmap();
+      staging.destroy();
+      return out;
+    };
+
+    const before = [];
+    for (const pair of solver.velPairs) before.push(await readBuf(pair.u));
+
+    ui._setInflowVelocity(2.5);
+
+    const after = [];
+    for (const pair of solver.velPairs) after.push(await readBuf(pair.u));
+
+    // The regression this pins: _setInflowVelocity used to rebuild a whole
+    // field from the STALE CPU mirror and push it over the live one — a
+    // second instance of the field-reset defect. Outside column 1 every slot
+    // must be bit-identical to its own pre-slider state.
+    let outsideDrift = 0;
+    for (let k = 0; k < 3; k++) {
+      for (let idx = 0; idx < before[k].length; idx++) {
+        const i = Math.floor(idx / n);
+        if (i === 1) continue;
+        if (after[k][idx] !== before[k][idx]) outsideDrift++;
+      }
+    }
+    // Column 1 itself: the new inflow in all three slots, and the persistent
+    // boundaryVelData slice the per-frame re-application reads.
+    let col1Bad = 0;
+    for (let k = 0; k < 3; k++) {
+      for (let j = 0; j < n; j++) if (after[k][1 * n + j] !== 2.5) col1Bad++;
+    }
+    let bvBad = 0;
+    for (let j = 0; j < n; j++) {
+      if (ui.boundaryVelData.uData[1 * n + j] !== 2.5) bvBad++;
+    }
+    return { outsideDrift, col1Bad, bvBad };
+  });
+  expect(r.outsideDrift).toBe(0);
+  expect(r.col1Bad).toBe(0);
+  expect(r.bvBad).toBe(0);
+});
+
