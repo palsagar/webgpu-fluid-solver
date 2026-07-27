@@ -198,7 +198,7 @@ Defined in `static/js/interaction.js`. Handles mouse/touch drag to place and mov
 The shader performs the old three steps in one pass:
 
 1. **Restore old footprint** — non-boundary cells inside the previous bounding box are returned to fluid (`s = 1.0`) with zero velocity and zero pressure. Boundary cells (`sBoundary == 0`) are never carved or restored.
-2. **Rasterize the new shape** — cells whose center passes the shape test become solid (`s = 0.0`) and carry the obstacle drag velocity on the cell-owned velocity face and the face to the left.
+2. **Rasterize the new shape** — cells whose center passes the shape test become solid (`s = 0.0`) and carry the obstacle drag velocity on the cell-owned velocity face and the face to the right.
 3. **Clear smoke imprints** — cells that were solid in the frozen `sOld` snapshot but are now vacated have their smoke reset to `m = 1.0`. `sOld` is needed because `s` itself is updated by each dispatch; without the snapshot, later dispatches would see an already-restored mask and skip the clear.
 
 After the dispatches, `renderer.invalidateSolid()` is called. The drag also clears the Strouhal probe's sample series — a wake that has just had its obstacle moved is no longer the wake the accumulated samples describe.
@@ -216,7 +216,7 @@ After the dispatches, `renderer.invalidateSolid()` is called. The drag also clea
 
 ### Velocity Coupling
 
-During drag, velocity is computed as `(currentPos - prevPos) / dt` and passed to `rasterizeObstacle`. The shader writes this velocity into solid cells and the face to their left for each rotation slot, coupling obstacle motion to the fluid. MacCormack advection preserves the moving-wall BC during the inviscid step; the viscous pass still ghosts a buried face to `-center`, pinning it at zero (disclosed in the Known gaps).
+During drag, velocity is computed as `(currentPos - prevPos) / dt` and passed to `rasterizeObstacle`. The shader writes this velocity into solid cells and the face to their right for each rotation slot, coupling obstacle motion to the fluid. MacCormack advection preserves the moving-wall BC during the inviscid step; the viscous pass still ghosts a buried face to `-center`, pinning it at zero (disclosed in the Known gaps).
 
 ### Smoke Clearing
 

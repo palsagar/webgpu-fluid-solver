@@ -79,7 +79,7 @@ graph LR
 | `maccormack_velocity.wgsl` | `maccormack_velocity` | Limited combine for velocity |
 | `maccormack.wgsl` | `maccormack_smoke` | Limited combine for smoke |
 | `diffuse.wgsl` | `diffuse` | Explicit five-point viscous update |
-| `rasterize_obstacle.wgsl` | `rasterize` | Obstacle drag/rotation rasterization (not per-frame; three dispatches per slot on interaction)
+| `rasterize_obstacle.wgsl` | `rasterize` | Obstacle drag/rotation rasterization (not per-frame; one dispatch per slot, three total on interaction)
 
 Velocity and smoke need separate trace shaders because velocity has two components and the backward pass keeps phi^n on the advecting-velocity bindings rather than using a separate origin binding like smoke; the combine shaders also differ (velocity carries no solid mask).
 
