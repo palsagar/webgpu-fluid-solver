@@ -171,16 +171,6 @@ export function loadPreset(name, solver, interaction) {
   solver.writeVelocityV(new Float32Array(numX * numY));
   solver.writeSmoke(mData);
 
-  // Resize interaction arrays if grid size changed
-  const iSize = numX * numY;
-  if (!interaction._sData || interaction._sData.length !== iSize) {
-    interaction._sData = new Float32Array(iSize);
-    interaction._uData = new Float32Array(iSize);
-    interaction._vData = new Float32Array(iSize);
-  }
-  interaction.boundaryMask = sData.slice();
-  interaction._uData.set(uData);
-
   // Rasterize obstacle(s), or hide obstacle overlay if none
   interaction._prevBBox = null; // Clear stale bbox from previous grid size
   interaction.obstacleAngle = 0;

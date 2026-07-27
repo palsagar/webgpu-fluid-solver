@@ -817,15 +817,6 @@ export class FluidSolver {
     this.device.queue.submit([encoder.finish()]);
   }
 
-  /**
-   * Writes smoke values at a single cell index to every smoke buffer.
-   * @param {number} index - flat cell index (i * numY + j)
-   * @param {Float32Array} data - values to write at that index
-   */
-  writeSmokeCell(index, data) {
-    for (const b of this.smokeBufs) this.device.queue.writeBuffer(b, index * 4, data);
-  }
-
   get pressureBuffer()  { return this.p; }
   get solidBuffer()     { return this.s; }
   /** Returns the smoke buffer that holds the most recent advection output. */

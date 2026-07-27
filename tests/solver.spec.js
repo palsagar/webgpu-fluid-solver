@@ -2672,3 +2672,105 @@ test('the inflow slider writes only column 1, in every rotation slot', async ({ 
   expect(r.bvBad).toBe(0);
 });
 
+
+test('an obstacle drag leaves the field outside both bounding boxes bit-identical', async ({ page }) => {
+  await boot(page);
+  const r = await page.evaluate(async () => {
+    const { solver, device, interaction } = window.__flowlab;
+    solver.paused = true;
+    const { numX, numY, h } = solver;
+    const n = numY;
+    const size = numX * numY * 4;
+    const readBuf = async (src) => {
+      const staging = device.createBuffer({
+        size, usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST,
+      });
+      const enc = device.createCommandEncoder();
+      enc.copyBufferToBuffer(src, 0, staging, 0, size);
+      device.queue.submit([enc.finish()]);
+      await staging.mapAsync(GPUMapMode.READ);
+      const out = new Float32Array(staging.getMappedRange().slice(0));
+      staging.unmap();
+      staging.destroy();
+      return out;
+    };
+
+    // Snapshot every buffer the rasterizer may touch, per slot.
+    const bufs = [];
+    for (let k = 0; k < 3; k++) bufs.push({ u: solver.velPairs[k].u, v: solver.velPairs[k].v, m: solver.smokeBufs[k] });
+    const before = { s: await readBuf(solver.solidBuffer), p: await readBuf(solver.pressureBuffer), slots: [] };
+    for (const b of bufs) before.slots.push({ u: await readBuf(b.u), v: await readBuf(b.v), m: await readBuf(b.m) });
+
+    // A mid-field drag, like a user dragging the circle right and down.
+    interaction.rasterizeObstacle(
+      interaction.obstacleX + 0.15 * numX * h,
+      interaction.obstacleY - 0.10 * numY * h,
+      0.5, 0.25,
+    );
+
+    // Union of old and new bounding boxes (same formula interaction uses).
+    // interaction.obstacleX/Y already hold the NEW centre post-drag; the old
+    // centre is the drag delta back.
+    const r0 = interaction.obstacleRadius;
+    const maxExtent = Math.max(r0, r0 * 4 * 0.5, r0 * 3 * 0.5);
+    const newBB = interaction._prevBBox;
+    const oldBBRawIMax = Math.min(numX - 2, Math.ceil((interaction.obstacleX - 0.15 * numX * h + maxExtent) / h + 1));
+    const oldBB = {
+      iMin: Math.max(1, Math.floor((interaction.obstacleX - 0.15 * numX * h - maxExtent) / h - 1)),
+      // The restore zeroes the u-face one column right of the old bbox — the
+      // CPU rasterizer did the same (its restore loop wrote uData[(i+1)*n+j]
+      // at i=iMax). Include that face column in the union.
+      iMax: Math.min(numX - 1, oldBBRawIMax + 1),
+      jMin: Math.max(1, Math.floor((interaction.obstacleY + 0.10 * numY * h - maxExtent) / h - 1)),
+      jMax: Math.min(numY - 2, Math.ceil((interaction.obstacleY + 0.10 * numY * h + maxExtent) / h + 1)),
+    };
+    const inUnion = (i, j) =>
+      (i >= newBB.iMin && i <= newBB.iMax && j >= newBB.jMin && j <= newBB.jMax) ||
+      (i >= oldBB.iMin && i <= oldBB.iMax && j >= oldBB.jMin && j <= oldBB.jMax) ||
+      // The GPU rasterizer owns the u face by the cell to its right (the
+      // left neighbour's right face), so a one-cell i-shadow can change.
+      (i - 1 >= newBB.iMin && i - 1 <= newBB.iMax && j >= newBB.jMin && j <= newBB.jMax);
+
+    const after = { s: await readBuf(solver.solidBuffer), p: await readBuf(solver.pressureBuffer), slots: [] };
+    const sBoundaryAfter = await readBuf(solver.sBoundary);
+    for (const b of bufs) after.slots.push({ u: await readBuf(b.u), v: await readBuf(b.v), m: await readBuf(b.m) });
+
+    // THE field-reset regression test: outside the union bbox every buffer
+    // must be bit-identical to its own pre-drag state. On the pre-PR-A code
+    // the stale CPU mirrors were pushed over the whole field, so this fails
+    // on essentially every non-initial cell.
+    let drift = 0;
+    for (let i = 0; i < numX; i++) {
+      for (let j = 0; j < numY; j++) {
+        if (inUnion(i, j)) continue;
+        const idx = i * n + j;
+        if (after.s[idx] !== before.s[idx]) drift++;
+        if (after.p[idx] !== before.p[idx]) drift++;
+        for (let k = 0; k < 3; k++) {
+          if (after.slots[k].u[idx] !== before.slots[k].u[idx]) drift++;
+          if (after.slots[k].v[idx] !== before.slots[k].v[idx]) drift++;
+          if (after.slots[k].m[idx] !== before.slots[k].m[idx]) drift++;
+        }
+      }
+    }
+    // Three-slot fan-out: the cells the shader actually wrote (non-boundary
+    // solid obstacle cells inside the new bbox) must agree across slots.
+    // Fluid cells inside the bbox legitimately retain slot-specific advected
+    // values from the steps that ran before solver.paused was set, so the
+    // whole-bbox assertion cannot hold.
+    let slotSkew = 0;
+    for (let i = newBB.iMin; i <= newBB.iMax; i++) {
+      for (let j = newBB.jMin; j <= newBB.jMax; j++) {
+        const idx = i * n + j;
+        if (after.s[idx] !== 0.0 || sBoundaryAfter[idx] === 0.0) continue;
+        if (after.slots[0].u[idx] !== after.slots[1].u[idx] ||
+            after.slots[1].u[idx] !== after.slots[2].u[idx]) slotSkew++;
+        if (after.slots[0].m[idx] !== after.slots[1].m[idx] ||
+            after.slots[1].m[idx] !== after.slots[2].m[idx]) slotSkew++;
+      }
+    }
+    return { drift, slotSkew };
+  });
+  expect(r.drift).toBe(0);
+  expect(r.slotSkew).toBe(0);
+});
