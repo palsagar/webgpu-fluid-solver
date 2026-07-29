@@ -2232,7 +2232,7 @@ test('the viscous stencil cannot read the stale i=0 / j=0 ring', async ({ page }
     // u along j = 0 and v along i = 0 -- are NOT covered by the FLUID predicate:
     // the u-face at j = 1 has both its flanking cells (i-1, 1) and (i, 1) in the
     // fluid, so that face IS diffused and its stencil does reach u[i][0]. What
-    // stops it is the index guard in u_face_buried/v_face_buried, with the solid
+    // stops it is the index guard in u_neighbor/v_neighbor, with the solid
     // mask agreeing only because every shipped preset happens to mark those
     // lines solid. So these two lines need their own probe.
     //
@@ -3273,10 +3273,10 @@ test('the viscous ghost places the stored wall velocity on the wall line', async
     device.queue.submit([enc.finish()]);
     const u1 = await readBuf(solver.velPairs[1].u);
 
-    // f32-replicated expectation in WGSL evaluation order:
-    // coeff = nu*dt/(h*h); ghost = w+(w-c); lap = ((ghost+A)+B)+D-4c; out = c+coeff*lap.
+    // f32-replicated expectation from f32-rounded uniforms in WGSL evaluation order:
+    // coeff = (nu*dt)/(h*h); ghost = w+(w-c); lap = ((ghost+A)+B)+D-4c; out = c+coeff*lap.
     const f = Math.fround;
-    const coeff = f(f(NU * DT) / f(h * h));
+    const coeff = f(f(f(NU) * f(DT)) / f(f(h) * f(h)));
     const ghost = f(W + f(W - C));
     const lap = f(f(f(f(ghost + A) + B) + D) - f(4 * C));
     const expected = f(C + f(coeff * lap));
@@ -3341,7 +3341,7 @@ test('a stationary stored velocity reduces the ghost to -center exactly', async 
     const u1 = await readBuf(solver.velPairs[1].u);
 
     const f = Math.fround;
-    const coeff = f(f(NU * DT) / f(h * h));
+    const coeff = f(f(f(NU) * f(DT)) / f(f(h) * f(h)));
     const ghost = f(0 + f(0 - C)); // must be exactly -C, including -0 handling
     const lap = f(f(f(f(ghost + A) + B) + D) - f(4 * C));
     const expected = f(C + f(coeff * lap));

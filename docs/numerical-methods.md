@@ -215,7 +215,8 @@ The pass classifies each velocity face three ways, matching the face-based conve
 |---|---|---|---|
 | FLUID | both flanking cells fluid | yes | stored value |
 | WALL | exactly one flanking cell solid | no, copied through | stored value (the no-penetration BC) |
-| BURIED | both flanking cells solid, **or** `i == 0` / `j == 0` | no | ghost `-center` |
+| BURIED (mask) | both flanking cells solid | no | `w + (w - center)` from the stored wall velocity (ADR-0011) |
+| BURIED (index / top-row `u`) | `i == 0` / `j == 0`, or a top-row `u`-face (`j == numY - 1`) | no | ghost `-center` |
 
 The two-case split "solid iff both cells are solid" is *not* the complement of the FLUID test — the gap between them is the wall-normal face, and it matters. Diffusing wall-normal faces against a ghost destroys the inflow BC: measured, it collapses the free stream from 0.93 to 0.10.
 
@@ -235,7 +236,7 @@ The ghost places a zero-velocity wall half a cell outside the surface, i.e. **no
 
 ### Substep parity
 
-The pass ping-pongs between two rotation slots, so after `N` substeps the result lands on a different slot depending on `N`'s parity. `step()` therefore publishes the final source slot rather than advancing by a fixed offset — **the first thing in the codebase that makes the velocity and smoke rotation indices diverge**, which is why the smoke bind groups are a 3x3 `[velCur][smokeCur]` table.
+The pass ping-pongs between two rotation slots, so after `N` substeps the result lands on a different slot depending on `N`'s parity. `step()` therefore publishes the final source slot rather than advancing by a fixed offset — **the first thing in the codebase that makes the velocity and smoke rotation indices diverge**, which is why the smoke bind groups are a 3x3 `[velCur][smokeCur]` table. An obstacle dragged against the top row has its buried u-faces ghosted to `-center` (stationary), mirroring ADR-0011's disclosed limitation.
 
 ## 6. Smoke Transport
 
@@ -261,7 +262,7 @@ Solid cells have `s[i,j] = 0`. The compute passes handle them as follows:
 - **Pressure:** Skips solid cells entirely. The s-flag terms in velocity correction prevent modifying velocities on solid faces.
 - **Boundary:** Does not check solids (operates on domain edges only).
 - **Advection:** Skips faces/cells where an adjacent cell is solid, preserving zero-flux conditions. Its backward pass additionally reverts any cell whose departure stencil touches a solid, gated on `params.dt < 0.0` (`advect_smoke.wgsl:133`). The MacCormack combine's limiter *separately* drops solid corners from its bounds — unconditionally, since the combine only ever runs forward (§4).
-- **Diffusion:** Face-classified FLUID / WALL / BURIED (§5). Solid cells are never written, so an obstacle's drag velocity — which *is* the moving-wall BC — survives the viscous pass untouched.
+- **Diffusion:** Face-classified FLUID / WALL / BURIED (§5). Solid cells are never written, so the stored drag velocity survives in solid-cell faces; mask-buried faces are ghosted **with** it (`w + (w - center)`), which is how the moving wall's shear reaches the fluid.
 
 ### Inflow
 

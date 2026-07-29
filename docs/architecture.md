@@ -216,7 +216,7 @@ After the dispatches, `renderer.invalidateSolid()` is called. The drag also clea
 
 ### Velocity Coupling
 
-During drag, velocity is computed as `(currentPos - prevPos) / dt` and passed to `rasterizeObstacle`. The shader writes this velocity into solid cells and the face to their right for each rotation slot, coupling obstacle motion to the fluid. MacCormack advection preserves the moving-wall BC during the inviscid step; the viscous pass still ghosts a buried face to `-center`, pinning it at zero (disclosed in the Known gaps).
+During drag, velocity is computed as `(currentPos - prevPos) / dt` and passed to `rasterizeObstacle`. The shader writes this velocity into solid cells and the face to their right for each rotation slot, coupling obstacle motion to the fluid. MacCormack advection preserves the moving-wall BC during the inviscid step; the viscous pass ghosts a mask-buried face to `w + (w - center)` with `w` the stored wall velocity, while index-buried faces (`i == 0` / `j == 0`) and top-row u-faces (`j == numY - 1`) still ghost to `-center` (ADR-0011).
 
 ### Smoke Clearing
 
