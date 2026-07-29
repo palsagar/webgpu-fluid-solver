@@ -158,7 +158,13 @@ export class Interaction {
 
     /** Ends the current drag interaction. */
     _endDrag() {
+        if (!this.dragging) return;
         this.dragging = false;
+        // ADR-0011: the stored wall velocity must not outlive the drag — the
+        // viscous ghost reads it every frame. One dispatch round, the same
+        // cost as a mousemove; matches the zero-velocity rasterize in
+        // _startDrag and _rotate.
+        this.rasterizeObstacle(this.obstacleX, this.obstacleY, 0, 0);
     }
 
     /**

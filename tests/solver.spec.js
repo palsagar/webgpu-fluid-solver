@@ -3356,3 +3356,66 @@ test('a stationary stored velocity reduces the ghost to -center exactly', async 
   // up to an undetectable sign-of-zero difference.
   expect(Math.abs(r.actual - r.expected)).toBeLessThan(1e-6);
 });
+
+/**
+ * ADR-0011 drag-end: the stored wall velocity must not outlive the drag.
+ * Drives the real lifecycle methods the canvas listeners call. Before the
+ * fix, _endDrag only cleared the flag, leaving the last mousemove's vx in
+ * the solid cells forever — with the ghost reading it, a permanent pump.
+ */
+test('a drag that ends zeroes the stored wall velocity', async ({ page }) => {
+  await boot(page);
+  const r = await page.evaluate(async () => {
+    const { solver, device, interaction } = window.__flowlab;
+    solver.paused = true;
+    const n = solver.numY, numX = solver.numX;
+    const size = numX * n * 4;
+    const readBuf = async (src) => {
+      const staging = device.createBuffer({
+        size, usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST,
+      });
+      const enc = device.createCommandEncoder();
+      enc.copyBufferToBuffer(src, 0, staging, 0, size);
+      device.queue.submit([enc.finish()]);
+      await staging.mapAsync(GPUMapMode.READ);
+      const out = new Float32Array(staging.getMappedRange().slice(0));
+      staging.unmap();
+      staging.destroy();
+      return out;
+    };
+
+    const rect = document.querySelector('canvas').getBoundingClientRect();
+    const cx = rect.left + rect.width / 2, cy = rect.top + rect.height / 2;
+    interaction._onPointerDown(cx, cy, false);      // _startDrag: rasterize at 0
+    interaction._onPointerMove(cx + 8, cy, false);  // one drag step: vx != 0
+    // Expected vx, replicated: finite difference over one frame dt.
+    const p1 = interaction.screenToSim(cx, cy);
+    const p2 = interaction.screenToSim(cx + 8, cy);
+    const vxExpected = Math.fround((p2.x - p1.x) / solver.params.dt);
+
+    const s = await readBuf(solver.solidBuffer);
+    const uMid = await readBuf(solver.velocityBuffers.u);
+    interaction._endDrag();
+    const uEnd = await readBuf(solver.velocityBuffers.u);
+
+    // Interior solid cells are the obstacle (windTunnel walls are ring rows).
+    let nSolid = 0, midMatches = 0, maxEnd = 0;
+    for (let i = 2; i < numX - 2; i++) {
+      for (let j = 2; j < n - 2; j++) {
+        if (s[i * n + j] !== 0) continue;
+        nSolid++;
+        if (uMid[i * n + j] === vxExpected) midMatches++;
+        maxEnd = Math.max(maxEnd, Math.abs(uEnd[i * n + j]));
+      }
+    }
+    return { nSolid, midMatches, maxEnd };
+  });
+
+  // Non-vacuity: the obstacle covers dozens of interior cells, and mid-drag
+  // every one holds the drag velocity bit-exactly (rasterizer uniform write).
+  expect(r.nSolid).toBeGreaterThan(20);
+  expect(r.midMatches).toBe(r.nSolid);
+  // MUTATION: removing the re-rasterize from _endDrag leaves vx in the solid
+  // cells and fails this bit-exactly.
+  expect(r.maxEnd).toBe(0);
+});
