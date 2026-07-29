@@ -3198,3 +3198,146 @@ test('MEASUREMENT SCAFFOLD: scripted constant-velocity drag near-wall metric', a
   expect(1.0 - r.a.M).toBeGreaterThan(0.1);
   console.log('NEARWALL_M', r.a.M, 'peak', r.a.peak, 'trough', r.a.trough, 'cnt', r.a.cnt);
 });
+
+/**
+ * ADR-0011 unit pin: one isolated diffuse dispatch over a crafted field.
+ * Face (I, J+1) is BURIED-BY-MASK (both flanking cells solid) and stores the
+ * wall velocity W — the rasterizer writes the drag velocity into every inside
+ * cell's own face, so a mask-buried face's stored value IS the wall velocity.
+ * The ghost must be W + (W - C), placing W on the wall line half a cell away.
+ */
+test('the viscous ghost places the stored wall velocity on the wall line', async ({ page }) => {
+  await boot(page);
+  const r = await page.evaluate(async () => {
+    const { solver, device } = window.__flowlab;
+    solver.paused = true;
+    const n = solver.numY, numX = solver.numX, h = solver.h;
+    const size = numX * n * 4;
+    const readBuf = async (src) => {
+      const staging = device.createBuffer({
+        size, usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST,
+      });
+      const enc = device.createCommandEncoder();
+      enc.copyBufferToBuffer(src, 0, staging, 0, size);
+      device.queue.submit([enc.finish()]);
+      await staging.mapAsync(GPUMapMode.READ);
+      const out = new Float32Array(staging.getMappedRange().slice(0));
+      staging.unmap();
+      staging.destroy();
+      return out;
+    };
+
+    // Crafted field: fluid everywhere except a two-cell solid block above the
+    // probe face (I, J), so face (I, J+1) is buried-by-mask and stores W.
+    const I = Math.floor(numX / 2), J = Math.floor(n / 2);
+    const s = new Float32Array(numX * n).fill(1);
+    s[I * n + (J + 1)] = 0;
+    s[(I - 1) * n + (J + 1)] = 0;
+    const W = 0.7, C = 1.1, A = 0.4, B = 0.2, D = 0.9;
+    const u0 = new Float32Array(numX * n);
+    u0[I * n + J] = C;
+    u0[(I + 1) * n + J] = A;
+    u0[(I - 1) * n + J] = B;
+    u0[I * n + (J - 1)] = D;
+    u0[I * n + (J + 1)] = W; // the buried face's stored wall velocity
+    device.queue.writeBuffer(solver.solidBuffer, 0, s);
+    device.queue.writeBuffer(solver.velPairs[0].u, 0, u0);
+    device.queue.writeBuffer(solver.velPairs[0].v, 0, new Float32Array(numX * n));
+
+    // One isolated substep, slot 0 -> slot 1. NU chosen so coeff = 0.1:
+    // coeff = NU*DT/(h*h) with DT the full frame dt (1 substep).
+    const DT = solver.params.dt;
+    const NU = 0.1 * h * h / DT;
+    solver._writeParamsTo(solver.uniformBufVisc, 0, DT, NU);
+    const enc = device.createCommandEncoder();
+    const pass = enc.beginComputePass();
+    pass.setPipeline(solver.diffusePipeline);
+    pass.setBindGroup(0, solver.diffuse[0][1]);
+    pass.dispatchWorkgroups(Math.ceil(numX / 8), Math.ceil(n / 8), 1);
+    pass.end();
+    device.queue.submit([enc.finish()]);
+    const u1 = await readBuf(solver.velPairs[1].u);
+
+    // f32-replicated expectation in WGSL evaluation order:
+    // coeff = nu*dt/(h*h); ghost = w+(w-c); lap = ((ghost+A)+B)+D-4c; out = c+coeff*lap.
+    const f = Math.fround;
+    const coeff = f(f(NU * DT) / f(h * h));
+    const ghost = f(W + f(W - C));
+    const lap = f(f(f(f(ghost + A) + B) + D) - f(4 * C));
+    const expected = f(C + f(coeff * lap));
+    return { actual: u1[I * n + J], expected };
+  });
+
+  // 1e-6 ≈ 8 ulp at magnitude ~1 covers f32/f64 transcription; WGSL does not
+  // implicitly contract to fma, so this is replication, not fitting.
+  // MUTATION: reverting the ghost to `-center` shifts the result by
+  // coeff*(ghost-(-C)) = 0.1*(0.3+1.1) = 0.14 — five orders above the band.
+  expect(Math.abs(r.actual - r.expected)).toBeLessThan(1e-6);
+});
+
+test('a stationary stored velocity reduces the ghost to -center exactly', async ({ page }) => {
+  await boot(page);
+  const r = await page.evaluate(async () => {
+    const { solver, device } = window.__flowlab;
+    solver.paused = true;
+    const n = solver.numY, numX = solver.numX, h = solver.h;
+    const size = numX * n * 4;
+    const readBuf = async (src) => {
+      const staging = device.createBuffer({
+        size, usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST,
+      });
+      const enc = device.createCommandEncoder();
+      enc.copyBufferToBuffer(src, 0, staging, 0, size);
+      device.queue.submit([enc.finish()]);
+      await staging.mapAsync(GPUMapMode.READ);
+      const out = new Float32Array(staging.getMappedRange().slice(0));
+      staging.unmap();
+      staging.destroy();
+      return out;
+    };
+
+    // Same scaffold as the test above but with W = 0: the ghost must equal
+    // -center, i.e. the pre-ADR-0011 result, so stationary runs are unchanged.
+    const I = Math.floor(numX / 2), J = Math.floor(n / 2);
+    const s = new Float32Array(numX * n).fill(1);
+    s[I * n + (J + 1)] = 0;
+    s[(I - 1) * n + (J + 1)] = 0;
+    const C = 1.1, A = 0.4, B = 0.2, D = 0.9;
+    const u0 = new Float32Array(numX * n);
+    u0[I * n + J] = C;
+    u0[(I + 1) * n + J] = A;
+    u0[(I - 1) * n + J] = B;
+    u0[I * n + (J - 1)] = D;
+    // buried face (I, J+1) stores 0 — a stationary wall.
+    device.queue.writeBuffer(solver.solidBuffer, 0, s);
+    device.queue.writeBuffer(solver.velPairs[0].u, 0, u0);
+    device.queue.writeBuffer(solver.velPairs[0].v, 0, new Float32Array(numX * n));
+
+    const DT = solver.params.dt;
+    const NU = 0.1 * h * h / DT;
+    solver._writeParamsTo(solver.uniformBufVisc, 0, DT, NU);
+    const enc = device.createCommandEncoder();
+    const pass = enc.beginComputePass();
+    pass.setPipeline(solver.diffusePipeline);
+    pass.setBindGroup(0, solver.diffuse[0][1]);
+    pass.dispatchWorkgroups(Math.ceil(numX / 8), Math.ceil(n / 8), 1);
+    pass.end();
+    device.queue.submit([enc.finish()]);
+    const u1 = await readBuf(solver.velPairs[1].u);
+
+    const f = Math.fround;
+    const coeff = f(f(NU * DT) / f(h * h));
+    const ghost = f(0 + f(0 - C)); // must be exactly -C, including -0 handling
+    const lap = f(f(f(f(ghost + A) + B) + D) - f(4 * C));
+    const expected = f(C + f(coeff * lap));
+    return { actual: u1[I * n + J], expected, ghost, negC: f(-C) };
+  });
+
+  // The zero-control leg of the ADR gate, per face: w = 0 is the old rule.
+  expect(r.ghost).toBe(r.negC);
+  // MUTATION: a formulation like 2*w - center passes numerically here but
+  // flips the sign of a zero center — the bit-identity claim rests on
+  // w + (w - center); reading a NEIGHBOUR's stored value instead of the
+  // face's own would fail the first test, not this one.
+  expect(Math.abs(r.actual - r.expected)).toBeLessThan(1e-6);
+});
