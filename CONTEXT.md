@@ -39,7 +39,7 @@ The fixed horizontal velocity injected just inside the left wall, re-applied eve
 The band of cells at the left edge where Smoke is re-injected each frame.
 
 **Obstacle**:
-A user-draggable solid shape (circle, square, airfoil, wedge) rasterized into the Solid Mask. Moving it re-rasterizes the mask on the GPU (`rasterize_obstacle.wgsl`, ADR-0010): the new footprint is carved with the drag velocity, the old footprint is restored from the Boundary Mask (zero velocity/pressure), and stale Smoke in the old footprint is cleared. The live field outside both bounding boxes is untouched — a drag perturbs the flow, it does not restart it. A drag that ends re-rasterizes once with zero velocity, so the stored wall velocity cannot outlive the motion (ADR-0011 — _not yet implemented_).
+A user-draggable solid shape (circle, square, airfoil, wedge) rasterized into the Solid Mask. Moving it re-rasterizes the mask on the GPU (`rasterize_obstacle.wgsl`, ADR-0010): the new footprint is carved with the drag velocity, the old footprint is restored from the Boundary Mask (zero velocity/pressure), and stale Smoke in the old footprint is cleared. The live field outside both bounding boxes is untouched — a drag perturbs the flow, it does not restart it. A drag that ends re-rasterizes once with zero velocity, so the stored wall velocity cannot outlive the motion (ADR-0011).
 
 **Pressure Iteration**:
 One red-black Gauss-Seidel (SOR) sweep of the pressure projection. Presets choose how many run per step. Not a free knob: the count sets the delivered Numerical Viscosity, and therefore the top of the honest Reynolds window.
@@ -54,7 +54,7 @@ One application of the explicit five-point diffusion pass. A frame runs `N = cei
 _Avoid_: viscous iteration (— it is a time substep, not an iterative solve)
 
 **Wall Ghost**:
-The value a Viscous Substep substitutes for a buried face — one flanked by two solid cells — when that face appears in a fluid face's stencil, placing the wall's velocity on the wall line half a cell away. A face buried by the Solid Mask ghosts to `w + (w − center)` with `w` the face's own stored value; a face on the `i = 0` / `j = 0` ring is buried by index and ghosts to `−center`, because its stored value is three steps stale and must never be read (ADR-0011 — _not yet implemented_). A stationary wall (`w = 0`) reduces bit-identically to `−center`.
+The value a Viscous Substep substitutes for a buried face — one flanked by two solid cells — when that face appears in a fluid face's stencil, placing the wall's velocity on the wall line half a cell away. A face buried by the Solid Mask ghosts to `w + (w − center)` with `w` the face's own stored value; a face on the `i = 0` / `j = 0` ring is buried by index and ghosts to `−center`, because its stored value is three steps stale and must never be read (ADR-0011). A stationary wall (`w = 0`) reduces bit-identically to `−center`.
 _Avoid_: mirror velocity, image cell
 
 **Numerical Viscosity**:

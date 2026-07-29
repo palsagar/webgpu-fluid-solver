@@ -14,6 +14,6 @@ Each ADR records one load-bearing decision and why the alternatives lost. "Imple
 | [0008](0008-viscous-substepping-and-resolution-aware-window.md) | Viscous substepping and a resolution-aware honest window | Accepted | Yes |
 | [0009](0009-no-wind-tunnel-preset.md) | Removed third preset | Accepted | Yes |
 | [0010](0010-gpu-side-obstacle-rasterization.md) | GPU-side obstacle rasterization; no CPU field mirrors | Accepted | Yes |
-| [0011](0011-moving-wall-viscous-bc.md) | Moving-wall viscous boundary condition | Accepted | No |
+| [0011](0011-moving-wall-viscous-bc.md) | Moving-wall viscous boundary condition | Accepted | Yes |
 
 The vocabulary in [CONTEXT.md](../../CONTEXT.md) covers both shipped and target-state features. What remains target-state is Confinement (ε) from ADR-0006, plus the Blow and Draw mouse modes — [ROADMAP](../ROADMAP.md) steps 4–5. Everything in ADRs 0007 and 0008 has shipped.
