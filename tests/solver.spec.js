@@ -3102,20 +3102,23 @@ test('the three-slot rotation and boundary mask survive an applyTier buffer recr
 });
 
 /**
- * MEASUREMENT SCAFFOLD for ADR-0011 — NOT the committed gate.
+ * ADR-0011 acceptance gate — deterministic delta, three legs.
  *
- * Scripted constant-velocity drag through a quieted field (inflow off, all
- * velocity slots zeroed), K solver steps, near-wall metric read back per step.
- * The near-wall set is exactly the faces the ghost change can touch: FLUID
- * u-faces with at least one BURIED stencil neighbour. Run identically on
- * master @ 9e05cf7 and on the branch; the delta is the defect closure.
- *
- * This scaffold asserts the defect's PRESENCE (floor leg below) and therefore
- * FAILS once the fix lands — Task 3 rewrites it into the committed gate.
+ * Scripted constant-velocity drag through a quieted field, identical replay
+ * to the master baseline. Measured constants (transcribed 2026-07-28, Apple
+ * M-series, tier at boot default):
+ *   MASTER_M = -0.0055895052864798345   — near-wall mean u, pre-fix
+ *   BRANCH_M = 0.576810504309833   — near-wall mean u, post-fix
+ * Harness fidelity: the pre-fix branch run reproduced MASTER_M bit-exactly.
+ * The near-wall set is exactly the faces the ghost change can touch (FLUID
+ * u-faces with >= 1 buried stencil neighbour), so the delta IS the fix.
  */
-test('MEASUREMENT SCAFFOLD: scripted constant-velocity drag near-wall metric', async ({ page }) => {
+test('a scripted drag drags near-wall fluid toward vx without overshoot', async ({ page }) => {
+  const MASTER_M = -0.0055895052864798345; // MEASURED on master @ 9e05cf7 (cnt=64)
+  const BRANCH_M = 0.576810504309833; // MEASURED on this branch step 1 (cnt=64)
   await boot(page);
   const r = await page.evaluate(async () => {
+    // === identical harness body to the Task 1 scaffold ===
     const { solver, device, interaction, ui } = window.__flowlab;
     solver.paused = true;
     const n = solver.numY, numX = solver.numX, h = solver.h, dt = solver.params.dt;
@@ -3186,17 +3189,29 @@ test('MEASUREMENT SCAFFOLD: scripted constant-velocity drag near-wall metric', a
     return { a, b, substeps: solver.viscSubsteps };
   });
 
-  // Determinism pin: two identical replays in one session agree bit-exactly.
-  // Without this the master-vs-branch delta would be uninterpretable.
+  const VX = 1.0;
+  // Leg 2 first (provable): explicit diffusion with coeff <= 1/4 is a convex
+  // update and cannot overshoot; advection is limiter-clamped. The 2% headroom
+  // absorbs the pressure projection's redistribution. Observed on branch:
+  // peak 0.8068600296974182, trough 0.3887721598148346.
+  expect(r.a.peak).toBeLessThanOrEqual(1.02 * VX);
+  expect(r.a.trough).toBeGreaterThanOrEqual(-1e-3 * VX);
+  // Determinism pin (mutation: any entropy source in the replay breaks the
+  // master-delta interpretation — two replays must agree bit-exactly).
   expect(r.b.M).toBe(r.a.M);
-  // Non-vacuity: dozens of ghost-read faces, and the intended 4 substeps ran.
+  // Non-vacuity: the near-wall set is populated and 4 substeps ran.
   expect(r.a.cnt).toBeGreaterThan(50);
   expect(r.substeps).toBe(4);
-  // Defect-regime floor (master / pre-fix only — Task 3 REMOVES this leg):
-  // the near-wall ring measurably lags vx. If this fails on master the
-  // harness is not sitting in the regime where the defect bites.
-  expect(1.0 - r.a.M).toBeGreaterThan(0.1);
-  console.log('NEARWALL_M', r.a.M, 'peak', r.a.peak, 'trough', r.a.trough, 'cnt', r.a.cnt);
+  // Leg 1 (measured): the near-wall ring ends strictly closer to vx than the
+  // identical replay on master, closing at least half the defect gap.
+  // MASTER_M/BRANCH_M are transcribed above with provenance; a future
+  // regression that restores the zero ghost lands back at MASTER_M and fails.
+  expect(r.a.M).toBeGreaterThanOrEqual(MASTER_M + 0.5 * (VX - MASTER_M));
+  expect(r.a.M).toBeLessThanOrEqual(VX);
+  // Transcription guard: the committed run reproduces the recorded branch
+  // value to transcription precision (same machine; the band is the
+  // deterministic-replay tolerance, not a fitted acceptance).
+  expect(Math.abs(r.a.M - BRANCH_M)).toBeLessThan(1e-6);
 });
 
 /**
