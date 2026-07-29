@@ -3100,3 +3100,101 @@ test('the three-slot rotation and boundary mask survive an applyTier buffer recr
   expect(r.sBoundarySize).toBe(r.expectSize);
   expect(r.extraSolids).toBeGreaterThan(10); // ~46 cells at tier 64
 });
+
+/**
+ * MEASUREMENT SCAFFOLD for ADR-0011 — NOT the committed gate.
+ *
+ * Scripted constant-velocity drag through a quieted field (inflow off, all
+ * velocity slots zeroed), K solver steps, near-wall metric read back per step.
+ * The near-wall set is exactly the faces the ghost change can touch: FLUID
+ * u-faces with at least one BURIED stencil neighbour. Run identically on
+ * master @ 9e05cf7 and on the branch; the delta is the defect closure.
+ *
+ * This scaffold asserts the defect's PRESENCE (floor leg below) and therefore
+ * FAILS once the fix lands — Task 3 rewrites it into the committed gate.
+ */
+test('MEASUREMENT SCAFFOLD: scripted constant-velocity drag near-wall metric', async ({ page }) => {
+  await boot(page);
+  const r = await page.evaluate(async () => {
+    const { solver, device, interaction, ui } = window.__flowlab;
+    solver.paused = true;
+    const n = solver.numY, numX = solver.numX, h = solver.h, dt = solver.params.dt;
+    const size = numX * n * 4;
+    const readBuf = async (src) => {
+      const staging = device.createBuffer({
+        size, usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST,
+      });
+      const enc = device.createCommandEncoder();
+      enc.copyBufferToBuffer(src, 0, staging, 0, size);
+      device.queue.submit([enc.finish()]);
+      await staging.mapAsync(GPUMapMode.READ);
+      const out = new Float32Array(staging.getMappedRange().slice(0));
+      staging.unmap();
+      staging.destroy();
+      return out;
+    };
+
+    const VX = 1.0, K = 40;
+    // 4 substeps at coeff 0.2: nu*(dt/4)/h^2 = 0.2 and ceil(nu*dt/(0.25*h^2)) = 4,
+    // well under viscNuMax (32 substeps at 0.25), so no saturation.
+    const NU = 0.8 * h * h / dt;
+    const CX0 = 0.3 * numX * h, CY = 0.5 * n * h;
+
+    const runOnce = async () => {
+      // Quiet the field: inflow off, velocity zeroed in every rotation slot.
+      ui._setInflowVelocity(0);
+      const zeros = new Float32Array(numX * n);
+      for (const p of solver.velPairs) {
+        device.queue.writeBuffer(p.u, 0, zeros);
+        device.queue.writeBuffer(p.v, 0, zeros);
+      }
+      solver.params.nu = NU;
+      // Boot default (karmanVortex) radius 0.06 yields only 28 near-wall faces —
+      // below the >50 non-vacuity leg. 0.15 populates the set (measured cnt = 64).
+      // Set inside runOnce so both determinism replays use the identical geometry.
+      interaction.obstacleRadius = 0.15;
+      // Park the obstacle at the start position, stationary, then drag +x.
+      interaction.rasterizeObstacle(CX0, CY, 0, 0);
+      let peak = -Infinity, trough = Infinity;
+      let M = NaN, cnt = 0;
+      for (let k = 0; k < K; k++) {
+        interaction.rasterizeObstacle(CX0 + (k + 1) * VX * dt, CY, VX, 0);
+        solver.step(ui.numIters);
+        const s = await readBuf(solver.solidBuffer);
+        const u = await readBuf(solver.velocityBuffers.u);
+        let sum = 0; cnt = 0;
+        for (let i = 2; i < numX - 2; i++) {
+          for (let j = 2; j < n - 2; j++) {
+            const fluid = s[i * n + j] !== 0 && s[(i - 1) * n + j] !== 0;
+            if (!fluid) continue;
+            const buried = (a, b) => s[a * n + b] === 0 && s[(a - 1) * n + b] === 0;
+            if (buried(i + 1, j) || buried(i - 1, j) || buried(i, j + 1) || buried(i, j - 1)) {
+              const uij = u[i * n + j];
+              sum += uij; cnt++;
+              peak = Math.max(peak, uij);
+              trough = Math.min(trough, uij);
+            }
+          }
+        }
+        M = sum / cnt;
+      }
+      return { M, cnt, peak, trough };
+    };
+
+    const a = await runOnce();
+    const b = await runOnce();
+    return { a, b, substeps: solver.viscSubsteps };
+  });
+
+  // Determinism pin: two identical replays in one session agree bit-exactly.
+  // Without this the master-vs-branch delta would be uninterpretable.
+  expect(r.b.M).toBe(r.a.M);
+  // Non-vacuity: dozens of ghost-read faces, and the intended 4 substeps ran.
+  expect(r.a.cnt).toBeGreaterThan(50);
+  expect(r.substeps).toBe(4);
+  // Defect-regime floor (master / pre-fix only — Task 3 REMOVES this leg):
+  // the near-wall ring measurably lags vx. If this fails on master the
+  // harness is not sitting in the regime where the defect bites.
+  expect(1.0 - r.a.M).toBeGreaterThan(0.1);
+  console.log('NEARWALL_M', r.a.M, 'peak', r.a.peak, 'trough', r.a.trough, 'cnt', r.a.cnt);
+});
