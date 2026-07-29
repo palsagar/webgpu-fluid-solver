@@ -3105,7 +3105,7 @@ test('the three-slot rotation and boundary mask survive an applyTier buffer recr
  * ADR-0011 acceptance gate — deterministic delta, three legs.
  *
  * Scripted constant-velocity drag through a quieted field, identical replay
- * to the master baseline. Measured constants (transcribed 2026-07-28, Apple
+ * to the master baseline. Measured constants (transcribed 2026-07-29, Apple
  * M-series, tier at boot default):
  *   MASTER_M = -0.0055895052864798345   — near-wall mean u, pre-fix
  *   BRANCH_M = 0.576810504309833   — near-wall mean u, post-fix
