@@ -11,9 +11,29 @@ The defect this closes is measured and disclosed (ROADMAP Known gaps): `diffuse.
 Face classes are unchanged: FLUID faces diffuse; WALL faces copy through and are read at face value (already correct — the rasterizer writes the wall velocity there); BURIED faces ghost. BURIED splits in two, and the split is load-bearing:
 
 - **Buried by index** — the `i = 0` / `j = 0` ring advection never writes — keeps the zero ghost, and its stored value is never loaded. Those entries are three steps stale; reading them is the MacCormack stale-ring leak, measured **9.894e-3** inviscid. The index classification stays structural.
-- **Buried by mask** — both flanking cells solid per the Solid Mask — ghosts to `w + (w − center)` with `w` the face's **own stored value**. Since ADR-0010 the rasterizer writes the drag velocity into every inside cell's own u-face and v-face, so a mask-buried face's stored value IS the wall velocity. No new buffer: `uIn`/`vIn` are already bound, and the pass stays at 6 storage buffers.
+- **Buried by mask** — both flanking cells solid per the Solid Mask —
+  ghosts to `w + (w − center)` with `w` the face's **own stored value**.
+  Since ADR-0010 the rasterizer writes the drag velocity into every inside
+  cell's own u-face and v-face, so a mask-buried face's stored value IS the
+  wall velocity. **Exception:** u-faces on the domain top row
+  (`j = numY-1`) join the index-buried classification because their stored
+  `u` is `boundary.wgsl`'s zero-gradient (Neumann) free-stream
+  extrapolation, not a wall velocity; an unguarded moving-wall ghost there
+  measurably destroyed the no-slip boundary layer
+  (`viscous.dom / inviscid.dom = 0.536` vs the `< 0.5` gate) during
+  implementation. No new buffer: `uIn`/`vIn` are already bound, and the pass
+  stays at 6 storage buffers.
 
-The formulation is `w + (w − center)`, not `2*w − center`, so a stationary wall (`w = 0`) reduces to `-center` **bit-identically** — `0 + (0 − c)` is exactly `-c` including the sign of zero, while `2*0 − 0` is `+0`. Stationary obstacles and `ν = 0` runs are therefore bit-identical to the pre-change shader, and every constant measured stationary — the `nu_num` table, onset Re_c = 52.2, the St table, operator fidelity 0.99751 — is unaffected. The change is live only in the defect's exact trigger condition: a moving obstacle with `ν > 0`.
+The formulation is `w + (w − center)` because it reads as the ghost
+construction: linear extrapolation placing `w` on the wall line half a cell
+away. At `w = 0` it is `-center` EXACTLY for every nonzero center; at a
+zero center the result can differ only in the sign of zero, which no
+downstream observable can detect. Stationary obstacles and `ν = 0` runs are
+therefore bit-identical to the pre-change shader in every observable output,
+and every constant measured stationary — the `nu_num` table, onset
+Re_c = 52.2, the St table, operator fidelity 0.99751 — is unaffected. The
+change is live only in the defect's exact trigger condition: a moving
+obstacle with `ν > 0`.
 
 ## The drag-end half of the decision
 
@@ -42,5 +62,6 @@ The mechanism itself is mutation-tested: a crafted buried face with stored `w`, 
 - The viscous pass stays at 6 storage buffers; no pipeline, bind-group, or budget changes.
 - **Inflow-column ownership contest:** `writeInflowColumn(1, …)` re-applies every frame and overwrites the stored drag velocity of any obstacle cell carved into column 1, so the ghost reads `inVel` there. Pre-existing (advection already read those values), bounded to one column; not fixed here.
 - Rotation rasterizes with zero velocity, so a *spinning* obstacle's walls are stationary to the viscous pass — unchanged, disclosed.
+- **Top-row corner:** an obstacle dragged against the domain top row has its buried u-faces ghosted to `-center` (stationary) because those faces are classified with the index-buried ring.
 - The ghost places `w` on the wall line half a cell from the fluid face regardless of the surface's true position within the solid cell — first-order in surface position, same as the stationary wall today.
 - PR D's eraser inherits the vacated-cell restore semantics (zero velocity/pressure, Smoke = 1.0); unaffected.

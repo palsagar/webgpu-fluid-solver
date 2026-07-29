@@ -24,10 +24,17 @@
 //           the rasterizer writes the drag velocity into every inside cell's
 //           own face (ADR-0010). Read as a GHOST, w + (w - center) with w the
 //           face's own stored value, placing the wall's velocity -- not zero
-//           -- on the wall line half a cell away (ADR-0011). A stationary
-//           wall (w = 0) reduces to -center bit-identically. Ghosting to
-//           -center on a dragged obstacle would pin the wall line at zero and
-//           cancel the shear the moving wall imparts.
+//           -- on the wall line half a cell away (ADR-0011). At w = 0 this
+//           is -center EXACTLY for every nonzero center; at a zero center
+//           the result can differ only in the sign of zero, which no
+//           downstream observable can detect, so stationary/ν=0 runs remain
+//           bit-identical in every observable output. Ghosting to -center on
+//           a dragged obstacle would pin the wall line at zero and cancel the
+//           shear the moving wall imparts.
+//           Exception: u-faces on the domain top row (j = numY-1) are
+//           classified with the index-buried ring because the stored u there
+//           is boundary.wgsl's zero-gradient (Neumann) free-stream
+//           extrapolation, not a wall velocity.
 //
 // The FLUID predicate is deliberately the same face-based test advect.wgsl
 // uses to decide whether a face may advect (`s[idx] != 0 && s[(i-1)*n+j] != 0`).
@@ -94,9 +101,11 @@ fn v_face_fluid(i: u32, j: u32) -> bool {
 }
 
 // BURIED-BY-MASK ghost: the face's own stored value is the wall velocity, so
-// the ghost places w on the wall line half a cell away: w + (w - center). At
-// w = 0 this is -center BIT-IDENTICALLY (0 + (0 - c) keeps the sign of zero;
-// 2*w - center would not). Buried-by-index faces (the stale ring) ghost to
+// the ghost places w on the wall line half a cell away: w + (w - center).
+// At w = 0 this is -center EXACTLY for every nonzero center; at a zero
+// center the result can differ only in the sign of zero, which no downstream
+// observable can detect, so stationary/ν=0 runs remain bit-identical in
+// every observable output. Buried-by-index faces (the stale ring) ghost to
 // -center and never load the stored value.
 fn u_neighbor(i: u32, j: u32, center: f32) -> f32 {
     // Domain top and bottom walls carry a no-slip BC, not a drag velocity;

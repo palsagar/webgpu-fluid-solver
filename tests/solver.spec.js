@@ -3335,9 +3335,9 @@ test('a stationary stored velocity reduces the ghost to -center exactly', async 
 
   // The zero-control leg of the ADR gate, per face: w = 0 is the old rule.
   expect(r.ghost).toBe(r.negC);
-  // MUTATION: a formulation like 2*w - center passes numerically here but
-  // flips the sign of a zero center — the bit-identity claim rests on
-  // w + (w - center); reading a NEIGHBOUR's stored value instead of the
-  // face's own would fail the first test, not this one.
+  // MUTATION: a wrong ghost value fails this assertion; reading a
+  // NEIGHBOUR's stored value instead of the face's own would fail the first
+  // test, not this one. With w = 0 the result matches the old -center rule
+  // up to an undetectable sign-of-zero difference.
   expect(Math.abs(r.actual - r.expected)).toBeLessThan(1e-6);
 });
