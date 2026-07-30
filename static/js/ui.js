@@ -91,6 +91,7 @@ export class UI {
         this.boundaryVelData = config.boundaryVelData ?? null;
         this.renderer.invalidateSolid();
         this._applyShow(config.show);
+        this._updateVizCheckboxes(config.show);
         this._syncSliders();
     }
 

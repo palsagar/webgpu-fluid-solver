@@ -138,7 +138,8 @@ export class Renderer {
    */
   draw() {
     const { device, solver } = this;
-    const usePressure = !this.showSmoke;
+    const showField = this.showSmoke || this.showPressure;
+    const usePressure = this.showPressure && !this.showSmoke;
 
     this._frameCount = (this._frameCount || 0) + 1;
 
@@ -177,13 +178,17 @@ export class Renderer {
     }
 
     // GPU field render — every frame
-    if (usePressure) {
-      const [minV, maxV] = this._pressureRange || [-1, 1];
-      this.fieldRenderer.draw(solver.pressureBuffer, 'coolwarm', minV, maxV);
+    if (showField) {
+      if (usePressure) {
+        const [minV, maxV] = this._pressureRange || [-1, 1];
+        this.fieldRenderer.draw(solver.pressureBuffer, 'coolwarm', minV, maxV);
+      } else {
+        this.fieldRenderer.draw(solver.smokeBuffer, 'magma', 0, 1);
+      }
     } else {
-      this.fieldRenderer.draw(solver.smokeBuffer, 'magma', 0, 1);
+      this.fieldRenderer.clear();
     }
-    this._updateColorbar(usePressure);
+    this._updateColorbar();
 
     // Overlay canvas: clear to transparent, then draw overlays on top
     this._ctx.clearRect(0, 0, this._canvas.width, this._canvas.height);
@@ -675,25 +680,31 @@ export class Renderer {
 
   /**
    * Updates the colorbar labels and gradient for the active field.
-   * @param {boolean} usePressure - True when displaying pressure
    */
-  _updateColorbar(usePressure) {
+  _updateColorbar() {
     const maxEl = document.getElementById('colorbar-max');
     const minEl = document.getElementById('colorbar-min');
     const unitEl = document.getElementById('colorbar-unit');
     const gradient = document.getElementById('colorbar-gradient');
-    if (!usePressure) {
-      if (maxEl) maxEl.textContent = 'clear';
-      if (minEl) minEl.textContent = 'dye';
+    const usePressure = this.showPressure && !this.showSmoke;
+    const showField = this.showSmoke || this.showPressure;
+    if (!showField) {
+      if (maxEl) maxEl.textContent = '';
+      if (minEl) minEl.textContent = '';
       if (unitEl) unitEl.textContent = '';
-      if (gradient) gradient.style.background = 'linear-gradient(to bottom, #fcfdbf, #fc8961, #b73779, #51127c, #000004)';
-    } else {
+      if (gradient) gradient.style.background = 'linear-gradient(to bottom, #000000, #000000)';
+    } else if (usePressure) {
       const [minVal, maxVal] = this._pressureRange || [-1, 1];
       const fmt = v => (Math.abs(v) > 1000 || Math.abs(v) < -1000) ? v.toExponential(1) : v.toFixed(0);
       if (maxEl) maxEl.textContent = fmt(maxVal);
       if (minEl) minEl.textContent = fmt(minVal);
       if (unitEl) unitEl.textContent = 'N/m²';
       if (gradient) gradient.style.background = 'linear-gradient(to bottom, #b40426, #f7f7f7, #3b4cc0)';
+    } else {
+      if (maxEl) maxEl.textContent = 'clear';
+      if (minEl) minEl.textContent = 'dye';
+      if (unitEl) unitEl.textContent = '';
+      if (gradient) gradient.style.background = 'linear-gradient(to bottom, #fcfdbf, #fc8961, #b73779, #51127c, #000004)';
     }
   }
 

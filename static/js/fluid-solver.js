@@ -276,6 +276,11 @@ export class FluidSolver {
       entries: [bglEntry(0, UNIFORM), bglEntry(1, STORAGE), bglEntry(2, STORAGE), bglEntry(3, RO_STORAGE), bglEntry(4, STORAGE)],
     });
 
+    // Layout for pressure gauge normalization: uniform(0) + p storage(4) only.
+    solver._pressureNormalizeBGL = device.createBindGroupLayout({
+      entries: [bglEntry(0, UNIFORM), bglEntry(4, STORAGE)],
+    });
+
     // Layout for boundary: uniform(0) + storage(1,2)
     solver._boundaryBGL = device.createBindGroupLayout({
       entries: [bglEntry(0, UNIFORM), bglEntry(1, STORAGE), bglEntry(2, STORAGE)],
@@ -339,6 +344,9 @@ export class FluidSolver {
     const makePipelineLayout = (bgl) => device.createPipelineLayout({ bindGroupLayouts: [bgl] });
 
     solver.pressurePipeline    = device.createComputePipeline({ layout: makePipelineLayout(solver._pressureBGL),    compute: { module: pressureMod,     entryPoint: 'main' } });
+    solver.pressureNormalizePipeline = device.createComputePipeline({ layout: makePipelineLayout(solver._pressureNormalizeBGL), compute: { module: pressureMod, entryPoint: 'normalize' } });
+    solver.pressureNormalizeRefPipeline = device.createComputePipeline({ layout: makePipelineLayout(solver._pressureNormalizeBGL), compute: { module: pressureMod, entryPoint: 'normalize_ref' } });
+    solver.pressureClearPipeline     = device.createComputePipeline({ layout: makePipelineLayout(solver._pressureNormalizeBGL), compute: { module: pressureMod, entryPoint: 'clear' } });
     solver.boundaryHPipeline   = device.createComputePipeline({ layout: makePipelineLayout(solver._boundaryBGL),    compute: { module: boundaryMod,     entryPoint: 'extrapolate_horizontal' } });
     solver.boundaryVPipeline   = device.createComputePipeline({ layout: makePipelineLayout(solver._boundaryBGL),    compute: { module: boundaryMod,     entryPoint: 'extrapolate_vertical' } });
     solver.advectVelPipeline   = device.createComputePipeline({ layout: makePipelineLayout(solver._advectVelBGL),   compute: { module: advectMod,       entryPoint: 'advect_velocity' } });
@@ -387,6 +395,12 @@ export class FluidSolver {
         entries: [entry(0, this.uniformBuf), entry(1, pair.u), entry(2, pair.v)],
       }));
     }
+
+    // Gauge-normalization pass: only needs the uniform buffer and pressure field.
+    this.pressureNormalize = device.createBindGroup({
+      layout: this._pressureNormalizeBGL,
+      entries: [entry(0, this.uniformBuf), entry(4, this.p)],
+    });
 
     // MacCormack velocity: forward -> backward -> combine. Indexed by the
     // velocity slot alone -- velocity is both the advecting field and the
@@ -557,6 +571,29 @@ export class FluidSolver {
         pass.dispatchWorkgroups(dx, dy, 1);
         pass.end();
       }
+    }
+
+    // Pressure gauge normalization: the pressure field is defined only up to
+    // an additive constant, but the SOR residual can drift into the constant
+    // mode over many steps and the colorbar auto-scale amplifies it. Subtract
+    // a fixed interior reference after each solve to remove the gauge drift.
+    // This does not change pressure gradients, so it does not change the
+    // velocity projection.
+    {
+      const pass = encoder.beginComputePass();
+      pass.setPipeline(this.pressureNormalizePipeline);
+      pass.setBindGroup(0, this.pressureNormalize);
+      pass.dispatchWorkgroups(dx, dy, 1);
+      pass.end();
+    }
+    // Zero the reference cell in a separate pass so it is not read and written
+    // in the same dispatch (data race). See normalize / normalize_ref in pressure.wgsl.
+    {
+      const pass = encoder.beginComputePass();
+      pass.setPipeline(this.pressureNormalizeRefPipeline);
+      pass.setBindGroup(0, this.pressureNormalize);
+      pass.dispatchWorkgroups(1, 1, 1);
+      pass.end();
     }
 
     // Boundary
@@ -814,6 +851,18 @@ export class FluidSolver {
       pass.dispatchWorkgroups(dx, dy, 1);
       pass.end();
     }
+
+    // If the obstacle was teleported a large distance, the pressure initial
+    // guess is more misleading than helpful and can leave blocky artifacts.
+    // Zero it so the projection solve starts fresh.
+    if (o.clearPressure) {
+      const pass = encoder.beginComputePass();
+      pass.setPipeline(this.pressureClearPipeline);
+      pass.setBindGroup(0, this.pressureNormalize);
+      pass.dispatchWorkgroups(dx, dy, 1);
+      pass.end();
+    }
+
     this.device.queue.submit([encoder.finish()]);
   }
 

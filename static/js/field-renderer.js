@@ -235,6 +235,25 @@ export class FieldRenderer {
   }
 
   /**
+   * Clear the field canvas to black when no scalar field is selected.
+   * Mirrors draw()'s loadOp so the previous field frame does not persist.
+   */
+  clear() {
+    const encoder = this.device.createCommandEncoder();
+    const texture = this.ctx.getCurrentTexture();
+    const pass = encoder.beginRenderPass({
+      colorAttachments: [{
+        view: texture.createView(),
+        loadOp: 'clear',
+        clearValue: { r: 0, g: 0, b: 0, a: 1 },
+        storeOp: 'store',
+      }],
+    });
+    pass.end();
+    this.device.queue.submit([encoder.finish()]);
+  }
+
+  /**
    * Arms a one-shot pixel readback of the next rendered frame.
    * Test seam: a presented canvas texture is unreadable via drawImage or a
    * screenshot, so the copy must ride in the render pass's own encoder.

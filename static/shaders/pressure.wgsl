@@ -28,6 +28,48 @@ struct Params {
 @group(0) @binding(3) var<storage, read> s: array<f32>;        // solid mask: 0 = solid, 1 = fluid
 @group(0) @binding(4) var<storage, read_write> p: array<f32>;  // pressure (cell-centered)
 
+// normalize: Subtract a fixed interior reference from every pressure cell.
+// Pressure is only defined up to an additive constant; this pins the gauge
+// so the SOR residual does not drift into the constant mode over many steps.
+//
+// The reference cell is skipped here and zeroed by `normalize_ref` in a
+// separate dispatch. Reading p[refIdx] while another invocation writes it
+// in the same pass is a data race; keeping the reference read-only in this
+// pass means every invocation sees the pre-pass value consistently.
+@compute @workgroup_size(8, 8)
+fn normalize(@builtin(global_invocation_id) id: vec3u) {
+    let i = id.x;
+    let j = id.y;
+    let n = params.numY;
+    if (i >= params.numX || j >= n) { return; }
+    let idx = i * n + j;
+    let refIdx = (params.numX / 2u) * n + (n / 2u);
+    if (idx == refIdx) { return; }
+    p[idx] -= p[refIdx];
+}
+
+// normalize_ref: Zero the reference cell. Runs as a single-thread dispatch
+// after `normalize` so the reference is not read and written in the same pass.
+@compute @workgroup_size(1, 1)
+fn normalize_ref(@builtin(global_invocation_id) id: vec3u) {
+    let n = params.numY;
+    let refIdx = (params.numX / 2u) * n + (n / 2u);
+    p[refIdx] = 0.0;
+}
+
+// clear: Zero the entire pressure field. Used when the obstacle has been
+// teleported far enough that the previous pressure initial guess is more
+// corrupting than helpful, giving the projection solve a fresh start.
+@compute @workgroup_size(8, 8)
+fn clear(@builtin(global_invocation_id) id: vec3u) {
+    let i = id.x;
+    let j = id.y;
+    let n = params.numY;
+    if (i >= params.numX || j >= n) { return; }
+    let idx = i * n + j;
+    p[idx] = 0.0;
+}
+
 // main: One Gauss-Seidel SOR iteration for a single cell (i, j).
 // Each thread handles one cell. Skips boundary cells, solid cells,
 // and cells whose color doesn't match the current pass.
