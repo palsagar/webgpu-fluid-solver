@@ -3190,9 +3190,11 @@ test('a scripted drag drags near-wall fluid toward vx without overshoot', async 
   });
 
   const VX = 1.0;
-  // Leg 2 first (provable): explicit diffusion with coeff <= 1/4 is a convex
-  // update and cannot overshoot; advection is limiter-clamped. The 2% headroom
-  // absorbs the pressure projection's redistribution. Observed on branch:
+  // Leg 2 first (measured bound at coeff = 0.2): the buried-ghost update is
+  // convex only for coeff <= 1/5; at saturation it can overshoot by up to
+  // (5*coeff - 1)*local range per substep. The gate regime is coeff = 0.2,
+  // and advection is limiter-clamped. The 2% headroom absorbs the pressure
+  // projection's redistribution. Observed on branch:
   // peak 0.8068600296974182, trough 0.3887721598148346.
   expect(r.a.peak).toBeLessThanOrEqual(1.02 * VX);
   expect(r.a.trough).toBeGreaterThanOrEqual(-1e-3 * VX);
