@@ -29,10 +29,10 @@ export class Interaction {
 
         canvas.addEventListener('mousedown', e => this._onPointerDown(e.clientX, e.clientY, e.shiftKey));
         canvas.addEventListener('mousemove', e => this._onPointerMove(e.clientX, e.clientY, e.shiftKey));
-        canvas.addEventListener('mouseup',   () => this._endDrag());
+        window.addEventListener('mouseup',    () => this._endDrag());
         canvas.addEventListener('touchstart', e => { e.preventDefault(); const t = e.touches[0]; this._onPointerDown(t.clientX, t.clientY); }, { passive: false });
         canvas.addEventListener('touchmove',  e => { e.preventDefault(); const t = e.touches[0]; this._onPointerMove(t.clientX, t.clientY, false); }, { passive: false });
-        canvas.addEventListener('touchend',   () => this._endDrag());
+        window.addEventListener('touchend',   () => this._endDrag());
 
         document.addEventListener('keydown', e => { if (e.key === 'Shift') this._shiftHeld = true; });
         document.addEventListener('keyup', e => { if (e.key === 'Shift') this._shiftHeld = false; });
@@ -156,7 +156,11 @@ export class Interaction {
         this.prevY = y;
     }
 
-    /** Ends the current drag interaction. */
+    /**
+     * Ends the current drag interaction.
+     * Bound on `window` so a pointer released outside the canvas still ends
+     * the drag and zeroes the stored wall velocity.
+     */
     _endDrag() {
         if (!this.dragging) return;
         this.dragging = false;
