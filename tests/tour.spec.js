@@ -141,3 +141,64 @@ test('a click-then-canvas do-it step arms on the button and advances in particle
   await page.waitForFunction(() => window.__testTour.stepIndex === 1);
   expect(await page.evaluate(() => window.__flowlab.interaction.mode)).toBe('particles');
 });
+
+test('click-then-canvas does not arm when Back lands on an already-particle mode step', async ({ page }) => {
+  await startTour(page, [
+    { target: '#btn-mode', title: 'Particles', body: 'Click Particles, then the flow.', action: { type: 'click-then-canvas' } },
+    { target: null, title: 'Read A', body: 'A read step.' },
+    { target: null, title: 'Read B', body: 'Another read step.' },
+  ]);
+
+  const box = await page.locator('#overlay-canvas').boundingBox();
+  const cx = box.x + box.width / 2, cy = box.y + box.height / 2;
+
+  // First pass: enable particles, click canvas, advance.
+  await page.click('#btn-mode');
+  expect(await page.evaluate(() => window.__flowlab.interaction.mode)).toBe('particles');
+  await page.mouse.click(cx, cy);
+  await page.waitForFunction(() => window.__testTour.stepIndex === 1);
+
+  // Go back: mode is still particles, so the next #btn-mode click toggles it
+  // back to obstacle. The tour must stay on this step and keep the hole on
+  // the button instead of retargeting to the canvas.
+  await page.locator('.tour-btn-secondary').click();
+  await page.waitForFunction(() => window.__testTour.stepIndex === 0);
+
+  await page.click('#btn-mode'); // toggles to obstacle
+  expect(await page.evaluate(() => window.__testTour.stepIndex)).toBe(0);
+  expect(await page.evaluate(() => window.__testTour._overrideTarget)).toBe(null);
+
+  const probe = await page.evaluate(() => {
+    const btn = document.getElementById('btn-mode');
+    const r = btn.getBoundingClientRect();
+    const at = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
+    return { atId: at?.id, buttonContains: btn.contains(at) };
+  });
+  expect(probe.buttonContains).toBe(true);
+
+  // Click #btn-mode again to re-enable particles; this arms the canvas.
+  await page.click('#btn-mode'); // toggles to particles
+  expect(await page.evaluate(() => window.__testTour._overrideTarget)).toBe('#overlay-canvas');
+  expect(await page.evaluate(() => window.__flowlab.interaction.mode)).toBe('particles');
+  await page.mouse.click(cx, cy);
+  await page.waitForFunction(() => window.__testTour.stepIndex === 1);
+});
+
+test('drag do-it step advances even if the pointer leaves the canvas mid-drag', async ({ page }) => {
+  await startTour(page, [
+    { target: '#overlay-canvas', title: 'Drag', body: 'Drag the obstacle.', action: { type: 'drag' } },
+    { target: null, title: 'Done', body: 'Finished.' },
+  ]);
+
+  const box = await page.locator('#overlay-canvas').boundingBox();
+  // Start close to the right edge so a fast flick exits the canvas before
+  // enough pointermove events would have accumulated inside the element.
+  const startX = box.x + box.width - 3;
+  const startY = box.y + box.height / 2;
+
+  await page.mouse.move(startX, startY);
+  await page.mouse.down();
+  await page.mouse.move(startX + 40, startY + 30, { steps: 2 });
+  await page.mouse.up();
+  await page.waitForFunction(() => window.__testTour.stepIndex === 1);
+});

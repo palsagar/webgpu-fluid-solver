@@ -294,20 +294,32 @@ export class Tour {
                 let dragging = false, moved = false, sx = 0, sy = 0;
                 on(canvas, 'pointerdown', (e) => {
                     dragging = true; moved = false; sx = e.clientX; sy = e.clientY;
+                    try { e.target.setPointerCapture(e.pointerId); } catch (_) {}
                 });
                 on(canvas, 'pointermove', (e) => {
                     if (dragging && Math.hypot(e.clientX - sx, e.clientY - sy) > DRAG_THRESHOLD) moved = true;
                 });
-                on(window, 'pointerup', () => {
+                const endDrag = () => {
                     if (dragging && moved) this._advance();
                     dragging = false;
-                });
+                };
+                on(window, 'pointerup', endDrag);
+                on(window, 'pointercancel', endDrag);
                 break;
             }
             case 'click-then-canvas': {
                 if (!el || !canvas) break;
                 let armed = false;
                 on(el, 'click', () => {
+                    // The button toggles the mode. Only arm when the click lands
+                    // us in particle mode; otherwise keep the hole on the
+                    // button so the user can click again.
+                    if (this._ctx.interaction.mode !== 'particles') {
+                        armed = false;
+                        this._overrideTarget = null;
+                        this._layout();
+                        return;
+                    }
                     armed = true;
                     // The hole must move to the canvas, or the dims would block
                     // the very click the step is asking for.
