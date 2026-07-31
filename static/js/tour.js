@@ -54,6 +54,7 @@ export class Tour {
     start() {
         if (this._active) return;
         document.getElementById('guide-overlay')?.classList.remove('guide-visible');
+        this._resetToCleanState();
         this._buildDom();
         this._active = true;
         this._onKeydown = (e) => { if (e.key === 'Escape') this.skip(); };
@@ -88,6 +89,7 @@ export class Tour {
     _end(result) {
         if (!this._active) return;
         this._teardownCurrentAction();
+        this._resetToCleanState();
         clearTimeout(this._relayoutTimer);
         Tour.writeFlag(result);
         this._removeDom();
@@ -99,7 +101,9 @@ export class Tour {
 
     _goTo(i) {
         if (i < 0 || i >= this._steps.length) return;
+        const prev = this._steps[this._index];
         this._teardownCurrentAction();
+        if (prev?.onLeave) prev.onLeave(this._ctx);
         this._overrideTarget = null;
         this._index = i;
         this._renderStep();
@@ -254,6 +258,26 @@ export class Tour {
         this._teardownAction = null;
     }
 
+    /**
+     * Drive the app's own UI paths back to the clean Kármán state. Runs on
+     * start (so Replay begins clean) and on finish AND skip (so the tour can
+     * never leak its mess into the user's session). Only .click() on existing
+     * controls — no solver internals.
+     */
+    _resetToCleanState() {
+        document.querySelector('[data-preset="karman-vortex"]')?.click();
+        // loadPreset sets interaction.activeShape but not the button chrome.
+        const circleBtn = document.querySelector('[data-shape="circle"]');
+        if (circleBtn && !circleBtn.classList.contains('active')) circleBtn.click();
+        if (this._ctx.solver.paused) document.getElementById('btn-play')?.click();
+        if (document.getElementById('advanced-panel')?.classList.contains('visible')) {
+            document.getElementById('btn-close-advanced')?.click();
+        }
+        if (this._ctx.interaction.mode === 'particles') {
+            document.getElementById('btn-mode')?.click();
+        }
+    }
+
     /** A do-it step's gesture was observed: advance, or finish on the last step. */
     _advance() {
         if (!this._active) return;
@@ -338,3 +362,80 @@ export class Tour {
         this._teardownAction = () => { offs.forEach(off => off()); };
     }
 }
+
+/**
+ * The 12-step onboarding script, in Guide order. Copy stays at one or two
+ * sentences per step: the tour orients, the Guide (?) documents.
+ */
+export const STEPS = [
+    {
+        target: null,
+        title: 'Welcome to FlowLab',
+        body: 'This is a live fluid simulation running entirely on your GPU. The smoke is dye injected at the left inlet, carried by the flow. A quick tour — about a minute.',
+    },
+    {
+        target: '#overlay-canvas',
+        title: 'Move the obstacle',
+        body: 'Click and drag the circle through the flow and watch the wake react — vortices shed and swirl downstream in real time.',
+        action: { type: 'drag' },
+    },
+    {
+        target: '#viz-group',
+        title: 'Visualization modes',
+        body: 'The field view can show dye (Smoke), Pressure, Streamlines, or a Velocity arrow grid, in any combination. Turn on Pressure now.',
+        action: { type: 'change' },
+    },
+    {
+        target: '#colorbar',
+        title: 'The colorbar',
+        body: 'The colorbar always tells you what the colors mean: the range and units of whichever field is on top. Pressure reads in N/m², smoke is dye concentration.',
+    },
+    {
+        target: '#shape-group',
+        title: 'Obstacle shapes',
+        body: 'Circle, Square, Airfoil, Wedge — each sheds a different wake. Pick one now; the Airfoil is a favorite.',
+        action: { type: 'click' },
+    },
+    {
+        target: '#btn-mode',
+        title: 'Particle tracers',
+        body: 'Click Particles, then click anywhere on the flow to place an emitter. Ice-blue tracers stream from it, showing where fluid parcels actually travel.',
+        action: { type: 'click-then-canvas' },
+    },
+    {
+        target: '#preset-bar',
+        title: 'Presets',
+        body: 'Two classic flows ship with FlowLab. Switch to Backward Step now — a sudden expansion with a trapped recirculation bubble behind the step.',
+        action: { type: 'click' },
+    },
+    {
+        target: '#btn-play',
+        title: 'Pause and step',
+        body: 'Pause the simulation. While paused, Step advances exactly one frame — handy for inspecting a vortex up close. The tour resumes play for you.',
+        action: { type: 'click' },
+        onLeave: ({ solver }) => {
+            if (solver.paused) document.getElementById('btn-play')?.click();
+        },
+    },
+    {
+        target: '#btn-advanced',
+        title: 'Advanced controls',
+        body: 'Open the Advanced panel — this is where the numerical solver lives.',
+        action: { type: 'click' },
+    },
+    {
+        target: '#advanced-panel',
+        title: 'Solver parameters',
+        body: 'dt, ω, pressure iterations, inflow velocity, and the measured Re / St readouts. Each is documented in the Guide — nothing here is guesswork.',
+    },
+    {
+        target: '#resolution-picker',
+        title: 'Grid resolution',
+        body: 'Grid tiers from 64 to 1024. Higher is prettier but heavier — if your GPU struggles, FlowLab downscales automatically and says so in the HUD.',
+    },
+    {
+        target: null,
+        title: 'You\u2019re all set',
+        body: 'Shortcuts: P pauses, M steps, 1 / 2 load presets. Everything else is in the Guide (the ? button, top right). Pressing Done resets the tour\u2019s changes — you start from a clean Kármán vortex street. Enjoy!',
+    },
+];

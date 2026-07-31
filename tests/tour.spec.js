@@ -202,3 +202,118 @@ test('drag do-it step advances even if the pointer leaves the canvas mid-drag', 
   await page.mouse.up();
   await page.waitForFunction(() => window.__testTour.stepIndex === 1);
 });
+
+/** Start a tour with the real 12-step STEPS script. */
+async function startRealTour(page) {
+  await page.evaluate(async () => {
+    // Shim for ids that only land with Task 4's index.html edit.
+    const groups = document.querySelectorAll('.toolbar .toolbar-group');
+    if (!document.getElementById('viz-group')) groups[0].id = 'viz-group';
+    if (!document.getElementById('shape-group')) groups[1].id = 'shape-group';
+
+    const { Tour, STEPS } = await import('./js/tour.js');
+    const { ui, interaction, solver } = window.__flowlab;
+    window.__testTour = new Tour({ ui, interaction, solver, steps: STEPS });
+    window.__testTour.start();
+  });
+  // Clear the beforeEach seed so the test's own flag writes are what gets asserted.
+  await page.evaluate(() => localStorage.removeItem('flowlab.tour.v1'));
+}
+
+/** Perform the gesture the current do-it step asks for. */
+async function performCurrentAction(page) {
+  const idx = await page.evaluate(() => window.__testTour.stepIndex);
+  const box = await page.locator('#overlay-canvas').boundingBox();
+  const cx = box.x + box.width / 2, cy = box.y + box.height / 2;
+  switch (idx) {
+    case 1: // drag obstacle
+      await page.mouse.move(cx, cy);
+      await page.mouse.down();
+      await page.mouse.move(cx + 60, cy + 30, { steps: 4 });
+      await page.mouse.up();
+      break;
+    case 2: // toggle a viz mode
+      await page.click('input[data-viz="pressure"]');
+      break;
+    case 4: // pick a shape
+      await page.click('[data-shape="airfoil"]');
+      break;
+    case 5: // particles mode, then click the flow
+      await page.click('#btn-mode');
+      await page.mouse.click(cx, cy);
+      break;
+    case 6: // switch preset
+      await page.click('[data-preset="backward-step"]');
+      break;
+    case 7: // pause
+      await page.click('#btn-play');
+      break;
+    case 8: // open advanced panel
+      await page.click('#btn-advanced');
+      break;
+    default:
+      throw new Error(`step ${idx} is not a do-it step`);
+  }
+  await page.waitForFunction((i) => window.__testTour.stepIndex === i + 1, idx);
+}
+
+test('the full STEPS walkthrough completes and resets to a clean Kármán state', async ({ page }) => {
+  await startRealTour(page);
+  await expect(page.locator('.tour-counter')).toHaveText('1 / 12');
+
+  for (let guard = 0; guard < 12; guard++) {
+    const done = await page.evaluate(() => !window.__testTour.active);
+    if (done) break;
+    const hasNext = await page.locator('.tour-btn-primary').count();
+    if (hasNext) await page.locator('.tour-btn-primary').click();
+    else await performCurrentAction(page);
+    // Do-it steps may trigger GPU work (preset load); give the loop a beat.
+    await page.waitForTimeout(100);
+  }
+
+  expect(await page.evaluate(() => window.__testTour.active)).toBe(false);
+  await expect(page.locator('.tour-tooltip')).toHaveCount(0);
+  expect(await page.evaluate(() => localStorage.getItem('flowlab.tour.v1'))).toBe('done');
+
+  // Exit reset: clean Kármán state, driven through the app's own controls.
+  const state = await page.evaluate(() => ({
+    preset: document.querySelector('.preset-btn.active')?.dataset.preset,
+    smoke: document.querySelector('[data-viz="smoke"]').checked,
+    pressure: document.querySelector('[data-viz="pressure"]').checked,
+    paused: window.__flowlab.solver.paused,
+    mode: window.__flowlab.interaction.mode,
+    shape: document.querySelector('.shape-btn.active')?.dataset.shape,
+    panelOpen: document.getElementById('advanced-panel').classList.contains('visible'),
+  }));
+  expect(state).toEqual({
+    preset: 'karman-vortex', smoke: true, pressure: false,
+    paused: false, mode: 'obstacle', shape: 'circle', panelOpen: false,
+  });
+});
+
+test('skip mid-tour resets state and writes the skipped flag', async ({ page }) => {
+  await startRealTour(page);
+  await page.locator('.tour-btn-primary').click(); // step 1 → 2
+  await performCurrentAction(page);                  // drag → step 3
+  await page.click('input[data-viz="pressure"]');    // → step 4 (pressure now ON)
+  await page.keyboard.press('Escape');
+
+  expect(await page.evaluate(() => window.__testTour.active)).toBe(false);
+  expect(await page.evaluate(() => localStorage.getItem('flowlab.tour.v1'))).toBe('skipped');
+  const clean = await page.evaluate(() => ({
+    preset: document.querySelector('.preset-btn.active')?.dataset.preset,
+    pressure: document.querySelector('[data-viz="pressure"]').checked,
+    smoke: document.querySelector('[data-viz="smoke"]').checked,
+  }));
+  expect(clean).toEqual({ preset: 'karman-vortex', pressure: false, smoke: true });
+});
+
+test('a missing target falls back to centered placement and stays advanceable', async ({ page }) => {
+  await startTour(page, [
+    { target: '#no-such-element', title: 'Ghost', body: 'Nowhere to point.' },
+  ]);
+  await expect(page.locator('.tour-tooltip')).toBeVisible();
+  await expect(page.locator('.tour-ring')).toBeHidden();
+  await page.locator('.tour-btn-primary').click(); // Done — single read step ends the tour
+  expect(await page.evaluate(() => localStorage.getItem('flowlab.tour.v1'))).toBe('done');
+});
