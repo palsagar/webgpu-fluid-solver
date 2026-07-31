@@ -305,8 +305,16 @@ export class Tour {
             case 'click': {
                 if (!el) break;
                 // Delegated targets (toolbar groups) count only real controls.
+                // An optional `selector` narrows which descendant counts, and
+                // an optional `advanceWhen` gate lets the step decide after a
+                // qualifying click whether it really should advance (used by
+                // #btn-advanced, which toggles the panel open and closed).
                 on(el, 'click', (e) => {
-                    if (e.target.closest('button, input, a')) this._advance();
+                    const selector = step.action.selector ?? 'button, input, a';
+                    if (!e.target.closest(selector)) return;
+                    if (!step.action.advanceWhen || step.action.advanceWhen(this._ctx)) {
+                        this._advance();
+                    }
                 });
                 break;
             }
@@ -319,6 +327,7 @@ export class Tour {
                 if (!canvas) break;
                 let dragging = false, moved = false, sx = 0, sy = 0;
                 on(canvas, 'pointerdown', (e) => {
+                    if (e.button !== 0) return;
                     dragging = true; moved = false; sx = e.clientX; sy = e.clientY;
                     try { e.target.setPointerCapture(e.pointerId); } catch (_) {}
                 });
@@ -353,7 +362,8 @@ export class Tour {
                     this._overrideTarget = '#overlay-canvas';
                     this._layout();
                 });
-                on(canvas, 'pointerdown', () => {
+                on(canvas, 'pointerdown', (e) => {
+                    if (e.button !== 0) return;
                     if (armed && this._ctx.interaction.mode === 'particles') this._advance();
                 });
                 break;
@@ -396,7 +406,7 @@ export const STEPS = [
         target: '#shape-group',
         title: 'Obstacle shapes',
         body: 'Circle, Square, Airfoil, Wedge — each sheds a different wake. Pick one now; the Airfoil is a favorite.',
-        action: { type: 'click' },
+        action: { type: 'click', selector: '[data-shape]' },
     },
     {
         target: '#btn-mode',
@@ -423,7 +433,7 @@ export const STEPS = [
         target: '#btn-advanced',
         title: 'Advanced controls',
         body: 'Open the Advanced panel — this is where the numerical solver lives.',
-        action: { type: 'click' },
+        action: { type: 'click', advanceWhen: () => document.getElementById('advanced-panel')?.classList.contains('visible') },
     },
     {
         target: '#advanced-panel',

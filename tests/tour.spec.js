@@ -448,3 +448,97 @@ test('keyboard shortcuts are gated while the tour is active', async ({ page }) =
   await page.keyboard.press('p');
   expect(await page.evaluate(() => window.__flowlab.solver.paused)).toBe(true);
 });
+
+// ── Final-review regression tests ──────────────────────────────────────────
+
+test('advanced-step Back trap only advances when the panel opens, not closes', async ({ page }) => {
+  await startRealTour(page);
+  // Walk to step 9 (0-based index 8), the #btn-advanced do-it step.
+  for (let i = 0; i < 8; i++) {
+    const hasNext = await page.locator('.tour-footer .tour-btn-primary').count();
+    if (hasNext) await page.locator('.tour-footer .tour-btn-primary').click();
+    else await performCurrentAction(page);
+  }
+  await expect(page.locator('.tour-counter')).toHaveText('9 / 12');
+
+  // First click opens the panel and advances.
+  await page.click('#btn-advanced');
+  await page.waitForFunction(() => window.__testTour.stepIndex === 9);
+  await expect(page.locator('#advanced-panel')).toHaveClass(/visible/);
+
+  // Back to the advanced button step; panel remains open.
+  await page.locator('.tour-footer .tour-btn-secondary').click();
+  await page.waitForFunction(() => window.__testTour.stepIndex === 8);
+
+  // Clicking again closes the panel but must NOT advance.
+  await page.click('#btn-advanced');
+  await expect(page.locator('#advanced-panel')).not.toHaveClass(/visible/);
+  expect(await page.evaluate(() => window.__testTour.stepIndex)).toBe(8);
+
+  // One more click opens the panel and advances.
+  await page.click('#btn-advanced');
+  await page.waitForFunction(() => window.__testTour.stepIndex === 9);
+  await expect(page.locator('#advanced-panel')).toHaveClass(/visible/);
+});
+
+test('shape step ignores the mode button inside the shape group', async ({ page }) => {
+  await startRealTour(page);
+  // Walk to step 5 (0-based index 4), the #shape-group do-it step.
+  for (let i = 0; i < 4; i++) {
+    const hasNext = await page.locator('.tour-footer .tour-btn-primary').count();
+    if (hasNext) await page.locator('.tour-footer .tour-btn-primary').click();
+    else await performCurrentAction(page);
+  }
+  await expect(page.locator('.tour-counter')).toHaveText('5 / 12');
+  await expect(page.locator('.tour-title')).toHaveText('Obstacle shapes');
+
+  // #btn-mode lives inside #shape-group but is not a shape button.
+  await page.click('#btn-mode');
+  expect(await page.evaluate(() => window.__testTour.stepIndex)).toBe(4);
+
+  // An actual shape button should advance.
+  await page.click('[data-shape="airfoil"]');
+  await page.waitForFunction(() => window.__testTour.stepIndex === 5);
+});
+
+test('prefers-reduced-motion disables overlay transitions', async ({ page }) => {
+  await page.emulateMedia({ reducedMotion: 'reduce' });
+  await startTour(page, [
+    { target: '#btn-play', title: 'Step 1', body: 'An action step so the ring pulses.', action: { type: 'click' } },
+    { target: null, title: 'Step 2', body: 'Done.' },
+  ]);
+
+  const styles = await page.evaluate(() => ({
+    welcomeTransition: getComputedStyle(document.getElementById('welcome-overlay')).transitionDuration,
+    guideTransition: getComputedStyle(document.getElementById('guide-overlay')).transitionDuration,
+    pulseAnimation: getComputedStyle(document.querySelector('.tour-ring.tour-pulse')).animationName,
+  }));
+
+  expect(styles.welcomeTransition).toBe('0s');
+  expect(styles.guideTransition).toBe('0s');
+  expect(styles.pulseAnimation).toBe('none');
+});
+
+test('drag step ignores non-left pointer buttons', async ({ page }) => {
+  await startTour(page, [
+    { target: '#overlay-canvas', title: 'Drag', body: 'Drag the obstacle.', action: { type: 'drag' } },
+    { target: null, title: 'Done', body: 'Finished.' },
+  ]);
+
+  const box = await page.locator('#overlay-canvas').boundingBox();
+  const cx = box.x + box.width / 2, cy = box.y + box.height / 2;
+
+  // Right-button drag must not advance.
+  await page.mouse.move(cx, cy);
+  await page.mouse.down({ button: 'right' });
+  await page.mouse.move(cx + 60, cy + 30, { steps: 4 });
+  await page.mouse.up({ button: 'right' });
+  expect(await page.evaluate(() => window.__testTour.stepIndex)).toBe(0);
+
+  // Normal left-button drag should advance.
+  await page.mouse.move(cx, cy);
+  await page.mouse.down();
+  await page.mouse.move(cx + 60, cy + 30, { steps: 4 });
+  await page.mouse.up();
+  await page.waitForFunction(() => window.__testTour.stepIndex === 1);
+});
