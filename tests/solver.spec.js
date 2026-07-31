@@ -3486,3 +3486,397 @@ test('a drag released off-canvas zeroes the stored wall velocity', async ({ page
   // and the viscous ghost becomes a permanent momentum pump.
   expect(r.maxEnd).toBe(0);
 });
+
+/**
+ * ADR-0011 touchcancel path: a browser touchcancel must end the drag and
+ * zero the stored wall velocity, just like touchend/mouseup.
+ */
+test('a drag cancelled by touchcancel zeroes the stored wall velocity', async ({ page }) => {
+  await boot(page);
+  const r = await page.evaluate(async () => {
+    const { solver, device, interaction } = window.__flowlab;
+    solver.paused = true;
+    const n = solver.numY, numX = solver.numX;
+    const size = numX * n * 4;
+    const readBuf = async (src) => {
+      const staging = device.createBuffer({
+        size, usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST,
+      });
+      const enc = device.createCommandEncoder();
+      enc.copyBufferToBuffer(src, 0, staging, 0, size);
+      device.queue.submit([enc.finish()]);
+      await staging.mapAsync(GPUMapMode.READ);
+      const out = new Float32Array(staging.getMappedRange().slice(0));
+      staging.unmap();
+      staging.destroy();
+      return out;
+    };
+
+    const rect = document.querySelector('canvas').getBoundingClientRect();
+    const cx = rect.left + rect.width / 2, cy = rect.top + rect.height / 2;
+    interaction._onPointerDown(cx, cy, false);
+    interaction._onPointerMove(cx + 8, cy, false);
+
+    const p1 = interaction.screenToSim(cx, cy);
+    const p2 = interaction.screenToSim(cx + 8, cy);
+    const vxExpected = Math.fround((p2.x - p1.x) / solver.params.dt);
+
+    const s = await readBuf(solver.solidBuffer);
+    const uMid = await readBuf(solver.velocityBuffers.u);
+    window.dispatchEvent(new TouchEvent('touchcancel', { bubbles: true, cancelable: true }));
+    const uEnd = await readBuf(solver.velocityBuffers.u);
+
+    let nSolid = 0, midMatches = 0, maxEnd = 0;
+    for (let i = 2; i < numX - 2; i++) {
+      for (let j = 2; j < n - 2; j++) {
+        if (s[i * n + j] !== 0) continue;
+        nSolid++;
+        if (uMid[i * n + j] === vxExpected) midMatches++;
+        maxEnd = Math.max(maxEnd, Math.abs(uEnd[i * n + j]));
+      }
+    }
+    return { nSolid, midMatches, maxEnd, dragging: interaction.dragging };
+  });
+
+  expect(r.nSolid).toBeGreaterThan(20);
+  expect(r.midMatches).toBe(r.nSolid);
+  expect(r.maxEnd).toBe(0);
+  expect(r.dragging).toBe(false);
+});
+
+/**
+ * ADR-0011 window-blur path: the browser firing a blur event must end an
+ * active drag and zero the stored wall velocity.
+ */
+test('a drag ending on window blur zeroes the stored wall velocity', async ({ page }) => {
+  await boot(page);
+  const r = await page.evaluate(async () => {
+    const { solver, device, interaction } = window.__flowlab;
+    solver.paused = true;
+    const n = solver.numY, numX = solver.numX;
+    const size = numX * n * 4;
+    const readBuf = async (src) => {
+      const staging = device.createBuffer({
+        size, usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST,
+      });
+      const enc = device.createCommandEncoder();
+      enc.copyBufferToBuffer(src, 0, staging, 0, size);
+      device.queue.submit([enc.finish()]);
+      await staging.mapAsync(GPUMapMode.READ);
+      const out = new Float32Array(staging.getMappedRange().slice(0));
+      staging.unmap();
+      staging.destroy();
+      return out;
+    };
+
+    const rect = document.querySelector('canvas').getBoundingClientRect();
+    const cx = rect.left + rect.width / 2, cy = rect.top + rect.height / 2;
+    interaction._onPointerDown(cx, cy, false);
+    interaction._onPointerMove(cx + 8, cy, false);
+
+    const p1 = interaction.screenToSim(cx, cy);
+    const p2 = interaction.screenToSim(cx + 8, cy);
+    const vxExpected = Math.fround((p2.x - p1.x) / solver.params.dt);
+
+    const s = await readBuf(solver.solidBuffer);
+    const uMid = await readBuf(solver.velocityBuffers.u);
+    window.dispatchEvent(new Event('blur'));
+    const uEnd = await readBuf(solver.velocityBuffers.u);
+
+    let nSolid = 0, midMatches = 0, maxEnd = 0;
+    for (let i = 2; i < numX - 2; i++) {
+      for (let j = 2; j < n - 2; j++) {
+        if (s[i * n + j] !== 0) continue;
+        nSolid++;
+        if (uMid[i * n + j] === vxExpected) midMatches++;
+        maxEnd = Math.max(maxEnd, Math.abs(uEnd[i * n + j]));
+      }
+    }
+    return { nSolid, midMatches, maxEnd, dragging: interaction.dragging };
+  });
+
+  expect(r.nSolid).toBeGreaterThan(20);
+  expect(r.midMatches).toBe(r.nSolid);
+  expect(r.maxEnd).toBe(0);
+  expect(r.dragging).toBe(false);
+});
+
+/**
+ * ADR-0011 preset-switch path: loading an obstacle-less preset during a drag
+ * must cancel the drag before resetting fields. A later pointer release must
+ * not re-rasterize a hidden obstacle at the old centre.
+ */
+test('switching to an obstacle-less preset during a drag keeps the old centre fluid', async ({ page }) => {
+  await boot(page);
+  const r = await page.evaluate(async () => {
+    const { solver, device, interaction } = window.__flowlab;
+    solver.paused = true;
+    const n = solver.numY, numX = solver.numX;
+    const size = numX * n * 4;
+    const readBuf = async (src) => {
+      const staging = device.createBuffer({
+        size, usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST,
+      });
+      const enc = device.createCommandEncoder();
+      enc.copyBufferToBuffer(src, 0, staging, 0, size);
+      device.queue.submit([enc.finish()]);
+      await staging.mapAsync(GPUMapMode.READ);
+      const out = new Float32Array(staging.getMappedRange().slice(0));
+      staging.unmap();
+      staging.destroy();
+      return out;
+    };
+
+    const rect = document.querySelector('canvas').getBoundingClientRect();
+    const cx = rect.left + rect.width / 2, cy = rect.top + rect.height / 2;
+    interaction._onPointerDown(cx, cy, false);
+    interaction._onPointerMove(cx + 8, cy, false);
+
+    const oldCX = interaction.obstacleX;
+    const oldCY = interaction.obstacleY;
+
+    document.querySelector('[data-preset="backward-step"]').click();
+    const draggingAfterClick = interaction.dragging;
+    window.dispatchEvent(new MouseEvent('mouseup'));
+
+    const s = await readBuf(solver.solidBuffer);
+    const ii = Math.round(oldCX / solver.h);
+    const jj = Math.round(oldCY / solver.h);
+    const oldCentreFluid = s[ii * n + jj] !== 0;
+
+    return {
+      showObstacle: interaction.showObstacle,
+      dragging: interaction.dragging,
+      draggingAfterClick,
+      oldCentreFluid,
+    };
+  });
+
+  expect(r.showObstacle).toBe(false);
+  expect(r.dragging).toBe(false);
+  expect(r.draggingAfterClick).toBe(false);
+  expect(r.oldCentreFluid).toBe(true);
+});
+
+/**
+ * ADR-0011 obstacle-less preset guard: while showObstacle is false, a fresh
+ * canvas drag must not create a hidden solid or inject stored wall velocity.
+ */
+test('a drag in an obstacle-less preset creates no hidden solid or stored velocity', async ({ page }) => {
+  await boot(page);
+  const r = await page.evaluate(async () => {
+    const { solver, device, interaction } = window.__flowlab;
+    solver.paused = true;
+    const n = solver.numY, numX = solver.numX;
+    const size = numX * n * 4;
+    const readBuf = async (src) => {
+      const staging = device.createBuffer({
+        size, usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST,
+      });
+      const enc = device.createCommandEncoder();
+      enc.copyBufferToBuffer(src, 0, staging, 0, size);
+      device.queue.submit([enc.finish()]);
+      await staging.mapAsync(GPUMapMode.READ);
+      const out = new Float32Array(staging.getMappedRange().slice(0));
+      staging.unmap();
+      staging.destroy();
+      return out;
+    };
+
+    // Load the obstacle-less backward-step preset.
+    document.querySelector('[data-preset="backward-step"]').click();
+
+    const sBefore = await readBuf(solver.solidBuffer);
+    const uBefore = await readBuf(solver.velocityBuffers.u);
+
+    const rect = document.querySelector('canvas').getBoundingClientRect();
+    const cx = rect.left + rect.width / 2, cy = rect.top + rect.height / 2;
+    // Attempt a fresh drag at the centre of the field.
+    interaction._onPointerDown(cx, cy, false);
+    interaction._onPointerMove(cx + 8, cy, false);
+    window.dispatchEvent(new MouseEvent('mouseup'));
+
+    const sAfter = await readBuf(solver.solidBuffer);
+    const uAfter = await readBuf(solver.velocityBuffers.u);
+
+    let solidsCreated = 0, maxVelocityOutsideInflow = 0;
+    for (let i = 1; i < numX - 1; i++) {
+      for (let j = 1; j < n - 1; j++) {
+        const k = i * n + j;
+        if (sBefore[k] !== 0 && sAfter[k] === 0) solidsCreated++;
+        if (i !== 1) {
+          maxVelocityOutsideInflow = Math.max(maxVelocityOutsideInflow, Math.abs(uAfter[k]));
+        }
+      }
+    }
+
+    return {
+      showObstacle: interaction.showObstacle,
+      dragging: interaction.dragging,
+      solidsCreated,
+      maxVelocityOutsideInflow,
+    };
+  });
+
+  expect(r.showObstacle).toBe(false);
+  expect(r.dragging).toBe(false);
+  expect(r.solidsCreated).toBe(0);
+  expect(r.maxVelocityOutsideInflow).toBe(0);
+});
+
+/**
+ * ADR-0011 hidden-rotation path: a Shift+mousemove over the canvas without a
+ * prior pointer-down must not rasterize a stale obstacle while an obstacle-less
+ * preset (backwardStep) is active. The _onPointerDown guard already refuses the
+ * drag/rotation start; this catches the pointer-move path that bypasses it.
+ */
+test('Shift+mousemove in an obstacle-less preset creates no hidden solid or geometry mutation', async ({ page }) => {
+  await boot(page);
+  const r = await page.evaluate(async () => {
+    const { solver, device, interaction } = window.__flowlab;
+    solver.paused = true;
+    const n = solver.numY, numX = solver.numX;
+    const size = numX * n * 4;
+
+    const readBuf = async (src) => {
+      const staging = device.createBuffer({
+        size, usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST,
+      });
+      const enc = device.createCommandEncoder();
+      enc.copyBufferToBuffer(src, 0, staging, 0, size);
+      device.queue.submit([enc.finish()]);
+      await staging.mapAsync(GPUMapMode.READ);
+      const out = new Float32Array(staging.getMappedRange().slice(0));
+      staging.unmap();
+      staging.destroy();
+      return out;
+    };
+
+    // Load the obstacle-less backward-step preset.
+    document.querySelector('[data-preset="backward-step"]').click();
+
+    const sBefore = await readBuf(solver.solidBuffer);
+    const angleBefore = interaction.obstacleAngle;
+    const xBefore = interaction.obstacleX;
+    const yBefore = interaction.obstacleY;
+
+    const rect = document.querySelector('canvas').getBoundingClientRect();
+    const cx = rect.left + rect.width / 2;
+    const cy = rect.top + rect.height / 2;
+
+    // Dispatch a Shift+mousemove over the canvas via the real browser event
+    // path, without a matching pointer-down. This is the route that used to
+    // call _rotate() and rasterize the stale obstacle geometry.
+    const canvas = document.querySelector('canvas');
+    canvas.dispatchEvent(new MouseEvent('mousemove', {
+      clientX: cx + 20,
+      clientY: cy + 10,
+      shiftKey: true,
+      bubbles: true,
+    }));
+
+    const sAfter = await readBuf(solver.solidBuffer);
+
+    let solidsCreated = 0;
+    for (let i = 1; i < numX - 1; i++) {
+      for (let j = 1; j < n - 1; j++) {
+        const k = i * n + j;
+        if (sBefore[k] !== 0 && sAfter[k] === 0) solidsCreated++;
+      }
+    }
+
+    return {
+      showObstacle: interaction.showObstacle,
+      dragging: interaction.dragging,
+      solidsCreated,
+      angleBefore,
+      angleAfter: interaction.obstacleAngle,
+      xBefore,
+      xAfter: interaction.obstacleX,
+      yBefore,
+      yAfter: interaction.obstacleY,
+    };
+  });
+
+  expect(r.showObstacle).toBe(false);
+  expect(r.dragging).toBe(false);
+  expect(r.solidsCreated).toBe(0);
+  expect(r.angleAfter).toBe(r.angleBefore);
+  expect(r.xAfter).toBe(r.xBefore);
+  expect(r.yAfter).toBe(r.yBefore);
+});
+
+/**
+ * Pressure gauge reference must be FLUID in the current solid mask. If the
+ * obstacle sits on the grid center, the old fixed-center reference is solid
+ * (p=0) and subtracting it leaves a constant offset in the entire field.
+ */
+test('pressure gauge normalization selects a fluid reference when the obstacle covers the grid center', async ({ page }) => {
+  await boot(page);
+  const r = await page.evaluate(async () => {
+    const { solver, device } = window.__flowlab;
+    solver.paused = true;
+    const { numX, numY, h } = solver;
+    const size = numX * numY * 4;
+
+    const readBuf = async (src) => {
+      const staging = device.createBuffer({
+        size, usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST,
+      });
+      const enc = device.createCommandEncoder();
+      enc.copyBufferToBuffer(src, 0, staging, 0, size);
+      device.queue.submit([enc.finish()]);
+      await staging.mapAsync(GPUMapMode.READ);
+      const out = new Float32Array(staging.getMappedRange().slice(0));
+      staging.unmap();
+      staging.destroy();
+      return out;
+    };
+
+    // Rasterize an obstacle centered on the grid, covering the centre cell.
+    const cx = 0.5 * numX * h;
+    const cy = 0.5 * numY * h;
+    solver.rasterizeObstacle({
+      shape: 0,
+      centerX: cx,
+      centerY: cy,
+      vx: 0,
+      vy: 0,
+      radius: Math.max(0.2, 3 * h),
+      angle: 0,
+      prevBBox: [1, 0, 0, 0],
+      clearPressure: false,
+    });
+
+    const s = await readBuf(solver.solidBuffer);
+
+    // Set pressure to 7 in fluid cells and 0 in solid cells. The scenario
+    // under test is a solid center with p=0 surrounded by fluid with p=7.
+    const p7 = new Float32Array(numX * numY);
+    for (let k = 0; k < p7.length; k++) {
+      p7[k] = s[k] === 0 ? 0 : 7;
+    }
+    device.queue.writeBuffer(solver.pressureBuffer, 0, p7);
+    const centerI = Math.floor(numX / 2);
+    const centerJ = Math.floor(numY / 2);
+    const centerSolid = s[centerI * numY + centerJ] === 0;
+
+    // Run a single step with zero pressure iterations: only the normalization
+    // passes touch pressure after the (empty) pressure solve.
+    solver.step(0);
+
+    const p = await readBuf(solver.pressureBuffer);
+    let maxAbsFluidP = 0;
+    for (let i = 1; i < numX - 1; i++) {
+      for (let j = 1; j < numY - 1; j++) {
+        if (s[i * numY + j] === 0) continue;
+        maxAbsFluidP = Math.max(maxAbsFluidP, Math.abs(p[i * numY + j]));
+      }
+    }
+
+    return { centerSolid, maxAbsFluidP };
+  });
+
+  expect(r.centerSolid).toBe(true);
+  expect(r.maxAbsFluidP).toBeLessThan(1e-4);
+});

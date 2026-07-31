@@ -27,15 +27,33 @@ struct Params {
 @group(0) @binding(2) var<storage, read_write> v: array<f32>;  // vertical velocity (staggered, on horizontal faces)
 @group(0) @binding(3) var<storage, read> s: array<f32>;        // solid mask: 0 = solid, 1 = fluid
 @group(0) @binding(4) var<storage, read_write> p: array<f32>;  // pressure (cell-centered)
+@group(0) @binding(5) var<storage, read_write> refIdx: atomic<u32>; // dynamically selected fluid reference index
 
-// normalize: Subtract a fixed interior reference from every pressure cell.
-// Pressure is only defined up to an additive constant; this pins the gauge
-// so the SOR residual does not drift into the constant mode over many steps.
-//
-// The reference cell is skipped here and zeroed by `normalize_ref` in a
-// separate dispatch. Reading p[refIdx] while another invocation writes it
-// in the same pass is a data race; keeping the reference read-only in this
-// pass means every invocation sees the pre-pass value consistently.
+// reset_ref: Clear the atomic reference index to a one-past-end sentinel.
+// Dispatched as a single thread before find_ref so the previous frame's index
+// does not influence the current mask.
+@compute @workgroup_size(1, 1)
+fn reset_ref(@builtin(global_invocation_id) id: vec3u) {
+    atomicStore(&refIdx, params.numX * params.numY);
+}
+
+// find_ref: Deterministically select the lowest-index fluid cell in the
+// current solid mask. atomicMin makes the result independent of dispatch order.
+@compute @workgroup_size(8, 8)
+fn find_ref(@builtin(global_invocation_id) id: vec3u) {
+    let i = id.x;
+    let j = id.y;
+    let n = params.numY;
+    if (i >= params.numX || j >= n) { return; }
+    let idx = i * n + j;
+    if (s[idx] != 0.0) {
+        atomicMin(&refIdx, idx);
+    }
+}
+
+// normalize: Subtract the selected fluid reference pressure from every cell.
+// The reference cell is skipped here and zeroed by `normalize_ref` in a later
+// pass, so this pass never reads and writes p[refIdx] at the same time.
 @compute @workgroup_size(8, 8)
 fn normalize(@builtin(global_invocation_id) id: vec3u) {
     let i = id.x;
@@ -43,18 +61,19 @@ fn normalize(@builtin(global_invocation_id) id: vec3u) {
     let n = params.numY;
     if (i >= params.numX || j >= n) { return; }
     let idx = i * n + j;
-    let refIdx = (params.numX / 2u) * n + (n / 2u);
-    if (idx == refIdx) { return; }
-    p[idx] -= p[refIdx];
+    let refIndex = atomicLoad(&refIdx);
+    if (refIndex >= params.numX * params.numY) { return; }
+    if (idx == refIndex) { return; }
+    p[idx] -= p[refIndex];
 }
 
-// normalize_ref: Zero the reference cell. Runs as a single-thread dispatch
-// after `normalize` so the reference is not read and written in the same pass.
+// normalize_ref: Zero the selected reference cell. Runs in a separate pass
+// after `normalize` so the reference is not read and written concurrently.
 @compute @workgroup_size(1, 1)
 fn normalize_ref(@builtin(global_invocation_id) id: vec3u) {
-    let n = params.numY;
-    let refIdx = (params.numX / 2u) * n + (n / 2u);
-    p[refIdx] = 0.0;
+    let refIndex = atomicLoad(&refIdx);
+    if (refIndex >= params.numX * params.numY) { return; }
+    p[refIndex] = 0.0;
 }
 
 // clear: Zero the entire pressure field. Used when the obstacle has been

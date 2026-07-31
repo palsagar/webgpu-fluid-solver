@@ -64,6 +64,8 @@ export class Interaction {
         canvas.addEventListener('touchstart', e => { e.preventDefault(); const t = e.touches[0]; this._onPointerDown(t.clientX, t.clientY); }, { passive: false });
         canvas.addEventListener('touchmove',  e => { e.preventDefault(); const t = e.touches[0]; this._onPointerMove(t.clientX, t.clientY, false); }, { passive: false });
         window.addEventListener('touchend',   () => this._endDrag());
+        window.addEventListener('touchcancel', () => this._endDrag());
+        window.addEventListener('blur', () => this._endDrag());
 
         document.addEventListener('keydown', e => { if (e.key === 'Shift') this._shiftHeld = true; });
         document.addEventListener('keyup', e => { if (e.key === 'Shift') this._shiftHeld = false; });
@@ -153,6 +155,9 @@ export class Interaction {
             }
             return; // Never fall through to drag in particles mode
         }
+        // No obstacle is currently shown (e.g. obstacle-less preset); refuse to
+        // rasterize a hidden solid or begin a drag/rotation that cannot be seen.
+        if (!this.showObstacle) return;
         if (shiftKey || this._shiftHeld) {
             this._rotate(clientX, clientY);
             return;
@@ -181,6 +186,10 @@ export class Interaction {
     _onPointerMove(clientX, clientY, shiftKey) {
         if (this.mode !== 'obstacle') return;
         if (shiftKey || this._shiftHeld) {
+            // Guard the rotation path symmetrically with the pointer-down guard:
+            // an obstacle-less preset hides the obstacle, so Shift+mousemove must
+            // not rasterize a stale/phantom solid or mutate the hidden geometry.
+            if (!this.showObstacle) return;
             this._rotate(clientX, clientY);
             return;
         }
@@ -204,10 +213,13 @@ export class Interaction {
         if (!this.dragging) return;
         this.dragging = false;
         // ADR-0011: the stored wall velocity must not outlive the drag — the
-        // viscous ghost reads it every frame. One dispatch round, the same
-        // cost as a mousemove; matches the zero-velocity rasterize in
-        // _startDrag and _rotate.
-        this.rasterizeObstacle(this.obstacleX, this.obstacleY, 0, 0);
+        // viscous ghost reads it every frame. Zero-rasterize only while the
+        // obstacle is still shown: a preset switch to an obstacle-less preset
+        // hides the obstacle and resets the field, so a late release must not
+        // re-rasterize at the old centre.
+        if (this.showObstacle) {
+            this.rasterizeObstacle(this.obstacleX, this.obstacleY, 0, 0);
+        }
     }
 
     /**

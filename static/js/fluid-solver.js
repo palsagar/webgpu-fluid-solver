@@ -98,6 +98,10 @@ export class FluidSolver {
 
     this.p = device.createBuffer({ size: size * 4, usage: storageUsage });
     this.s = device.createBuffer({ size: size * 4, usage: storageUsage });
+    // Atomic reference index for the pressure gauge normalization. One u32
+    // shared across reset/find/normalize/normalize_ref; reset to a sentinel
+    // value before the full-grid find_ref pass.
+    this.pRef = device.createBuffer({ size: 4, usage: storageUsage });
     // Boundary mask: the preset's permanent solids (walls, step), uploaded
     // once per preset load. The obstacle rasterizer reads it to restore
     // vacated cells and to never carve permanent boundary cells.
@@ -217,6 +221,7 @@ export class FluidSolver {
     this.s.destroy();
     this.sBoundary.destroy();
     this.sOld.destroy();
+    this.pRef.destroy();
     this.uniformBuf.destroy();
     this.uniformBufRed.destroy();
     this.uniformBufBlack.destroy();
@@ -276,9 +281,10 @@ export class FluidSolver {
       entries: [bglEntry(0, UNIFORM), bglEntry(1, STORAGE), bglEntry(2, STORAGE), bglEntry(3, RO_STORAGE), bglEntry(4, STORAGE)],
     });
 
-    // Layout for pressure gauge normalization: uniform(0) + p storage(4) only.
+    // Layout for pressure gauge normalization: uniform(0) + solid mask(3) +
+    // pressure(4) + atomic reference index(5).
     solver._pressureNormalizeBGL = device.createBindGroupLayout({
-      entries: [bglEntry(0, UNIFORM), bglEntry(4, STORAGE)],
+      entries: [bglEntry(0, UNIFORM), bglEntry(3, RO_STORAGE), bglEntry(4, STORAGE), bglEntry(5, STORAGE)],
     });
 
     // Layout for boundary: uniform(0) + storage(1,2)
@@ -344,9 +350,11 @@ export class FluidSolver {
     const makePipelineLayout = (bgl) => device.createPipelineLayout({ bindGroupLayouts: [bgl] });
 
     solver.pressurePipeline    = device.createComputePipeline({ layout: makePipelineLayout(solver._pressureBGL),    compute: { module: pressureMod,     entryPoint: 'main' } });
-    solver.pressureNormalizePipeline = device.createComputePipeline({ layout: makePipelineLayout(solver._pressureNormalizeBGL), compute: { module: pressureMod, entryPoint: 'normalize' } });
+    solver.pressureResetRefPipeline    = device.createComputePipeline({ layout: makePipelineLayout(solver._pressureNormalizeBGL), compute: { module: pressureMod, entryPoint: 'reset_ref' } });
+    solver.pressureFindRefPipeline     = device.createComputePipeline({ layout: makePipelineLayout(solver._pressureNormalizeBGL), compute: { module: pressureMod, entryPoint: 'find_ref' } });
+    solver.pressureNormalizePipeline   = device.createComputePipeline({ layout: makePipelineLayout(solver._pressureNormalizeBGL), compute: { module: pressureMod, entryPoint: 'normalize' } });
     solver.pressureNormalizeRefPipeline = device.createComputePipeline({ layout: makePipelineLayout(solver._pressureNormalizeBGL), compute: { module: pressureMod, entryPoint: 'normalize_ref' } });
-    solver.pressureClearPipeline     = device.createComputePipeline({ layout: makePipelineLayout(solver._pressureNormalizeBGL), compute: { module: pressureMod, entryPoint: 'clear' } });
+    solver.pressureClearPipeline       = device.createComputePipeline({ layout: makePipelineLayout(solver._pressureNormalizeBGL), compute: { module: pressureMod, entryPoint: 'clear' } });
     solver.boundaryHPipeline   = device.createComputePipeline({ layout: makePipelineLayout(solver._boundaryBGL),    compute: { module: boundaryMod,     entryPoint: 'extrapolate_horizontal' } });
     solver.boundaryVPipeline   = device.createComputePipeline({ layout: makePipelineLayout(solver._boundaryBGL),    compute: { module: boundaryMod,     entryPoint: 'extrapolate_vertical' } });
     solver.advectVelPipeline   = device.createComputePipeline({ layout: makePipelineLayout(solver._advectVelBGL),   compute: { module: advectMod,       entryPoint: 'advect_velocity' } });
@@ -396,10 +404,10 @@ export class FluidSolver {
       }));
     }
 
-    // Gauge-normalization pass: only needs the uniform buffer and pressure field.
+    // Gauge-normalization passes: uniform + solid mask + pressure field + atomic reference.
     this.pressureNormalize = device.createBindGroup({
       layout: this._pressureNormalizeBGL,
-      entries: [entry(0, this.uniformBuf), entry(4, this.p)],
+      entries: [entry(0, this.uniformBuf), entry(3, this.s), entry(4, this.p), entry(5, this.pRef)],
     });
 
     // MacCormack velocity: forward -> backward -> combine. Indexed by the
@@ -573,12 +581,24 @@ export class FluidSolver {
       }
     }
 
-    // Pressure gauge normalization: the pressure field is defined only up to
-    // an additive constant, but the SOR residual can drift into the constant
-    // mode over many steps and the colorbar auto-scale amplifies it. Subtract
-    // a fixed interior reference after each solve to remove the gauge drift.
-    // This does not change pressure gradients, so it does not change the
-    // velocity projection.
+    // Pressure gauge normalization: pick a fluid reference cell from the
+    // current solid mask, then subtract its pressure from the whole field and
+    // zero that cell in a later pass. The reference index is shared through a
+    // single u32 atomic buffer: reset -> find -> normalize -> normalize_ref.
+    {
+      const pass = encoder.beginComputePass();
+      pass.setPipeline(this.pressureResetRefPipeline);
+      pass.setBindGroup(0, this.pressureNormalize);
+      pass.dispatchWorkgroups(1, 1, 1);
+      pass.end();
+    }
+    {
+      const pass = encoder.beginComputePass();
+      pass.setPipeline(this.pressureFindRefPipeline);
+      pass.setBindGroup(0, this.pressureNormalize);
+      pass.dispatchWorkgroups(dx, dy, 1);
+      pass.end();
+    }
     {
       const pass = encoder.beginComputePass();
       pass.setPipeline(this.pressureNormalizePipeline);
