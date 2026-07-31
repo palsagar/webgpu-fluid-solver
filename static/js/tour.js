@@ -89,6 +89,8 @@ export class Tour {
     _end(result) {
         if (!this._active) return;
         this._teardownCurrentAction();
+        const step = this._steps[this._index];
+        if (step?.onLeave) step.onLeave(this._ctx);
         this._resetToCleanState();
         clearTimeout(this._relayoutTimer);
         Tour.writeFlag(result);
@@ -142,11 +144,11 @@ export class Tour {
             backBtn.addEventListener('click', () => this.back());
             nav.appendChild(backBtn);
         }
-        if (!step.action) {
+        if (!step.action || !this._targetEl(step.target)) {
             const nextBtn = document.createElement('button');
             nextBtn.className = 'tour-btn tour-btn-primary';
             nextBtn.textContent = isLast ? 'Done' : 'Next';
-            nextBtn.addEventListener('click', () => this.next());
+            nextBtn.addEventListener('click', () => step.action ? this._advance() : this.next());
             nav.appendChild(nextBtn);
         }
 

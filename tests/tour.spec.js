@@ -308,6 +308,36 @@ test('skip mid-tour resets state and writes the skipped flag', async ({ page }) 
   expect(clean).toEqual({ preset: 'karman-vortex', pressure: false, smoke: true });
 });
 
+test('onLeave fires on Escape-triggered tour exit', async ({ page }) => {
+  await page.evaluate(async () => {
+    const { Tour } = await import('./js/tour.js');
+    const { ui, interaction, solver } = window.__flowlab;
+    const steps = [
+      { target: null, title: 'Step 1', body: 'Intro.' },
+      { target: null, title: 'Step 2', body: 'Exit me.', onLeave: (ctx) => { window.__onLeaveFired = true; } },
+    ];
+    window.__testTour = new Tour({ ui, interaction, solver, steps });
+    window.__testTour.start();
+  });
+  await page.evaluate(() => localStorage.removeItem('flowlab.tour.v1'));
+
+  await page.locator('.tour-btn-primary').click(); // step 1 → 2
+  await page.keyboard.press('Escape');
+  expect(await page.evaluate(() => window.__onLeaveFired)).toBe(true);
+  expect(await page.evaluate(() => localStorage.getItem('flowlab.tour.v1'))).toBe('skipped');
+});
+
+test('missing-target action step renders a primary button and advances on click', async ({ page }) => {
+  await startTour(page, [
+    { target: '#no-such-element', title: 'Ghost action', body: 'Target is missing.', action: { type: 'click' } },
+    { target: null, title: 'Step 2', body: 'Done.' },
+  ]);
+
+  await expect(page.locator('.tour-btn-primary')).toHaveCount(1);
+  await page.locator('.tour-btn-primary').click();
+  await page.waitForFunction(() => window.__testTour.stepIndex === 1);
+});
+
 test('a missing target falls back to centered placement and stays advanceable', async ({ page }) => {
   await startTour(page, [
     { target: '#no-such-element', title: 'Ghost', body: 'Nowhere to point.' },
