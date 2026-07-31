@@ -15,6 +15,7 @@
 
 const STORAGE_KEY = 'flowlab.tour.v1';
 const PAD = 8; // px of breathing room around the spotlight hole
+const DRAG_THRESHOLD = 5; // px of pointer travel that turns a click into a drag
 
 export class Tour {
     /**
@@ -137,14 +138,19 @@ export class Tour {
             backBtn.addEventListener('click', () => this.back());
             nav.appendChild(backBtn);
         }
-        const nextBtn = document.createElement('button');
-        nextBtn.className = 'tour-btn tour-btn-primary';
-        nextBtn.textContent = isLast ? 'Done' : 'Next';
-        nextBtn.addEventListener('click', () => this.next());
-        nav.appendChild(nextBtn);
+        if (!step.action) {
+            const nextBtn = document.createElement('button');
+            nextBtn.className = 'tour-btn tour-btn-primary';
+            nextBtn.textContent = isLast ? 'Done' : 'Next';
+            nextBtn.addEventListener('click', () => this.next());
+            nav.appendChild(nextBtn);
+        }
 
         footer.append(counter, skipBtn, nav);
         tooltip.append(title, body, footer);
+
+        this._els.ring.classList.toggle('tour-pulse', Boolean(step.action));
+        this._installAction(step);
 
         this._layout();
         // Targets with CSS transitions (the Advanced panel slides in over
@@ -224,6 +230,14 @@ export class Tour {
         const dims = ['top', 'right', 'bottom', 'left'].map(side => mk(`tour-dim tour-dim-${side}`));
         const ring = mk('tour-ring');
         const tooltip = mk('tour-tooltip');
+        // Clicking a dim instead of the target: re-trigger the ring pulse,
+        // nothing else. No nag tooltips, no auto-advance.
+        dims.forEach(d => d.addEventListener('click', () => {
+            if (!this._steps[this._index]?.action) return;
+            ring.classList.remove('tour-pulse');
+            void ring.offsetWidth; // restart the CSS animation
+            ring.classList.add('tour-pulse');
+        }));
         this._els = { dims, ring, tooltip };
     }
 
@@ -238,5 +252,76 @@ export class Tour {
     _teardownCurrentAction() {
         this._teardownAction?.();
         this._teardownAction = null;
+    }
+
+    /** A do-it step's gesture was observed: advance, or finish on the last step. */
+    _advance() {
+        if (!this._active) return;
+        if (this._index === this._steps.length - 1) this._end('done');
+        else this._goTo(this._index + 1);
+    }
+
+    /**
+     * Wire the DOM listeners that detect a do-it gesture. Pure DOM events —
+     * the only app state read is interaction.mode, through the injected ref.
+     */
+    _installAction(step) {
+        if (!step.action) return;
+        const el = this._targetEl(step.target);
+        const canvas = document.getElementById('overlay-canvas');
+        const offs = [];
+        const on = (target, type, fn) => {
+            target.addEventListener(type, fn);
+            offs.push(() => target.removeEventListener(type, fn));
+        };
+
+        switch (step.action.type) {
+            case 'click': {
+                if (!el) break;
+                // Delegated targets (toolbar groups) count only real controls.
+                on(el, 'click', (e) => {
+                    if (e.target.closest('button, input, a')) this._advance();
+                });
+                break;
+            }
+            case 'change': {
+                if (!el) break;
+                on(el, 'change', () => this._advance());
+                break;
+            }
+            case 'drag': {
+                if (!canvas) break;
+                let dragging = false, moved = false, sx = 0, sy = 0;
+                on(canvas, 'pointerdown', (e) => {
+                    dragging = true; moved = false; sx = e.clientX; sy = e.clientY;
+                });
+                on(canvas, 'pointermove', (e) => {
+                    if (dragging && Math.hypot(e.clientX - sx, e.clientY - sy) > DRAG_THRESHOLD) moved = true;
+                });
+                on(window, 'pointerup', () => {
+                    if (dragging && moved) this._advance();
+                    dragging = false;
+                });
+                break;
+            }
+            case 'click-then-canvas': {
+                if (!el || !canvas) break;
+                let armed = false;
+                on(el, 'click', () => {
+                    armed = true;
+                    // The hole must move to the canvas, or the dims would block
+                    // the very click the step is asking for.
+                    this._overrideTarget = '#overlay-canvas';
+                    this._layout();
+                });
+                on(canvas, 'pointerdown', () => {
+                    if (armed && this._ctx.interaction.mode === 'particles') this._advance();
+                });
+                break;
+            }
+            default:
+                console.warn(`[tour] unknown action type: ${step.action.type}`);
+        }
+        this._teardownAction = () => { offs.forEach(off => off()); };
     }
 }

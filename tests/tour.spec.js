@@ -83,3 +83,61 @@ test('the dim rects block the page while the hole passes events to the target', 
   expect(probe.dimBlocked).toBe(true);
   expect(probe.holeOpen).toBe(true);
 });
+
+test('a click do-it step has no Next button and advances when the target is clicked', async ({ page }) => {
+  await startTour(page, [
+    { target: '#btn-play', title: 'Pause it', body: 'Click Pause.', action: { type: 'click' } },
+    { target: null, title: 'Done', body: 'Finished.' },
+  ]);
+
+  await expect(page.locator('.tour-btn-primary')).toHaveCount(0); // do-it: no Next
+  await expect(page.locator('.tour-ring')).toHaveClass(/tour-pulse/);
+
+  await page.click('#btn-play'); // through the hole — must reach the app
+  await page.waitForFunction(() => window.__testTour.stepIndex === 1);
+  const paused = await page.evaluate(() => window.__flowlab.solver.paused);
+  expect(paused).toBe(true);
+});
+
+test('a drag do-it step advances on a canvas drag but not on a click', async ({ page }) => {
+  await startTour(page, [
+    { target: '#overlay-canvas', title: 'Drag', body: 'Drag the obstacle.', action: { type: 'drag' } },
+    { target: null, title: 'Done', body: 'Finished.' },
+  ]);
+
+  const box = await page.locator('#overlay-canvas').boundingBox();
+  const cx = box.x + box.width / 2, cy = box.y + box.height / 2;
+
+  // A bare click (down/up, no travel) must NOT advance.
+  await page.mouse.move(cx, cy);
+  await page.mouse.down();
+  await page.mouse.up();
+  expect(await page.evaluate(() => window.__testTour.stepIndex)).toBe(0);
+
+  await page.mouse.move(cx, cy);
+  await page.mouse.down();
+  await page.mouse.move(cx + 60, cy + 30, { steps: 4 });
+  await page.mouse.up();
+  await page.waitForFunction(() => window.__testTour.stepIndex === 1);
+});
+
+test('a click-then-canvas do-it step arms on the button and advances in particle mode', async ({ page }) => {
+  await startTour(page, [
+    { target: '#btn-mode', title: 'Particles', body: 'Click Particles, then the flow.', action: { type: 'click-then-canvas' } },
+    { target: null, title: 'Done', body: 'Finished.' },
+  ]);
+
+  const box = await page.locator('#overlay-canvas').boundingBox();
+  const cx = box.x + box.width / 2, cy = box.y + box.height / 2;
+
+  // Canvas click before arming does nothing.
+  await page.mouse.click(cx, cy);
+  expect(await page.evaluate(() => window.__testTour.stepIndex)).toBe(0);
+
+  await page.click('#btn-mode'); // arm — hole retargets to the canvas
+  expect(await page.evaluate(() => window.__testTour.stepIndex)).toBe(0);
+
+  await page.mouse.click(cx, cy); // particle mode is on: emitter lands, advance
+  await page.waitForFunction(() => window.__testTour.stepIndex === 1);
+  expect(await page.evaluate(() => window.__flowlab.interaction.mode)).toBe('particles');
+});
