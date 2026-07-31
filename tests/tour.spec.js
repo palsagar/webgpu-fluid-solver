@@ -335,13 +335,11 @@ test('onLeave fires on Escape-triggered tour exit', async ({ page }) => {
   await page.evaluate(() => localStorage.removeItem('flowlab.tour.v1'));
 
   await page.locator('.tour-btn-primary').click(); // step 1 → 2
-  // Dirty app state while the tour overlay is up (pointer clicks are blocked,
-  // so drive the checkbox directly in the page context).
+  // Dirty app state via a real click path while the tour overlay is up.
   await page.evaluate(() => {
-    const cb = document.querySelector('input[data-viz="pressure"]');
-    cb.checked = true;
-    cb.dispatchEvent(new Event('change', { bubbles: true }));
+    document.querySelector('input[data-viz="pressure"]').click();
   });
+  expect(await page.evaluate(() => typeof window.__testTour._teardownAction === 'function')).toBe(true);
   await page.keyboard.press('Escape');
 
   expect(await page.evaluate(() => window.__onLeaveCalls)).toBe(1);
