@@ -312,9 +312,22 @@ test('onLeave fires on Escape-triggered tour exit', async ({ page }) => {
   await page.evaluate(async () => {
     const { Tour } = await import('./js/tour.js');
     const { ui, interaction, solver } = window.__flowlab;
+    window.__onLeaveCalls = 0;
+    window.__onLeaveActionTornDown = null;
+    window.__onLeavePressureOn = null;
     const steps = [
       { target: null, title: 'Step 1', body: 'Intro.' },
-      { target: null, title: 'Step 2', body: 'Exit me.', onLeave: (ctx) => { window.__onLeaveFired = true; } },
+      {
+        target: '#btn-play',
+        title: 'Step 2',
+        body: 'Exit me.',
+        action: { type: 'click' },
+        onLeave: (ctx) => {
+          window.__onLeaveCalls = (window.__onLeaveCalls || 0) + 1;
+          window.__onLeaveActionTornDown = window.__testTour._teardownAction === null;
+          window.__onLeavePressureOn = document.querySelector('input[data-viz="pressure"]').checked;
+        },
+      },
     ];
     window.__testTour = new Tour({ ui, interaction, solver, steps });
     window.__testTour.start();
@@ -322,8 +335,19 @@ test('onLeave fires on Escape-triggered tour exit', async ({ page }) => {
   await page.evaluate(() => localStorage.removeItem('flowlab.tour.v1'));
 
   await page.locator('.tour-btn-primary').click(); // step 1 → 2
+  // Dirty app state while the tour overlay is up (pointer clicks are blocked,
+  // so drive the checkbox directly in the page context).
+  await page.evaluate(() => {
+    const cb = document.querySelector('input[data-viz="pressure"]');
+    cb.checked = true;
+    cb.dispatchEvent(new Event('change', { bubbles: true }));
+  });
   await page.keyboard.press('Escape');
-  expect(await page.evaluate(() => window.__onLeaveFired)).toBe(true);
+
+  expect(await page.evaluate(() => window.__onLeaveCalls)).toBe(1);
+  expect(await page.evaluate(() => window.__onLeaveActionTornDown)).toBe(true);
+  expect(await page.evaluate(() => window.__onLeavePressureOn)).toBe(true);
+  expect(await page.evaluate(() => document.querySelector('input[data-viz="pressure"]').checked)).toBe(false);
   expect(await page.evaluate(() => localStorage.getItem('flowlab.tour.v1'))).toBe('skipped');
 });
 
