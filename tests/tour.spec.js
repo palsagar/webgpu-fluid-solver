@@ -49,11 +49,11 @@ test('read steps render the overlay, navigate with Next/Back, and tear down on E
   await expect(page.locator('.tour-title')).toHaveText('Step one');
   await expect(page.locator('.tour-counter')).toHaveText('1 / 2');
 
-  await page.locator('.tour-btn-primary').click(); // Next
+  await page.locator('.tour-footer .tour-btn-primary').click(); // Next
   await expect(page.locator('.tour-counter')).toHaveText('2 / 2');
   await expect(page.locator('.tour-title')).toHaveText('Step two');
 
-  await page.locator('.tour-btn-secondary').click(); // Back
+  await page.locator('.tour-footer .tour-btn-secondary').click(); // Back
   await expect(page.locator('.tour-counter')).toHaveText('1 / 2');
 
   await page.keyboard.press('Escape');
@@ -90,7 +90,7 @@ test('a click do-it step has no Next button and advances when the target is clic
     { target: null, title: 'Done', body: 'Finished.' },
   ]);
 
-  await expect(page.locator('.tour-btn-primary')).toHaveCount(0); // do-it: no Next
+  await expect(page.locator('.tour-footer .tour-btn-primary')).toHaveCount(0); // do-it: no Next
   await expect(page.locator('.tour-ring')).toHaveClass(/tour-pulse/);
 
   await page.click('#btn-play'); // through the hole — must reach the app
@@ -161,7 +161,7 @@ test('click-then-canvas does not arm when Back lands on an already-particle mode
   // Go back: mode is still particles, so the next #btn-mode click toggles it
   // back to obstacle. The tour must stay on this step and keep the hole on
   // the button instead of retargeting to the canvas.
-  await page.locator('.tour-btn-secondary').click();
+  await page.locator('.tour-footer .tour-btn-secondary').click();
   await page.waitForFunction(() => window.__testTour.stepIndex === 0);
 
   await page.click('#btn-mode'); // toggles to obstacle
@@ -206,11 +206,6 @@ test('drag do-it step advances even if the pointer leaves the canvas mid-drag', 
 /** Start a tour with the real 12-step STEPS script. */
 async function startRealTour(page) {
   await page.evaluate(async () => {
-    // Shim for ids that only land with Task 4's index.html edit.
-    const groups = document.querySelectorAll('.toolbar .toolbar-group');
-    if (!document.getElementById('viz-group')) groups[0].id = 'viz-group';
-    if (!document.getElementById('shape-group')) groups[1].id = 'shape-group';
-
     const { Tour, STEPS } = await import('./js/tour.js');
     const { ui, interaction, solver } = window.__flowlab;
     window.__testTour = new Tour({ ui, interaction, solver, steps: STEPS });
@@ -264,8 +259,8 @@ test('the full STEPS walkthrough completes and resets to a clean Kármán state'
   for (let guard = 0; guard < 12; guard++) {
     const done = await page.evaluate(() => !window.__testTour.active);
     if (done) break;
-    const hasNext = await page.locator('.tour-btn-primary').count();
-    if (hasNext) await page.locator('.tour-btn-primary').click();
+    const hasNext = await page.locator('.tour-footer .tour-btn-primary').count();
+    if (hasNext) await page.locator('.tour-footer .tour-btn-primary').click();
     else await performCurrentAction(page);
     // Do-it steps may trigger GPU work (preset load); give the loop a beat.
     await page.waitForTimeout(100);
@@ -293,7 +288,7 @@ test('the full STEPS walkthrough completes and resets to a clean Kármán state'
 
 test('skip mid-tour resets state and writes the skipped flag', async ({ page }) => {
   await startRealTour(page);
-  await page.locator('.tour-btn-primary').click(); // step 1 → 2
+  await page.locator('.tour-footer .tour-btn-primary').click(); // step 1 → 2
   await performCurrentAction(page);                  // drag → step 3
   await page.click('input[data-viz="pressure"]');    // → step 4 (pressure now ON)
   await page.keyboard.press('Escape');
@@ -334,7 +329,7 @@ test('onLeave fires on Escape-triggered tour exit', async ({ page }) => {
   });
   await page.evaluate(() => localStorage.removeItem('flowlab.tour.v1'));
 
-  await page.locator('.tour-btn-primary').click(); // step 1 → 2
+  await page.locator('.tour-footer .tour-btn-primary').click(); // step 1 → 2
   // Dirty app state via a real click path while the tour overlay is up.
   await page.evaluate(() => {
     document.querySelector('input[data-viz="pressure"]').click();
@@ -355,8 +350,8 @@ test('missing-target action step renders a primary button and advances on click'
     { target: null, title: 'Step 2', body: 'Done.' },
   ]);
 
-  await expect(page.locator('.tour-btn-primary')).toHaveCount(1);
-  await page.locator('.tour-btn-primary').click();
+  await expect(page.locator('.tour-footer .tour-btn-primary')).toHaveCount(1);
+  await page.locator('.tour-footer .tour-btn-primary').click();
   await page.waitForFunction(() => window.__testTour.stepIndex === 1);
 });
 
@@ -366,6 +361,90 @@ test('a missing target falls back to centered placement and stays advanceable', 
   ]);
   await expect(page.locator('.tour-tooltip')).toBeVisible();
   await expect(page.locator('.tour-ring')).toBeHidden();
-  await page.locator('.tour-btn-primary').click(); // Done — single read step ends the tour
+  await page.locator('.tour-footer .tour-btn-primary').click(); // Done — single read step ends the tour
   expect(await page.evaluate(() => localStorage.getItem('flowlab.tour.v1'))).toBe('done');
+});
+
+
+test('first visit shows the slim welcome and Take the Tour starts the tour', async ({ page }) => {
+  // Undo the beforeEach seed before navigating, so the gate sees no flag.
+  // Init scripts re-run on every navigation, in the order added.
+  await page.addInitScript(() => {
+    try { localStorage.removeItem('flowlab.tour.v1'); } catch (e) {}
+  });
+  await page.goto('/');
+  await page.waitForFunction(() => window.__flowlab?.solver, null, { timeout: 20_000 });
+
+  await expect(page.locator('#welcome-overlay')).toBeVisible();
+  await expect(page.locator('#start-tour-btn')).toBeVisible();
+
+  await page.click('#start-tour-btn');
+  await page.waitForFunction(() => window.__flowlab.tour?.active === true);
+  expect(await page.evaluate(() => window.__flowlab.tour.stepIndex)).toBe(0);
+  await expect(page.locator('#welcome-overlay')).toBeHidden();
+});
+
+test('a seeded flag suppresses the welcome entirely', async ({ page }) => {
+  await page.addInitScript(() => {
+    try { localStorage.setItem('flowlab.tour.v1', 'done'); } catch (e) {}
+  });
+  await page.goto('/');
+  await page.waitForFunction(() => window.__flowlab?.solver, null, { timeout: 20_000 });
+
+  await expect(page.locator('#welcome-overlay')).toBeHidden();
+  expect(await page.evaluate(() => window.__flowlab.tour?.active ?? false)).toBe(false);
+});
+
+test('Skip to Simulation writes the flag and dismisses without starting the tour', async ({ page }) => {
+  await page.addInitScript(() => {
+    try { localStorage.removeItem('flowlab.tour.v1'); } catch (e) {}
+  });
+  await page.goto('/');
+  await page.waitForFunction(() => window.__flowlab?.solver, null, { timeout: 20_000 });
+
+  await page.click('#start-sim-btn');
+  await expect(page.locator('#welcome-overlay')).toBeHidden();
+  expect(await page.evaluate(() => localStorage.getItem('flowlab.tour.v1'))).toBe('skipped');
+  expect(await page.evaluate(() => window.__flowlab.tour?.active ?? false)).toBe(false);
+});
+
+test('Replay the Tour from the guide restarts from step 1 on a clean state', async ({ page }) => {
+  await page.addInitScript(() => {
+    try { localStorage.setItem('flowlab.tour.v1', 'done'); } catch (e) {}
+  });
+  await page.goto('/');
+  await page.waitForFunction(() => window.__flowlab?.solver, null, { timeout: 20_000 });
+
+  // Dirty the state: switch preset, then open the guide and replay.
+  await page.click('[data-preset="backward-step"]');
+  await page.click('#btn-guide');
+  await expect(page.locator('#guide-overlay')).toHaveClass(/guide-visible/);
+  await page.click('#btn-replay-tour');
+
+  await page.waitForFunction(() => window.__flowlab.tour?.active === true);
+  expect(await page.evaluate(() => window.__flowlab.tour.stepIndex)).toBe(0);
+  // Guide closed by start(); state reset by start().
+  await expect(page.locator('#guide-overlay')).not.toHaveClass(/guide-visible/);
+  const preset = await page.evaluate(() => document.querySelector('.preset-btn.active')?.dataset.preset);
+  expect(preset).toBe('karman-vortex');
+});
+
+test('keyboard shortcuts are gated while the tour is active', async ({ page }) => {
+  await page.addInitScript(() => {
+    try { localStorage.setItem('flowlab.tour.v1', 'done'); } catch (e) {}
+  });
+  await page.goto('/');
+  await page.waitForFunction(() => window.__flowlab?.solver, null, { timeout: 20_000 });
+
+  await page.click('#btn-guide');
+  await page.click('#btn-replay-tour');
+  await page.waitForFunction(() => window.__flowlab.tour?.active === true);
+
+  await page.keyboard.press('p');
+  expect(await page.evaluate(() => window.__flowlab.solver.paused)).toBe(false);
+
+  await page.keyboard.press('Escape'); // end tour (flag: skipped)
+  await page.waitForFunction(() => window.__flowlab.tour.active === false);
+  await page.keyboard.press('p');
+  expect(await page.evaluate(() => window.__flowlab.solver.paused)).toBe(true);
 });

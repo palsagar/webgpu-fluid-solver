@@ -629,6 +629,7 @@ export class UI {
         document.addEventListener('keydown', (e) => {
             if (e.target.tagName === 'INPUT') return;
             if (document.getElementById('guide-overlay')?.classList.contains('guide-visible')) return;
+            if (this.tour?.active) return;
             switch (e.key) {
                 case 'p': this._togglePause?.(); break;
                 case 'm': this._stepOnce?.(); break;
@@ -661,6 +662,13 @@ export class UI {
         document.getElementById('guide-close')?.addEventListener('click', closeGuide);
         overlay.addEventListener('click', (e) => {
             if (e.target === overlay) closeGuide();
+        });
+
+        // Replay entry point — the guide is the help home, so re-entry lives
+        // here. ui.tour is assigned by main.js after construction; the
+        // click-time lookup makes bind order irrelevant.
+        document.getElementById('btn-replay-tour')?.addEventListener('click', () => {
+            this.tour?.start();
         });
 
         // Accordion: single-open behavior
