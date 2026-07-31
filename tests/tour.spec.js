@@ -184,6 +184,29 @@ test('click-then-canvas does not arm when Back lands on an already-particle mode
   await page.waitForFunction(() => window.__testTour.stepIndex === 1);
 });
 
+test('click-then-canvas step ignores non-left pointer buttons', async ({ page }) => {
+  await startTour(page, [
+    { target: '#btn-mode', title: 'Particles', body: 'Click Particles, then the flow.', action: { type: 'click-then-canvas' } },
+    { target: null, title: 'Done', body: 'Finished.' },
+  ]);
+
+  const box = await page.locator('#overlay-canvas').boundingBox();
+  const cx = box.x + box.width / 2, cy = box.y + box.height / 2;
+
+  await page.click('#btn-mode'); // arm — hole retargets to the canvas
+  expect(await page.evaluate(() => window.__testTour.stepIndex)).toBe(0);
+
+  // Right-button canvas press must not advance.
+  await page.mouse.move(cx, cy);
+  await page.mouse.down({ button: 'right' });
+  await page.mouse.up({ button: 'right' });
+  expect(await page.evaluate(() => window.__testTour.stepIndex)).toBe(0);
+
+  // Normal left-button canvas click should advance.
+  await page.mouse.click(cx, cy);
+  await page.waitForFunction(() => window.__testTour.stepIndex === 1);
+});
+
 test('drag do-it step advances even if the pointer leaves the canvas mid-drag', async ({ page }) => {
   await startTour(page, [
     { target: '#overlay-canvas', title: 'Drag', body: 'Drag the obstacle.', action: { type: 'drag' } },
@@ -502,7 +525,16 @@ test('shape step ignores the mode button inside the shape group', async ({ page 
 });
 
 test('prefers-reduced-motion disables overlay transitions', async ({ page }) => {
+  await page.addInitScript(() => {
+    try { localStorage.removeItem('flowlab.tour.v1'); } catch (e) {}
+  });
+  await page.goto('/');
+  await page.waitForFunction(() => window.__flowlab?.solver, null, { timeout: 20_000 });
   await page.emulateMedia({ reducedMotion: 'reduce' });
+
+  await page.click('#start-sim-btn');
+  await expect(page.locator('#welcome-overlay')).toBeHidden();
+
   await startTour(page, [
     { target: '#btn-play', title: 'Step 1', body: 'An action step so the ring pulses.', action: { type: 'click' } },
     { target: null, title: 'Step 2', body: 'Done.' },

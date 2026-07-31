@@ -872,6 +872,7 @@ input[type="range"]::-moz-range-thumb {
   .tour-ring.tour-pulse { animation: none; }
   #welcome-overlay,
   #guide-overlay { transition: none; }
+  #welcome-overlay.welcome-hidden { display: none; }
 }
 
 /* Slim welcome (tour era) */
