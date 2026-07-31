@@ -609,3 +609,50 @@ test('drag step ignores non-left pointer buttons', async ({ page }) => {
   await page.mouse.up();
   await page.waitForFunction(() => window.__testTour.stepIndex === 1);
 });
+
+// ── Challenge-review regression tests ─────────────────────────────────────
+
+test('fatal boot path hides the welcome overlay and shows the reload banner', async ({ page }) => {
+  // Real-path stub: force requestDevice to reject so init().catch runs.
+  await page.addInitScript(() => {
+    try { localStorage.removeItem('flowlab.tour.v1'); } catch (e) {}
+  });
+  await page.addInitScript(() => {
+    GPUAdapter.prototype.requestDevice = async function () {
+      throw new Error('injected device failure');
+    };
+  });
+  await page.goto('/');
+
+  await expect(page.locator('#fatal-banner')).toBeVisible({ timeout: 10_000 });
+  await expect(page.locator('#welcome-overlay')).toHaveCSS('display', 'none');
+});
+
+test('tour reset restores the default resolution tier after a hole click changes it', async ({ page }) => {
+  await startRealTour(page);
+
+  // Walk to step 11 (0-based index 10), the #resolution-picker read step.
+  for (let i = 0; i < 10; i++) {
+    const hasNext = await page.locator('.tour-footer .tour-btn-primary').count();
+    if (hasNext) await page.locator('.tour-footer .tour-btn-primary').click();
+    else await performCurrentAction(page);
+    await page.waitForTimeout(100);
+  }
+  await expect(page.locator('.tour-counter')).toHaveText('11 / 12');
+
+  // Click a lower tier through the spotlight hole while the overlay is up.
+  await page.click('[data-tier="0"]');
+  await expect(page.locator('[data-tier="0"]')).toHaveClass(/active/);
+
+  // Finish the tour; reset must restore the default tier and preset.
+  await page.locator('.tour-footer .tour-btn-primary').click(); // step 11 → 12
+  await page.locator('.tour-footer .tour-btn-primary').click();   // Done
+
+  await expect(page.locator('.tour-tooltip')).toHaveCount(0);
+  const state = await page.evaluate(() => ({
+    preset: document.querySelector('.preset-btn.active')?.dataset.preset,
+    tier: document.querySelector('[data-tier].active')?.dataset.tier,
+  }));
+  expect(state.preset).toBe('karman-vortex');
+  expect(state.tier).toBe('2');
+});

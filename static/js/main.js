@@ -41,6 +41,16 @@ async function init() {
         }, { once: true });
     };
 
+    // First-visit CTA: wire Skip early so clicks during fallible boot are not
+    // lost, and so the button is reachable even if boot fails. The tour/start
+    // path is still wired after the tour instance exists below.
+    if (!Tour.readFlag()) {
+        document.getElementById('start-sim-btn').addEventListener('click', () => {
+            Tour.writeFlag('skipped');
+            dismissWelcome();
+        });
+    }
+
     // Surface validation/OOM errors that WebGPU would otherwise swallow
     device.addEventListener('uncapturederror', (e) => {
         console.error('WebGPU uncaptured error:', e.error);
@@ -87,10 +97,6 @@ async function init() {
         document.getElementById('start-tour-btn').addEventListener('click', () => {
             dismissWelcome();
             tour.start();
-        });
-        document.getElementById('start-sim-btn').addEventListener('click', () => {
-            Tour.writeFlag('skipped');
-            dismissWelcome();
         });
     }
 
@@ -189,6 +195,10 @@ async function init() {
 
 init().catch((err) => {
     console.error('Initialization failed:', err);
+    // Hide the welcome overlay so the fatal banner and its Reload control are
+    // reachable. The overlay's z-index is above the banner, and its close
+    // button was only wired inside init(), which just failed.
+    document.getElementById('welcome-overlay').style.display = 'none';
     const banner = document.getElementById('fatal-banner');
     document.getElementById('fatal-banner-message').textContent = err.message ?? String(err);
     banner.style.display = 'block';

@@ -311,6 +311,11 @@ export class Tour {
      * controls — no solver internals.
      */
     _resetToCleanState() {
+        // Restore the default resolution tier first: tier selection reloads the
+        // current preset at the chosen resolution, so this must happen before
+        // the Kármán preset click below.
+        const tierBtn = document.querySelector('[data-tier="2"]');
+        if (tierBtn && !tierBtn.classList.contains('active')) tierBtn.click();
         document.querySelector('[data-preset="karman-vortex"]')?.click();
         // loadPreset sets interaction.activeShape but not the button chrome.
         const circleBtn = document.querySelector('[data-shape="circle"]');
