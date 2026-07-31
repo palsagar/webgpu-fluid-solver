@@ -301,10 +301,11 @@ export class Tour {
                 });
                 const endDrag = () => {
                     if (dragging && moved) this._advance();
-                    dragging = false;
+                    dragging = false; moved = false;
                 };
+                const cancelDrag = () => { dragging = false; moved = false; };
                 on(window, 'pointerup', endDrag);
-                on(window, 'pointercancel', endDrag);
+                on(window, 'pointercancel', cancelDrag);
                 break;
             }
             case 'click-then-canvas': {
