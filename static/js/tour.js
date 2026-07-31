@@ -23,7 +23,20 @@ export class Tour {
      * @param {Object} ctx.ui - UI controller.
      * @param {Object} ctx.interaction - Interaction instance (mode reads).
      * @param {Object} ctx.solver - FluidSolver (paused reads).
-     * @param {Array} ctx.steps - [{ target, title, body, action?, onLeave? }]
+     * @param {Array} ctx.steps - [
+     *   { target?: string, title: string, body: string,
+     *     action?: { type: 'click' | 'change' | 'drag' | 'click-then-canvas',
+     *                selector?: string, advanceWhen?: (ctx) => boolean },
+     *     onLeave?: (ctx) => void }
+     * ]
+     *
+     * `action.selector` narrows which descendant counts as the do-it gesture
+     * (e.g. click steps use it to ignore buttons that are not the intended
+     * control). `action.advanceWhen` is an optional post-gesture gate that
+     * decides whether the step should advance after a qualifying gesture (used
+     * by toggle buttons whose state changes after the click). `onLeave` fires
+     * both when navigating between steps and when the tour exits (finish or
+     * skip).
      */
     constructor({ ui, interaction, solver, steps }) {
         this._ctx = { ui, interaction, solver };
@@ -34,6 +47,7 @@ export class Tour {
         this._teardownAction = null; // removes the current step's action listeners
         this._overrideTarget = null; // click-then-canvas retargets the hole mid-step
         this._relayoutTimer = null;  // one deferred layout pass, covers target CSS transitions
+        this._targetTransitionListener = null; // { target, fn } removes the relayout transition listener
         this._onKeydown = null;
         this._onResize = null;
     }
@@ -93,6 +107,7 @@ export class Tour {
         if (step?.onLeave) step.onLeave(this._ctx);
         this._resetToCleanState();
         clearTimeout(this._relayoutTimer);
+        this._detachTargetRelayoutListener();
         Tour.writeFlag(result);
         this._removeDom();
         document.removeEventListener('keydown', this._onKeydown);
@@ -177,10 +192,19 @@ export class Tour {
         if (!this._active || !this._els) return;
         const { dims, ring, tooltip } = this._els;
         const step = this._steps[this._index];
-        const el = this._targetEl(this._overrideTarget ?? step.target);
-
         const W = window.innerWidth, H = window.innerHeight;
         const [dt, dr, db, dl] = dims;
+
+        let el = this._targetEl(this._overrideTarget ?? step.target);
+        if (el) {
+            const r = el.getBoundingClientRect();
+            if (r.width <= 0 || r.height <= 0 || r.bottom <= 0 || r.right <= 0 || r.top >= H || r.left >= W) {
+                el = null;
+            } else {
+                this._attachTargetRelayoutListener(el);
+            }
+        }
+        if (!el) this._detachTargetRelayoutListener();
 
         if (!el) {
             // Centered card: the top dim covers everything, ring hidden.
@@ -224,6 +248,26 @@ export class Tour {
         }
         tooltip.style.left = `${x}px`;
         tooltip.style.top = `${y}px`;
+    }
+
+    /**
+     * Re-layout when the current target's CSS transition finishes, so a
+     * target that slides off-screen (e.g. the Advanced panel) falls back to the
+     * centered-card layout instead of framing a hidden element.
+     */
+    _attachTargetRelayoutListener(el) {
+        if (this._targetTransitionListener && this._targetTransitionListener.target === el) return;
+        this._detachTargetRelayoutListener();
+        const fn = () => this._layout();
+        el.addEventListener('transitionend', fn);
+        this._targetTransitionListener = { target: el, fn };
+    }
+
+    _detachTargetRelayoutListener() {
+        if (!this._targetTransitionListener) return;
+        const { target, fn } = this._targetTransitionListener;
+        target.removeEventListener('transitionend', fn);
+        this._targetTransitionListener = null;
     }
 
     _buildDom() {

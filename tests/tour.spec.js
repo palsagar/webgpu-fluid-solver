@@ -504,6 +504,41 @@ test('advanced-step Back trap only advances when the panel opens, not closes', a
   await expect(page.locator('#advanced-panel')).toHaveClass(/visible/);
 });
 
+test('closing the advanced panel mid-tour hides the ring and keeps the tooltip centered', async ({ page }) => {
+  await startRealTour(page);
+  // Walk to step 9 (index 8), the do-it step that opens the Advanced panel.
+  for (let i = 0; i < 8; i++) {
+    const hasNext = await page.locator('.tour-footer .tour-btn-primary').count();
+    if (hasNext) await page.locator('.tour-footer .tour-btn-primary').click();
+    else await performCurrentAction(page);
+  }
+  await expect(page.locator('.tour-counter')).toHaveText('9 / 12');
+
+  // Open the panel and advance to step 10 (target #advanced-panel).
+  await page.click('#btn-advanced');
+  await page.waitForFunction(() => window.__testTour.stepIndex === 9);
+  await expect(page.locator('#advanced-panel')).toHaveClass(/visible/);
+  await expect(page.locator('.tour-counter')).toHaveText('10 / 12');
+  await expect(page.locator('.tour-ring')).toBeVisible();
+
+  // Close the panel through the hole; the deferred relayout detects the
+  // now-hidden target and falls back to the centered-card layout.
+  await page.click('#btn-close-advanced');
+  await expect(page.locator('#advanced-panel')).not.toHaveClass(/visible/);
+  await expect(page.locator('.tour-ring')).toBeHidden({ timeout: 1000 });
+  await expect(page.locator('.tour-tooltip')).toBeVisible();
+
+  // The remaining read steps are still reachable with Next.
+  await page.locator('.tour-footer .tour-btn-primary').click();
+  await expect(page.locator('.tour-counter')).toHaveText('11 / 12');
+  await page.locator('.tour-footer .tour-btn-primary').click();
+  await expect(page.locator('.tour-counter')).toHaveText('12 / 12');
+  await page.locator('.tour-footer .tour-btn-primary').click();
+
+  await expect(page.locator('.tour-tooltip')).toHaveCount(0);
+  expect(await page.evaluate(() => localStorage.getItem('flowlab.tour.v1'))).toBe('done');
+});
+
 test('shape step ignores the mode button inside the shape group', async ({ page }) => {
   await startRealTour(page);
   // Walk to step 5 (0-based index 4), the #shape-group do-it step.
