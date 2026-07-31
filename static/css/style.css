@@ -112,25 +112,6 @@ body {
   font-style: italic;
 }
 
-#start-sim-btn {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  padding: 12px 32px;
-  font-size: 16px;
-  font-weight: 600;
-  color: #ffffff;
-  background: #238636;
-  border: 1px solid rgba(35, 134, 54, 0.6);
-  border-radius: 8px;
-  cursor: pointer;
-  transition: background 0.2s, box-shadow 0.2s;
-  letter-spacing: 0.2px;
-}
-#start-sim-btn:hover {
-  background: #2ea043;
-  box-shadow: 0 0 16px rgba(35, 134, 54, 0.3);
-}
 
 @media (max-width: 640px) {
   #welcome-modal {
