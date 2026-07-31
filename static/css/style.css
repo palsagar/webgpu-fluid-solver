@@ -863,3 +863,99 @@ input[type="range"]::-moz-range-thumb {
     padding: 32px 24px 28px;
   }
 }
+
+/* ── Onboarding tour ─────────────────────────────────────────────────────
+   z-index 300+ puts the tour above the welcome/guide overlays (200) and the
+   advanced panel (10). The four dims frame a genuine pointer-event hole over
+   the spotlighted control. */
+.tour-dim {
+  position: fixed;
+  background: rgba(0, 0, 0, 0.55);
+  z-index: 300;
+}
+.tour-ring {
+  position: fixed;
+  z-index: 301;
+  border: 2px solid #58a6ff;
+  border-radius: 8px;
+  box-shadow: 0 0 0 4px rgba(88, 166, 255, 0.25);
+  pointer-events: none;
+}
+.tour-ring.tour-pulse {
+  animation: tourPulse 1.6s ease-in-out infinite;
+}
+@keyframes tourPulse {
+  0%, 100% { box-shadow: 0 0 0 4px rgba(88, 166, 255, 0.25); }
+  50%      { box-shadow: 0 0 0 10px rgba(88, 166, 255, 0.05); }
+}
+.tour-tooltip {
+  position: fixed;
+  z-index: 302;
+  width: 320px;
+  max-width: calc(100vw - 24px);
+  background: rgba(13, 17, 23, 0.92);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  border: 1px solid rgba(48, 54, 61, 0.9);
+  border-radius: 12px;
+  padding: 20px;
+  box-shadow: 0 19px 38px rgba(0,0,0,0.3), 0 15px 12px rgba(0,0,0,0.22);
+}
+.tour-title {
+  font-size: 16px;
+  font-weight: 700;
+  color: #e6edf3;
+  margin-bottom: 8px;
+}
+.tour-body {
+  font-size: 14px;
+  line-height: 1.55;
+  color: #b1bac4;
+  margin-bottom: 16px;
+}
+.tour-footer {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.tour-counter {
+  font-size: 12px;
+  color: #8b949e;
+  font-family: 'SF Mono', 'Cascadia Code', monospace;
+}
+.tour-skip {
+  background: none;
+  border: none;
+  color: #8b949e;
+  font-size: 12px;
+  cursor: pointer;
+  padding: 4px;
+}
+.tour-skip:hover { color: #c9d1d9; }
+.tour-nav {
+  margin-left: auto;
+  display: flex;
+  gap: 8px;
+}
+.tour-btn {
+  padding: 6px 14px;
+  border-radius: 6px;
+  font-size: 13px;
+  cursor: pointer;
+  border: 1px solid #30363d;
+}
+.tour-btn-primary {
+  background: #1f6feb;
+  border-color: #1f6feb;
+  color: #fff;
+}
+.tour-btn-primary:hover { background: #388bfd; }
+.tour-btn-secondary {
+  background: #21262d;
+  color: #c9d1d9;
+}
+.tour-btn-secondary:hover { background: #30363d; }
+
+@media (prefers-reduced-motion: reduce) {
+  .tour-ring.tour-pulse { animation: none; }
+}
