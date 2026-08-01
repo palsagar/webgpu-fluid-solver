@@ -1,4 +1,4 @@
-# CLAUDE.md
+# AGENTS.md
 
 ## Project
 FlowLab — real-time 2D incompressible Navier-Stokes solver on the GPU via WebGPU compute shaders. Field rendered by a WebGPU render pass; overlays (streamlines, arrows, particles, obstacles) on a transparent 2D canvas above it (ADR-0005). FastAPI backend. Interactive obstacles, Lagrangian particle tracing, multiple visualization modes.

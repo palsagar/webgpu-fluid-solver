@@ -2,126 +2,80 @@
 
 Real-time 2D incompressible flow simulation in the browser. Users pick a scenario, watch the flow evolve, and interact with it (drag obstacles, toggle visualizations).
 
+Hub: [README.md](README.md) · Index: [docs/README.md](docs/README.md)
+
 ## Language
 
-Some entries below are **target-state vocabulary** — decided but not yet built. They are marked _Not yet implemented_. Use the terms in design discussion; do not assume the feature exists in the code. Everything in [ADR-0007](docs/adr/0007-explicit-viscosity-bounded-re.md) and [ADR-0008](docs/adr/0008-viscous-substepping-and-resolution-aware-window.md) has shipped; what remains unbuilt is Confinement (ε) from [ADR-0006](docs/adr/0006-honest-numerics-maccormack-over-confinement.md) plus the Blow and Draw mouse modes.
+Some entries are **target-state vocabulary** — decided but not yet built, marked _Not yet implemented_. Use them in design discussion; do not assume the feature exists. Everything in [ADR-0007](docs/adr/0007-explicit-viscosity-bounded-re.md) and [ADR-0008](docs/adr/0008-viscous-substepping-and-resolution-aware-window.md) has shipped; what remains unbuilt is Confinement (ε) from [ADR-0006](docs/adr/0006-honest-numerics-maccormack-over-confinement.md) plus Blow and Draw mouse modes.
 
 ### Simulation
 
-**Grid**:
-The uniform staggered (MAC) discretization of the rectangular flow domain. Its size is set by a Resolution Tier.
+**Grid**: uniform staggered (MAC) discretization. Size set by Resolution Tier.
 
-**Cell**:
-One unit of the Grid. Every cell is either fluid or solid, per the Solid Mask.
+**Cell**: one unit of the Grid; fluid or solid per Solid Mask.
 
-**Solid Mask**:
-The per-cell classification of solid vs. fluid. Walls, the step, and Obstacles all exist only as entries in the Solid Mask.
-_Avoid_: obstacle mask (— and do not confuse it with the Boundary Mask below: the Solid Mask = Boundary Mask + Obstacle footprint)
+**Solid Mask**: per-cell solid vs fluid classification. Walls, step, and Obstacles exist only here. _Avoid_ "obstacle mask". Solid Mask = Boundary Mask + Obstacle footprint.
 
-**Boundary Mask**:
-The per-cell record of a Preset's permanent solids (walls, the step) — everything in the Solid Mask except the Obstacle footprint. Uploaded to the GPU once per preset load; the obstacle rasterizer restores vacated cells to it and never carves it (ADR-0010).
+**Boundary Mask**: permanent solids of a Preset (walls, step), i.e. Solid Mask minus Obstacle footprint. Uploaded to GPU once per preset load; obstacle rasterizer restores vacated cells to it and never carves it ([ADR-0010](docs/adr/0010-gpu-side-obstacle-rasterization.md)).
 
-**Smoke**:
-The passive dye carried by the flow, used purely for visualization. Full concentration is dark; absence is clear.
-_Avoid_: dye, marker, density (— "density" means the fluid's physical density, a solver parameter)
+**Smoke**: passive dye for visualization. _Avoid_ dye, marker, density.
 
-**Preset**:
-A named, self-contained scenario: solver parameters, Boundary Type, Inflow, optional Obstacle, and default visualization toggles. Current presets: Kármán Vortex, Backward Step.
-_Avoid_: scene, demo, example
+**Preset**: named scenario with solver params, Boundary Type, Inflow, optional Obstacle, default viz toggles. Current presets: Kármán Vortex (obstacle visible) and Backward Step (ships obstacle-less; first click inserts the obstacle). _Avoid_ scene, demo, example.
 
-**Boundary Type**:
-The wall/inflow/outflow topology of a Preset — `windTunnel` (open right edge) or `backwardStep` (step geometry on the left).
+**Boundary Type**: wall/inflow/outflow topology — `windTunnel` (open right edge) or `backwardStep` (step on left).
 
-**Inflow**:
-The fixed horizontal velocity injected just inside the left wall, re-applied every frame so the pressure solve cannot drift it.
+**Inflow**: fixed horizontal velocity injected just inside left wall, re-applied each frame.
 
-**Smoke Inlet**:
-The band of cells at the left edge where Smoke is re-injected each frame.
+**Smoke Inlet**: left-edge band where Smoke is re-injected each frame.
 
-**Obstacle**:
-A user-draggable solid shape (circle, square, airfoil, wedge) rasterized into the Solid Mask. Moving it re-rasterizes the mask on the GPU (`rasterize_obstacle.wgsl`, ADR-0010): the new footprint is carved with the drag velocity, the old footprint is restored from the Boundary Mask (zero velocity/pressure), and stale Smoke in the old footprint is cleared. The live field outside both bounding boxes is untouched — a drag perturbs the flow, it does not restart it.
+**Obstacle**: user-draggable solid shape rasterized into Solid Mask. Dragging re-rasterizes on GPU ([ADR-0010](docs/adr/0010-gpu-side-obstacle-rasterization.md)): new footprint carved with drag velocity, old footprint restored from Boundary Mask, stale Smoke cleared; outside the union bounding box the live field is untouched. A drag ending re-rasterizes with zero velocity so stored wall velocity does not outlive motion ([ADR-0011](docs/adr/0011-moving-wall-viscous-bc.md)). In obstacle-less presets the first canvas pointerdown inserts the obstacle at the click point and reveals it (`static/js/interaction.js:163-166`).
 
-**Pressure Iteration**:
-One red-black Gauss-Seidel (SOR) sweep of the pressure projection. Presets choose how many run per step. Not a free knob: the count sets the delivered Numerical Viscosity, and therefore the top of the honest Reynolds window.
-_Avoid_: Jacobi iteration (— the solver is red-black Gauss-Seidel with over-relaxation, not Jacobi)
+**Pressure Iteration**: one red-black Gauss-Seidel (SOR) sweep of pressure projection. Preset count sets delivered Numerical Viscosity and honest Reynolds ceiling. _Avoid_ Jacobi iteration.
 
-**MacCormack**:
-The advection scheme: a semi-Lagrangian forward trace, a reversed retrace, and a limited combine `phi^{n+1} = phi^ + (phi^n − phi~)/2` clamped to the fluid corners of the departure stencil. Three GPU dispatches per field. It replaced plain semi-Lagrangian advection, whose numerical diffusion it cuts by up to 3x.
-_Avoid_: BFECC (— a different scheme, considered and rejected in ADR-0006), "second-order advection" unqualified
+**MacCormack**: advection scheme: semi-Lagrangian forward trace, reversed retrace, limited combine `phi^{n+1} = phi^ + (phi^n − phi~)/2` clamped to fluid corners of departure stencil. Three GPU dispatches per field. _Avoid_ BFECC (different scheme, rejected in [ADR-0006](docs/adr/0006-honest-numerics-maccormack-over-confinement.md)); avoid unqualified "second-order advection".
 
-**Viscous Substep**:
-One application of the explicit five-point diffusion pass. A frame runs `N = ceil(nu·dt/(0.25 h²))` of them, capped at 32, because a single pass at the frame's timestep would violate the explicit stability limit. Past the cap the viscosity saturates rather than the count truncating.
-_Avoid_: viscous iteration (— it is a time substep, not an iterative solve)
+**Viscous Substep**: one explicit five-point diffusion pass. Frame runs `N = ceil(nu·dt/(0.25 h²))` capped at 32; past the cap viscosity saturates rather than count truncating. _Avoid_ viscous iteration.
 
-**Numerical Viscosity**:
-The unrequested diffusion the advection scheme and the under-converged pressure solve add on top of the requested viscosity. **Measured, never estimated** — by fitting the decay of a Taylor–Green vortex with physical viscosity off. It is what sets the honest Reynolds ceiling. It is independent of grid spacing and linear in the timestep, i.e. a time-splitting error, not grid diffusion.
-_Avoid_: artificial viscosity (— that is a term deliberately added; this one is a defect of the scheme), numerical dissipation
+**Wall Ghost**: value substituted for a buried face in Viscous Substep. Buried by Solid Mask ghosts to `w + (w − center)`; buried by index on `i=0`/`j=0` ring ghosts to `−center` because stored value is stale ([ADR-0011](docs/adr/0011-moving-wall-viscous-bc.md)). Stationary wall (`w=0`) reduces to `−center`.
+
+**Numerical Viscosity**: unrequested diffusion from advection and under-converged pressure solve. **Measured, never estimated**, by fitting Taylor–Green decay with physical viscosity off. Sets honest Reynolds ceiling. Independent of grid spacing and linear in timestep — time-splitting error, not grid diffusion. _Avoid_ artificial viscosity, numerical dissipation.
 
 ### Visualization
 
-**Field View**:
-The colormapped image of one scalar field — Smoke or pressure — filling the canvas.
+**Field View**: colormapped scalar image (Smoke or pressure) filling canvas.
 
-**Overlay**:
-A vector visualization drawn on top of the Field View: Streamlines, velocity arrows, Particles, or the Obstacle outline.
+**Overlay**: vector viz on top — Streamlines, velocity arrows, Particles, Obstacle outline.
 
-**Streamline**:
-A curve everywhere tangent to the instantaneous velocity field. Recomputed when fresh velocity data arrives, drawn from cache in between.
+**Streamline**: curve tangent to instantaneous velocity field; recomputed when fresh velocity arrives.
 
-**Particle**:
-A massless Lagrangian tracer advected by the flow, leaving a fading trail. Spawned continuously by Emitters.
-_Avoid_: sprite, tracer particle
+**Particle**: massless Lagrangian tracer advected by flow, leaving fading trail. Spawned by Emitters. _Avoid_ sprite, tracer particle.
 
-**Emitter**:
-A fixed location that continuously spawns Particles (a few per frame), producing a steady visible stream.
+**Emitter**: fixed location that continuously spawns Particles.
 
-**Colormap**:
-A scientific color lookup table mapping scalar values to color. Two are loaded as GPU LUT textures: magma (Smoke) and coolwarm (pressure). `static/colormaps/viridis.png` ships in the repo but nothing loads it.
+**Colormap**: scientific color LUT. Loaded as GPU textures: magma (Smoke), coolwarm (pressure). `static/colormaps/viridis.png` ships but is unused.
 
-**Confinement (ε)**:
-An explicitly-labeled, default-off control that injects artificial vorticity for visual effect. Always presented as artificial — never silently on.
-_Not yet implemented_ (ADR-0006).
-_Avoid_: swirl boost, turbulence (— it is neither)
+**Confinement (ε)**: labeled, default-off artificial vorticity control. _Not yet implemented_ ([ADR-0006](docs/adr/0006-honest-numerics-maccormack-over-confinement.md)). _Avoid_ swirl boost, turbulence.
 
-**Resolution Tier**:
-One of the discrete Grid sizes (64 / 128 / 256 / 512 / 1024 cells tall). Switched manually or by Adaptive Resolution — except 1024, which is manual-only.
+**Resolution Tier**: discrete Grid height (64/128/256/512/1024). Switched manually or by Adaptive Resolution — 1024 is manual-only.
 
-**Adaptive Resolution**:
-Automatic Resolution Tier switching driven by measured frame times: downscale fast when slow, upscale cautiously with a cooldown.
+**Adaptive Resolution**: automatic tier switching driven by measured frame times.
 
 ### Interaction
 
-**Blow**:
-The default mouse mode: dragging injects momentum and Smoke at the cursor — a moving momentum source, not a special effect.
-_Not yet implemented_ — the current default mouse mode drags the Obstacle.
-_Avoid_: splat, stir, force brush
+**Blow**: default mouse mode (target): dragging injects momentum and Smoke at cursor — moving momentum source, not special effect. _Not yet implemented_; current default drags Obstacle. _Avoid_ splat, stir, force brush.
 
-**Draw**:
-A mouse mode that rasterizes freehand solid shapes into the Solid Mask (with an eraser counterpart). Mouse modes are always switched by explicit toggle, never by implicit gestures.
-_Not yet implemented_.
+**Draw**: mouse mode that rasterizes freehand solids into Solid Mask (with eraser). _Not yet implemented_. Mouse modes switch by explicit toggle, never implicit gesture.
+
+**Onboarding Tour**: first-visit welcome modal + 12-step spotlight tour. Highlights live controls via a four-dim-rect spotlight hole; do-it steps detected from DOM events. "Replay the Tour" link in the guide modal footer. Gated by localStorage flag `flowlab.tour.v1`; reduced-motion aware. Implementation: `static/js/tour.js`; tests: `tests/tour.spec.js` (25 tests).
+
+**Insert-on-Click**: in an obstacle-less preset (Backward Step), the first canvas pointerdown inserts the obstacle at the click point and sets `interaction.showObstacle = true`, so the overlay ring, shape buttons, and Re/St badges reflect the body now in the flow (`static/js/interaction.js:163-166`). Shift+mousemove rotation remains guarded while `showObstacle` is false.
 
 ### Diagnostics
 
-**Reynolds Number (Re)**:
-A user-controllable physical parameter: the slider sets `nu = U·D/Re` and the viscous pass integrates it. The slider's range is fixed at 0.25–500 and **never moves** — instead a badge names the bound when the requested Re leaves the Honest Window. Never displayed as a nominal/fake value.
-_Avoid_: nominal Re (— rejected permanently, ADR-0007)
+**Reynolds Number (Re)**: user control; slider sets `nu = U·D/Re` and viscous pass integrates it. Range fixed 0.25–500, never moves; badge names the bound when requested Re leaves Honest Window. Never displayed as nominal/fake value. _Avoid_ nominal Re (rejected permanently, [ADR-0007](docs/adr/0007-explicit-viscosity-bounded-re.md)).
 
-**Honest Window**:
-The Reynolds range a given Resolution Tier and Pressure Iteration count can actually deliver. Floor = the largest viscosity the Viscous Substep budget can integrate; ceiling = where the requested viscosity falls below the measured Numerical Viscosity. Both bounds are measured. When the app has not measured the ceiling at a given operating point it says `unmeasured` rather than quoting a number from a different one.
-_Avoid_: Re cap, clamp (— the control is never clamped; the badge is the mechanism)
+**Honest Window**: Reynolds range a given tier and Pressure Iteration count can deliver. Floor = largest viscosity Viscous Substep budget can integrate; ceiling = `U·D/ν_num`. Both measured; absent measurement says `unmeasured`. _Avoid_ Re cap, clamp — control is never clamped; badge is the mechanism.
 
-**Probe**:
-A fixed sampling point in the flow whose velocity time-series feeds Diagnostics. Placed 2 diameters downstream of the Obstacle, sampled in simulation time. Returns nothing rather than clamping if that cell would fall outside the valid interior.
+**Probe**: fixed downstream sampling point whose velocity time-series feeds Diagnostics. Placed 2 diameters downstream of Obstacle in simulation time. Returns nothing rather than clamping if outside valid interior.
 
-**Strouhal Number (St)**:
-The dimensionless vortex-shedding frequency `St = f·D/U`, measured live from a Probe — an emergent result, never prescribed. The readout refuses to produce a number for a steady flow, an under-sampled signal, or a collapsed field, and says so.
-_Avoid_: "St ≈ 0.2" as a claim about this app (— 0.2 is the high-Re plateau; the measured values here run 0.166–0.200 over Re 55–140)
-
-## Example dialogue
-
-> **Dev**: When the user drags the Obstacle, do we move a mesh?
-> **Expert**: No — there is no mesh. Dragging re-rasterizes the Obstacle into the Solid Mask and clears the Smoke left in its old footprint.
-> **Dev**: And the Smoke is the thing being simulated?
-> **Expert**: No, Smoke is passive — it just rides the velocity field so you can see it. The simulation state is velocity and pressure. Turning Smoke off changes nothing physically.
-> **Dev**: So Particles are the same as Smoke?
-> **Expert**: Same idea, different representation. Smoke is a field advected per Cell; Particles are individual tracers advected point-by-point from Emitters. Both are Overlay-level visualization, not physics.
+**Strouhal Number (St)**: dimensionless vortex-shedding frequency `St = f·D/U`, measured live from Probe. Refuses a number for steady flow, under-sampled signal, or collapsed field. _Avoid_ "St ≈ 0.2" as claim about this app (0.2 is high-Re plateau; measured values run 0.166–0.200 over Re 55–140).

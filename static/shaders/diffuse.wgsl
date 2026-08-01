@@ -20,11 +20,21 @@
 //           and read at face value when it appears in a neighbour's stencil --
 //           which is exactly right, since the obstacle surface passes through
 //           it and the velocity there really is the wall's.
-//   BURIED  both flanking cells solid. The stored value is meaningless. Read
-//           as a GHOST, -center, which places the field's zero on the wall
-//           line half a cell away. This is what grows the boundary layer:
-//           returning 0 (or skipping the face) instead would leave the
-//           cylinder frictionless, and with it no separation and no shedding.
+//   BURIED  both flanking cells solid. A mask-buried face IS wall storage:
+//           the rasterizer writes the drag velocity into every inside cell's
+//           own face (ADR-0010). Read as a GHOST, w + (w - center) with w the
+//           face's own stored value, placing the wall's velocity -- not zero
+//           -- on the wall line half a cell away (ADR-0011). At w = 0 this
+//           is -center EXACTLY for every nonzero center; at a zero center
+//           the result can differ only in the sign of zero, which no
+//           downstream observable can detect, so stationary/ν=0 runs remain
+//           bit-identical in every observable output. Ghosting to -center on
+//           a dragged obstacle would pin the wall line at zero and cancel the
+//           shear the moving wall imparts.
+//           Exception: u-faces on the domain top row (j = numY-1) are
+//           classified with the index-buried ring because the stored u there
+//           is boundary.wgsl's zero-gradient (Neumann) free-stream
+//           extrapolation, not a wall velocity.
 //
 // The FLUID predicate is deliberately the same face-based test advect.wgsl
 // uses to decide whether a face may advect (`s[idx] != 0 && s[(i-1)*n+j] != 0`).
@@ -50,6 +60,8 @@
 // rather than contingent means the viscous stencil cannot read a stale entry
 // even if a future preset opens one of those lines. The index test also avoids
 // the u32 underflow the mask test would hit at i-1 == -1 / j-1 == -1.
+// Those faces ghost to -center and their stored values are NEVER loaded --
+// the moving-wall ghost below reads stored values only on the mask branch.
 //
 // The remaining ring lines, i = numX-1 and j = numY-1, ARE read by the stencil.
 // Advection writes both every step, so they are fresh -- but the substep loop
@@ -88,28 +100,35 @@ fn v_face_fluid(i: u32, j: u32) -> bool {
     return s[i * n + j] != 0.0 && s[i * n + j - 1u] != 0.0;
 }
 
-// BURIED: both flanking cells solid, or the face sits on a line advection never
-// writes (see THE STALE RING above).
-fn u_face_buried(i: u32, j: u32) -> bool {
-    if (i == 0u || j == 0u) { return true; }
-    let n = params.numY;
-    return s[i * n + j] == 0.0 && s[(i - 1u) * n + j] == 0.0;
-}
-
-fn v_face_buried(i: u32, j: u32) -> bool {
-    if (i == 0u || j == 0u) { return true; }
-    let n = params.numY;
-    return s[i * n + j] == 0.0 && s[i * n + j - 1u] == 0.0;
-}
-
+// BURIED-BY-MASK ghost: the face's own stored value is the wall velocity, so
+// the ghost places w on the wall line half a cell away: w + (w - center).
+// At w = 0 this is -center EXACTLY for every nonzero center; at a zero
+// center the result can differ only in the sign of zero, which no downstream
+// observable can detect, so stationary/ν=0 runs remain bit-identical in
+// every observable output. Buried-by-index faces (the stale ring) ghost to
+// -center and never load the stored value.
 fn u_neighbor(i: u32, j: u32, center: f32) -> f32 {
-    if (u_face_buried(i, j)) { return -center; }   // ghost: u = 0 on the wall
-    return uIn[i * params.numY + j];
+    // Domain top and bottom walls carry a no-slip BC, not a drag velocity;
+    // the horizontal-velocity extrapolation on those lines writes the fluid
+    // value, not the wall value, so they must ghost to -center like the
+    // stale ring rather than read a moving-wall w.
+    if (i == 0u || j == 0u || j == params.numY - 1u) { return -center; }
+    let idx = i * params.numY + j;
+    if (s[idx] == 0.0 && s[(i - 1u) * params.numY + j] == 0.0) {
+        let w = uIn[idx];
+        return w + (w - center);
+    }
+    return uIn[idx];
 }
 
 fn v_neighbor(i: u32, j: u32, center: f32) -> f32 {
-    if (v_face_buried(i, j)) { return -center; }
-    return vIn[i * params.numY + j];
+    if (i == 0u || j == 0u) { return -center; }
+    let idx = i * params.numY + j;
+    if (s[idx] == 0.0 && s[i * params.numY + j - 1u] == 0.0) {
+        let w = vIn[idx];
+        return w + (w - center);
+    }
+    return vIn[idx];
 }
 
 @compute @workgroup_size(8, 8)

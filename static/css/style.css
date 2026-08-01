@@ -112,80 +112,6 @@ body {
   font-style: italic;
 }
 
-#gpu-status-card {
-  border-radius: 10px;
-  border: 1px solid rgba(35, 134, 54, 0.5);
-  background: rgba(35, 134, 54, 0.08);
-  padding: 20px;
-  margin-bottom: 28px;
-}
-.gpu-status-badge {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  padding: 4px 12px 4px 8px;
-  border-radius: 20px;
-  font-size: 13px;
-  font-weight: 600;
-  background: rgba(35, 134, 54, 0.5);
-  color: #7ee787;
-  border: 1px solid rgba(126, 231, 135, 0.25);
-  margin-bottom: 12px;
-}
-.gpu-status-text {
-  font-size: 14px;
-  color: #b1bac4;
-  margin: 0 0 14px;
-}
-.gpu-status-text strong {
-  color: #e6edf3;
-}
-.gpu-detail-card {
-  background: rgba(255, 255, 255, 0.04);
-  border: 1px solid rgba(48, 54, 61, 0.6);
-  border-radius: 8px;
-  padding: 16px;
-}
-.gpu-detail-title {
-  font-size: 14px;
-  font-weight: 600;
-  color: #e6edf3;
-  margin-bottom: 8px;
-}
-.gpu-detail-text {
-  font-size: 13px;
-  line-height: 1.6;
-  color: #8b949e;
-  margin: 0;
-}
-.gpu-detail-text strong {
-  color: #c9d1d9;
-  font-weight: 600;
-}
-.gpu-detail-text em {
-  color: #a5d6ff;
-  font-style: italic;
-}
-
-#start-sim-btn {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  padding: 12px 32px;
-  font-size: 16px;
-  font-weight: 600;
-  color: #ffffff;
-  background: #238636;
-  border: 1px solid rgba(35, 134, 54, 0.6);
-  border-radius: 8px;
-  cursor: pointer;
-  transition: background 0.2s, box-shadow 0.2s;
-  letter-spacing: 0.2px;
-}
-#start-sim-btn:hover {
-  background: #2ea043;
-  box-shadow: 0 0 16px rgba(35, 134, 54, 0.3);
-}
 
 @media (max-width: 640px) {
   #welcome-modal {
@@ -681,20 +607,6 @@ input[type="range"]::-moz-range-thumb {
 }
 
 /* Welcome guide link */
-.welcome-guide-link {
-  text-align: center;
-  margin-top: 12px;
-  font-size: 14px;
-  color: #8b949e;
-}
-.welcome-guide-link a {
-  color: #58a6ff;
-  text-decoration: none;
-}
-.welcome-guide-link a:hover {
-  text-decoration: underline;
-}
-
 /* Accordion sections */
 .guide-section {
   border-bottom: 1px solid rgba(48, 54, 61, 0.6);
@@ -862,4 +774,134 @@ input[type="range"]::-moz-range-thumb {
   #guide-modal {
     padding: 32px 24px 28px;
   }
+}
+
+/* ── Onboarding tour ─────────────────────────────────────────────────────
+   z-index 300+ puts the tour above the welcome/guide overlays (200) and the
+   advanced panel (10). The four dims frame a genuine pointer-event hole over
+   the spotlighted control. */
+.tour-dim {
+  position: fixed;
+  background: rgba(0, 0, 0, 0.55);
+  z-index: 300;
+}
+.tour-ring {
+  position: fixed;
+  z-index: 301;
+  border: 2px solid #58a6ff;
+  border-radius: 8px;
+  box-shadow: 0 0 0 4px rgba(88, 166, 255, 0.25);
+  pointer-events: none;
+}
+.tour-ring.tour-pulse {
+  animation: tourPulse 1.6s ease-in-out infinite;
+}
+@keyframes tourPulse {
+  0%, 100% { box-shadow: 0 0 0 4px rgba(88, 166, 255, 0.25); }
+  50%      { box-shadow: 0 0 0 10px rgba(88, 166, 255, 0.05); }
+}
+.tour-tooltip {
+  position: fixed;
+  z-index: 302;
+  width: 320px;
+  max-width: calc(100vw - 24px);
+  background: rgba(13, 17, 23, 0.92);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  border: 1px solid rgba(48, 54, 61, 0.9);
+  border-radius: 12px;
+  padding: 20px;
+  box-shadow: 0 19px 38px rgba(0,0,0,0.3), 0 15px 12px rgba(0,0,0,0.22);
+}
+.tour-title {
+  font-size: 16px;
+  font-weight: 700;
+  color: #e6edf3;
+  margin-bottom: 8px;
+}
+.tour-body {
+  font-size: 14px;
+  line-height: 1.55;
+  color: #b1bac4;
+  margin-bottom: 16px;
+}
+.tour-footer {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.tour-counter {
+  font-size: 12px;
+  color: #8b949e;
+  font-family: 'SF Mono', 'Cascadia Code', monospace;
+}
+.tour-skip {
+  background: none;
+  border: none;
+  color: #8b949e;
+  font-size: 12px;
+  cursor: pointer;
+  padding: 4px;
+}
+.tour-skip:hover { color: #c9d1d9; }
+.tour-nav {
+  margin-left: auto;
+  display: flex;
+  gap: 8px;
+}
+.tour-btn {
+  padding: 6px 14px;
+  border-radius: 6px;
+  font-size: 13px;
+  cursor: pointer;
+  border: 1px solid #30363d;
+}
+.tour-btn-primary {
+  background: #1f6feb;
+  border-color: #1f6feb;
+  color: #fff;
+}
+.tour-btn-primary:hover { background: #388bfd; }
+.tour-btn-secondary {
+  background: #21262d;
+  color: #c9d1d9;
+}
+.tour-btn-secondary:hover { background: #30363d; }
+
+@media (prefers-reduced-motion: reduce) {
+  .tour-ring.tour-pulse { animation: none; }
+  #welcome-overlay,
+  #guide-overlay { transition: none; }
+  #welcome-overlay.welcome-hidden { display: none; }
+}
+
+/* Slim welcome (tour era) */
+.welcome-gpu-line {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  color: #8b949e;
+  margin-bottom: 28px;
+}
+.welcome-gpu-line strong { color: #c9d1d9; }
+.gpu-ready-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #3fb950;
+  flex-shrink: 0;
+}
+.welcome-actions {
+  display: flex;
+  gap: 12px;
+}
+.welcome-cta {
+  padding: 10px 22px;
+  font-size: 15px;
+}
+.guide-footer {
+  display: flex;
+  justify-content: center;
+  padding: 16px 0 4px;
 }

@@ -92,6 +92,11 @@ export const PRESETS = {
  *   - boundaryVelData: inflow velocity array to re-apply each frame after the pressure solve
  */
 export function loadPreset(name, solver, interaction) {
+  // End any active drag before resetting fields/masks. Cancelling here
+  // (rather than in every UI caller) covers buttons, keyboard shortcuts,
+  // reapplyCurrentPreset, and adaptive tier changes.
+  interaction._endDrag();
+
   const preset = PRESETS[name];
   const { numX, numY, h } = solver;
   const n = numY;

@@ -3,6 +3,7 @@ import { Renderer } from './renderer.js';
 import { Interaction } from './interaction.js';
 import { UI } from './ui.js';
 import { ParticleSystem } from './particles.js';
+import { Tour, STEPS } from './tour.js';
 import { AdaptiveController } from './adaptive.js';
 
 /**
@@ -39,8 +40,16 @@ async function init() {
             overlay.style.display = 'none';
         }, { once: true });
     };
-    document.getElementById('start-sim-btn').addEventListener('click', dismissWelcome);
-    document.getElementById('welcome-close-btn').addEventListener('click', dismissWelcome);
+
+    // First-visit CTA: wire Skip early so clicks during fallible boot are not
+    // lost, and so the button is reachable even if boot fails. The tour/start
+    // path is still wired after the tour instance exists below.
+    if (!Tour.readFlag()) {
+        document.getElementById('start-sim-btn').addEventListener('click', () => {
+            Tour.writeFlag('skipped');
+            dismissWelcome();
+        });
+    }
 
     // Surface validation/OOM errors that WebGPU would otherwise swallow
     device.addEventListener('uncapturederror', (e) => {
@@ -76,18 +85,23 @@ async function init() {
 
     const ui = new UI(solver, renderer, interaction);
 
-    // Welcome modal → Guide link
-    document.getElementById('open-guide-from-welcome')?.addEventListener('click', (e) => {
-        e.preventDefault();
-        dismissWelcome();
-        setTimeout(() => ui.openGuide?.(), 350);
-    });
-
     const adaptive = new AdaptiveController(solver, renderer, interaction, ui);
     ui.adaptive = adaptive;
 
+    const tour = new Tour({ ui, interaction, solver, steps: STEPS });
+    ui.tour = tour;
+
+    // First visit: wire the slim welcome's two paths. Returning visitors had
+    // the overlay hidden by the inline script before first paint.
+    if (!Tour.readFlag()) {
+        document.getElementById('start-tour-btn').addEventListener('click', () => {
+            dismissWelcome();
+            tour.start();
+        });
+    }
+
     // Test handle for browser-driven verification (Playwright)
-    window.__flowlab = { device, solver, renderer, interaction, ui, adaptive, particles };
+    window.__flowlab = { device, solver, renderer, interaction, ui, adaptive, particles, tour };
 
     // Canvas backing stores are display-resolution and set at construction, so
     // they need re-sizing when the container changes. Debounced: a drag-resize
@@ -181,6 +195,10 @@ async function init() {
 
 init().catch((err) => {
     console.error('Initialization failed:', err);
+    // Hide the welcome overlay so the fatal banner and its Reload control are
+    // reachable. The overlay's z-index is above the banner, and its close
+    // button was only wired inside init(), which just failed.
+    document.getElementById('welcome-overlay').style.display = 'none';
     const banner = document.getElementById('fatal-banner');
     document.getElementById('fatal-banner-message').textContent = err.message ?? String(err);
     banner.style.display = 'block';

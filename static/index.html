@@ -5,6 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>FlowLab</title>
   <link rel="stylesheet" href="css/style.css">
+  <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Ccircle cx='8' cy='8' r='7' fill='%234682b4'/%3E%3C/svg%3E">
 </head>
 <body>
 
@@ -27,51 +28,39 @@
 
 <div id="app">
 
-  <!-- Welcome modal overlay -->
+  <!-- Welcome modal overlay (first visit only — gated on localStorage flowlab.tour.v1) -->
   <div id="welcome-overlay">
     <div id="welcome-modal">
-      <button class="welcome-close" id="welcome-close-btn" aria-label="Close">&times;</button>
-
       <div class="welcome-title-row">
         <h1>FlowLab</h1>
         <span class="welcome-badge">WebGPU</span>
       </div>
 
       <p class="welcome-desc">
-        Watch real fluid dynamics unfold in your browser.
-        <strong>FlowLab</strong> solves the <em>2D incompressible Navier-Stokes equations</em>
-        entirely on your GPU &mdash; <strong>pressure, advection, and boundary conditions</strong>
-        all run as WebGPU compute shaders for <em>real-time interactive</em> performance.
-        Drag obstacles through flowing fluid and watch <strong>vortex streets</strong>,
-        <em>recirculation zones</em>, and <strong>flow separation</strong> emerge naturally.
+        Real-time fluid dynamics on your GPU — drag obstacles through flowing
+        fluid and watch vortices emerge.
       </p>
 
-      <div id="gpu-status-card">
-        <div class="gpu-status-badge">
-          <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
-            <path d="M13.78 4.22a.75.75 0 0 1 0 1.06l-7.25 7.25a.75.75 0 0 1-1.06 0L2.22 9.28a.751.751 0 0 1 .018-1.042.751.751 0 0 1 1.042-.018L6 10.94l6.72-6.72a.75.75 0 0 1 1.06 0Z"/>
-          </svg>
-          WebGPU is available
-        </div>
-        <p class="gpu-status-text">
-          You're running on the <strong>GPU renderer</strong> for maximum performance.
-          <br>Adapter: <strong id="gpu-adapter-name">detecting&hellip;</strong>
-        </p>
-        <div class="gpu-detail-card">
-          <div class="gpu-detail-title">GPU-Accelerated Solver &mdash; High Performance</div>
-          <p class="gpu-detail-text">
-            The <strong>pressure solver</strong>, <strong>velocity advection</strong>, and
-            <strong>boundary conditions</strong> all execute as compute shader dispatches on your
-            graphics card. This delivers <em>real-time frame rates</em> even at high grid
-            resolutions, with the CPU free for rendering overlays and particle tracing.
-          </p>
-        </div>
-      </div>
+      <p class="welcome-gpu-line">
+        <span class="gpu-ready-dot"></span>
+        WebGPU ready: <strong id="gpu-adapter-name">detecting&hellip;</strong>
+      </p>
 
-      <button id="start-sim-btn">Start Simulation</button>
-      <p class="welcome-guide-link">New here? <a id="open-guide-from-welcome" href="#">Read the Guide</a></p>
+      <div class="welcome-actions">
+        <button id="start-tour-btn" class="tour-btn tour-btn-primary welcome-cta">Take the Tour</button>
+        <button id="start-sim-btn" class="tour-btn tour-btn-secondary welcome-cta">Skip to Simulation</button>
+      </div>
     </div>
   </div>
+  <script>
+    // Returning visitor? Hide the welcome before first paint — main.js wires
+    // the buttons only when this flag is absent.
+    try {
+      if (localStorage.getItem('flowlab.tour.v1')) {
+        document.getElementById('welcome-overlay').style.display = 'none';
+      }
+    } catch (e) {}
+  </script>
 
   <!-- Guide modal overlay -->
   <div id="guide-overlay">
@@ -186,7 +175,7 @@
         </div>
         <div class="guide-section-body">
           <div class="guide-section-content">
-            <p>Select a shape from the toolbar. Hold <strong>Shift</strong> and move the mouse to rotate the obstacle to any angle.</p>
+            <p>Select a shape from the toolbar. Hold <strong>Shift</strong> and move the mouse to rotate the obstacle to any angle. If the canvas has no obstacle, click once on the flow to insert one; then drag and rotate as usual.</p>
             <div class="guide-shapes-row">
               <div class="guide-shape-item">
                 <svg width="40" height="40" viewBox="0 0 40 40">
@@ -312,6 +301,7 @@
             <div class="guide-preset-block">
               <h4>Backward-Facing Step</h4>
               <p>A sudden expansion in the channel creates a recirculation zone behind the step. Watch the trapped vortex and the downstream reattachment point.</p>
+              <p>This preset starts with no obstacle. The first click on the canvas inserts the active obstacle shape (a circle by default) and activates the drag/rotate ring, shape buttons, and Re/St badges; after that it works like Kármán.</p>
               <div class="guide-illustration">
                 <svg width="280" height="80" viewBox="0 0 280 80">
                   <!-- Step geometry -->
@@ -415,6 +405,9 @@
         </div>
       </div>
 
+      <div class="guide-footer">
+        <button id="btn-replay-tour" class="tour-btn tour-btn-secondary">Replay the Tour</button>
+      </div>
     </div>
   </div>
 
@@ -543,7 +536,7 @@
   </div>
 
   <div class="toolbar">
-    <div class="toolbar-group">
+    <div class="toolbar-group" id="viz-group">
       <span class="toolbar-label">Visualize:</span>
       <label title="Color-coded pressure field (coolwarm colormap)">
         <input type="checkbox" data-viz="pressure"> Pressure
@@ -559,7 +552,7 @@
       </label>
     </div>
 
-    <div class="toolbar-group">
+    <div class="toolbar-group" id="shape-group">
       <span class="toolbar-label">Shape:</span>
       <button class="shape-btn active" data-shape="circle" title="Click to change obstacle shape">Circle</button>
       <button class="shape-btn" data-shape="square" title="Click to change obstacle shape">Square</button>
