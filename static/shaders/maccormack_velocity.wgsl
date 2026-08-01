@@ -40,7 +40,7 @@
 //   the face off its boundary value.
 //
 // WHERE THAT ACTUALLY BITES: solid walls and, above all, a DRAGGED OBSTACLE.
-// interaction.js:202-207 writes the drag velocity vx into every solid cell AND
+// interaction.js:206-208 writes the drag velocity vx into every solid cell AND
 // into the u-face one column to the obstacle's right. That face is FLUID, but
 // it reverts, because the cell to its left is solid. Its own value is vx, and
 // the re-trace uses cu = u[idx] == vx, so the departure point lands a full

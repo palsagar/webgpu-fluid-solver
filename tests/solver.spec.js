@@ -394,7 +394,7 @@ test('velocity advection leaves the inflow BC and solid-cell velocities bit-exac
 
 // The one production case the phi^ seed is genuinely load-bearing for.
 //
-// interaction.js:202-207 rasterises a dragged obstacle by writing the drag
+// interaction.js:206-208 rasterises a dragged obstacle by writing the drag
 // velocity vx into every solid cell AND into the u-face one column to its right
 // (`uData[(i+1)*n+j] = vx`). That face is FLUID -- s[(i+1)*n+j] != 0 -- so no
 // cell-based solid test reaches it, and the test above does not either: it
@@ -3779,6 +3779,8 @@ test('insert-on-click in an obstacle-less preset places the obstacle at a fluid 
     window.dispatchEvent(new MouseEvent('mouseup'));
 
     const showObstacleAfterClick = interaction.showObstacle;
+    const valReAfterClick = document.getElementById('val-re').textContent;
+    const nuAfterClick = solver.params.nu;
     const sAfterClick = await readBuf(solver.solidBuffer);
 
     const ii = Math.round(simClick.x / solver.h);
@@ -3805,6 +3807,8 @@ test('insert-on-click in an obstacle-less preset places the obstacle at a fluid 
     return {
       showObstaclePre,
       showObstacleAfterClick,
+      valReAfterClick,
+      nuAfterClick,
       solidNearClick,
       startX,
       startY,
@@ -3815,6 +3819,8 @@ test('insert-on-click in an obstacle-less preset places the obstacle at a fluid 
 
   expect(r.showObstaclePre).toBe(false);
   expect(r.showObstacleAfterClick).toBe(true);
+  expect(r.valReAfterClick).not.toBe('--');
+  expect(r.nuAfterClick).toBeGreaterThan(0);
   expect(r.solidNearClick).toBe(true);
   expect(r.endX).not.toBe(r.startX);
 });

@@ -51,6 +51,7 @@ export class Interaction {
         this._particleSystem = null;
         this.obstacleAngle = 0;
         this._shiftHeld = false;
+        this.onObstacleInserted = null;
 
         this.mode = 'obstacle'; // 'obstacle' or 'particles'
 
@@ -159,7 +160,10 @@ export class Interaction {
         // obstacle at the click point and un-hides it, so the overlay ring, the
         // shape buttons, and the Re/St badges all acknowledge the body now in
         // the flow — no phantom solid the UI pretends does not exist.
-        if (!this.showObstacle) this.showObstacle = true;
+        if (!this.showObstacle) {
+            this.showObstacle = true;
+            if (this.onObstacleInserted) this.onObstacleInserted();
+        }
         if (shiftKey || this._shiftHeld) {
             this._rotate(clientX, clientY);
             return;

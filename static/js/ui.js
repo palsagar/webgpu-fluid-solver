@@ -76,6 +76,10 @@ export class UI {
         this._bindKeyboard();
         this._bindGuideModal();
 
+        // Insert-on-click un-hides the obstacle, so the Re badge must be
+        // recomputed immediately instead of waiting for the next slider move.
+        this.interaction.onObstacleInserted = () => this._updateReBadge();
+
         // Sync slider displays to current preset values
         this._syncSliders();
     }
