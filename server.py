@@ -3,11 +3,13 @@ import os
 import re
 
 from fastapi import FastAPI
-from fastapi.staticfiles import StaticFiles
 from fastapi.responses import JSONResponse
+from fastapi.staticfiles import StaticFiles
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 from starlette.responses import Response
+
+_logger = logging.getLogger(__name__)
 
 
 class NoCacheMiddleware(BaseHTTPMiddleware):
@@ -41,9 +43,10 @@ def _umami_config() -> tuple[str, str]:
     if not (domain and website_id):
         return "", ""
     if not re.fullmatch(r"https://[^\"'\u003c\u003e\s]+", domain) or not re.fullmatch(
-        r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}", website_id
+        r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}",
+        website_id,
     ):
-        logging.warning("Umami env vars are set but malformed — analytics disabled")
+        _logger.warning("Umami env vars are set but malformed — analytics disabled")
         return "", ""
     return domain, website_id
 
