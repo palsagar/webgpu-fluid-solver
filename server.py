@@ -1,3 +1,5 @@
+import os
+
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import JSONResponse
@@ -29,8 +31,41 @@ class NoCacheMiddleware(BaseHTTPMiddleware):
         return response
 
 
+UMAMI_DOMAIN = os.environ.get("UMAMI_DOMAIN", "").rstrip("/")
+UMAMI_ID = os.environ.get("UMAMI_ID", "")
+
+
+class UmamiInjectionMiddleware(BaseHTTPMiddleware):
+    """Inject the Umami analytics tag into HTML responses when configured.
+
+    Same pattern as the sibling static site's nginx sub_filter: the tag never
+    lives in the repo — it is spliced in at request time from the UMAMI_DOMAIN /
+    UMAMI_ID env vars. Either var empty => pass-through, so local dev and CI
+    are never tracked.
+    """
+
+    async def dispatch(self, request: Request, call_next) -> Response:
+        response = await call_next(request)
+        if not (UMAMI_DOMAIN and UMAMI_ID):
+            return response
+        if "text/html" not in response.headers.get("content-type", ""):
+            return response
+        body = b""
+        async for chunk in response.body_iterator:
+            body += chunk
+        tag = (
+            f'<script defer src="{UMAMI_DOMAIN}/script.js" '
+            f'data-website-id="{UMAMI_ID}"></script>'
+        ).encode()
+        body = body.replace(b"</title>", b"</title>" + tag, 1)
+        headers = dict(response.headers)
+        headers["content-length"] = str(len(body))
+        return Response(content=body, status_code=response.status_code, headers=headers)
+
+
 app = FastAPI()
 app.add_middleware(NoCacheMiddleware)
+app.add_middleware(UmamiInjectionMiddleware)
 
 @app.get("/api/health")
 def health():
