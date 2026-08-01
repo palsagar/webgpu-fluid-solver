@@ -155,9 +155,11 @@ export class Interaction {
             }
             return; // Never fall through to drag in particles mode
         }
-        // No obstacle is currently shown (e.g. obstacle-less preset); refuse to
-        // rasterize a hidden solid or begin a drag/rotation that cannot be seen.
-        if (!this.showObstacle) return;
+        // Obstacle-less preset (backwardStep): the first pointerdown INSERTS the
+        // obstacle at the click point and un-hides it, so the overlay ring, the
+        // shape buttons, and the Re/St badges all acknowledge the body now in
+        // the flow — no phantom solid the UI pretends does not exist.
+        if (!this.showObstacle) this.showObstacle = true;
         if (shiftKey || this._shiftHeld) {
             this._rotate(clientX, clientY);
             return;

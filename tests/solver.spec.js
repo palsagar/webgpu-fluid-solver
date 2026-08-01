@@ -3659,10 +3659,11 @@ test('switching to an obstacle-less preset during a drag keeps the old centre fl
 });
 
 /**
- * ADR-0011 obstacle-less preset guard: while showObstacle is false, a fresh
- * canvas drag must not create a hidden solid or inject stored wall velocity.
+ * ADR-0011 insert-on-click: in an obstacle-less preset, the first pointer-down
+ * inserts the obstacle at the click point and makes it visible, so the overlay
+ * ring, shape buttons, and badges all acknowledge the body.
  */
-test('a drag in an obstacle-less preset creates no hidden solid or stored velocity', async ({ page }) => {
+test('a drag in an obstacle-less preset inserts a visible obstacle at the click point', async ({ page }) => {
   await boot(page);
   const r = await page.evaluate(async () => {
     const { solver, device, interaction } = window.__flowlab;
@@ -3687,48 +3688,142 @@ test('a drag in an obstacle-less preset creates no hidden solid or stored veloci
     document.querySelector('[data-preset="backward-step"]').click();
 
     const sBefore = await readBuf(solver.solidBuffer);
-    const uBefore = await readBuf(solver.velocityBuffers.u);
 
     const rect = document.querySelector('canvas').getBoundingClientRect();
     const cx = rect.left + rect.width / 2, cy = rect.top + rect.height / 2;
-    // Attempt a fresh drag at the centre of the field.
+    const simClick = interaction.screenToSim(cx, cy);
+    const radiusCells = Math.ceil(interaction.obstacleRadius / solver.h);
+
+    // First pointer-down inserts the obstacle and starts a drag.
     interaction._onPointerDown(cx, cy, false);
     interaction._onPointerMove(cx + 8, cy, false);
     window.dispatchEvent(new MouseEvent('mouseup'));
 
     const sAfter = await readBuf(solver.solidBuffer);
-    const uAfter = await readBuf(solver.velocityBuffers.u);
 
-    let solidsCreated = 0, maxVelocityOutsideInflow = 0;
+    // Solid must exist within the obstacle radius of the click point.
+    const ii = Math.round(simClick.x / solver.h);
+    const jj = Math.round(simClick.y / solver.h);
+    let solidNearClick = false;
+    for (let di = -radiusCells; di <= radiusCells && !solidNearClick; di++) {
+      for (let dj = -radiusCells; dj <= radiusCells; dj++) {
+        const i = ii + di, j = jj + dj;
+        if (i < 0 || i >= numX || j < 0 || j >= n) continue;
+        if (sAfter[i * n + j] === 0) {
+          solidNearClick = true;
+          break;
+        }
+      }
+    }
+
+    let solidsCreated = 0;
     for (let i = 1; i < numX - 1; i++) {
       for (let j = 1; j < n - 1; j++) {
         const k = i * n + j;
         if (sBefore[k] !== 0 && sAfter[k] === 0) solidsCreated++;
-        if (i !== 1) {
-          maxVelocityOutsideInflow = Math.max(maxVelocityOutsideInflow, Math.abs(uAfter[k]));
-        }
       }
     }
 
     return {
       showObstacle: interaction.showObstacle,
       dragging: interaction.dragging,
+      solidNearClick,
       solidsCreated,
-      maxVelocityOutsideInflow,
     };
   });
 
-  expect(r.showObstacle).toBe(false);
+  expect(r.showObstacle).toBe(true);
   expect(r.dragging).toBe(false);
-  expect(r.solidsCreated).toBe(0);
-  expect(r.maxVelocityOutsideInflow).toBe(0);
+  expect(r.solidNearClick).toBe(true);
+  expect(r.solidsCreated).toBeGreaterThan(0);
+});
+
+/**
+ * Insert-on-click in an obstacle-less preset (backward-step): the first
+ * pointer-down un-hides the obstacle and rasterizes it at the click point.
+ * A subsequent drag tracks the obstacle center.
+ */
+test('insert-on-click in an obstacle-less preset places the obstacle at a fluid spot and tracks drags', async ({ page }) => {
+  await boot(page);
+  const r = await page.evaluate(async () => {
+    const { solver, device, interaction } = window.__flowlab;
+    solver.paused = true;
+    const n = solver.numY, numX = solver.numX;
+    const size = numX * n * 4;
+    const readBuf = async (src) => {
+      const staging = device.createBuffer({
+        size, usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST,
+      });
+      const enc = device.createCommandEncoder();
+      enc.copyBufferToBuffer(src, 0, staging, 0, size);
+      device.queue.submit([enc.finish()]);
+      await staging.mapAsync(GPUMapMode.READ);
+      const out = new Float32Array(staging.getMappedRange().slice(0));
+      staging.unmap();
+      staging.destroy();
+      return out;
+    };
+
+    // Load the obstacle-less backward-step preset.
+    document.querySelector('[data-preset="backward-step"]').click();
+
+    const rect = document.querySelector('canvas').getBoundingClientRect();
+    const cx = rect.left + rect.width * 0.6, cy = rect.top + rect.height * 0.5;
+    const simClick = interaction.screenToSim(cx, cy);
+    const radiusCells = Math.ceil(interaction.obstacleRadius / solver.h);
+
+    const showObstaclePre = interaction.showObstacle;
+
+    // Click at a fluid spot to insert the obstacle.
+    interaction._onPointerDown(cx, cy, false);
+    window.dispatchEvent(new MouseEvent('mouseup'));
+
+    const showObstacleAfterClick = interaction.showObstacle;
+    const sAfterClick = await readBuf(solver.solidBuffer);
+
+    const ii = Math.round(simClick.x / solver.h);
+    const jj = Math.round(simClick.y / solver.h);
+    let solidNearClick = false;
+    for (let di = -radiusCells; di <= radiusCells && !solidNearClick; di++) {
+      for (let dj = -radiusCells; dj <= radiusCells; dj++) {
+        const i = ii + di, j = jj + dj;
+        if (i < 0 || i >= numX || j < 0 || j >= n) continue;
+        if (sAfterClick[i * n + j] === 0) {
+          solidNearClick = true;
+          break;
+        }
+      }
+    }
+
+    // Drag a short distance and check the obstacle center follows.
+    const startX = interaction.obstacleX;
+    const startY = interaction.obstacleY;
+    interaction._onPointerDown(cx + 20, cy, false);
+    interaction._onPointerMove(cx + 40, cy, false);
+    window.dispatchEvent(new MouseEvent('mouseup'));
+
+    return {
+      showObstaclePre,
+      showObstacleAfterClick,
+      solidNearClick,
+      startX,
+      startY,
+      endX: interaction.obstacleX,
+      endY: interaction.obstacleY,
+    };
+  });
+
+  expect(r.showObstaclePre).toBe(false);
+  expect(r.showObstacleAfterClick).toBe(true);
+  expect(r.solidNearClick).toBe(true);
+  expect(r.endX).not.toBe(r.startX);
 });
 
 /**
  * ADR-0011 hidden-rotation path: a Shift+mousemove over the canvas without a
  * prior pointer-down must not rasterize a stale obstacle while an obstacle-less
- * preset (backwardStep) is active. The _onPointerDown guard already refuses the
- * drag/rotation start; this catches the pointer-move path that bypasses it.
+ * preset (backwardStep) is active. The _onPointerDown guard now inserts on the
+ * first pointer-down; this catches the pointer-move path that bypasses it.
  */
 test('Shift+mousemove in an obstacle-less preset creates no hidden solid or geometry mutation', async ({ page }) => {
   await boot(page);
