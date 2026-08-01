@@ -43,7 +43,9 @@ test('(c) trackEvent forwards name and props to window.umami.track', async ({ pa
   expect(calls).toEqual([['test-event', { foo: 1 }]]);
 });
 
-/** Stub window.umami before page scripts run; events land in window.__umamiCalls. */
+/** Stub window.umami before page scripts run; events land in window.__umamiCalls.
+ *  addInitScript only applies to LATER navigations, so each test below calls
+ *  page.goto('/') again after stubbing (the beforeEach goto runs without it). */
 async function stubUmami(page) {
   await page.addInitScript(() => {
     window.__umamiCalls = [];

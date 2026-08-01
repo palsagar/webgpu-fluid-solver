@@ -79,6 +79,9 @@ export class UI {
 
         // Insert-on-click un-hides the obstacle, so the Re badge must be
         // recomputed immediately instead of waiting for the next slider move.
+        // This callback composes with main.js's analytics assignment: main.js
+        // sets onObstacleInserted BEFORE this constructor runs, and the chain
+        // below invokes that previous value after the badge update.
         const prevOnObstacleInserted = this.interaction.onObstacleInserted;
         this.interaction.onObstacleInserted = () => {
             this._updateReBadge();

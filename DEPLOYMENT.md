@@ -54,6 +54,8 @@ Pageviews are automatic. Custom events: `tour-started`, `tour-completed`,
 - **Change or disable analytics:** edit/remove the env vars + Restart. No rebuild.
 - With either var unset the middleware is a pass-through — local dev and the
   Playwright suite are never tracked.
+- Malformed values (bad scheme, whitespace/quotes, non-UUID ID) are treated as
+  unconfigured — the app logs a warning at startup and serves untracked pages.
 - **Umami is cookieless** — no consent banner required.
 - If you enable *domain enforcement* on the Umami website, make sure
   `flow.gpuphysics.dev` is in its allowed-domains list, or events are dropped.

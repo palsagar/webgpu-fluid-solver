@@ -1,4 +1,6 @@
+import logging
 import os
+import re
 
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
@@ -31,8 +33,22 @@ class NoCacheMiddleware(BaseHTTPMiddleware):
         return response
 
 
-UMAMI_DOMAIN = os.environ.get("UMAMI_DOMAIN", "").rstrip("/")
-UMAMI_ID = os.environ.get("UMAMI_ID", "")
+def _umami_config() -> tuple[str, str]:
+    """Read and validate the Umami env vars. Malformed values are treated as
+    unconfigured (inert) — a typo in Coolify must never corrupt the page."""
+    domain = os.environ.get("UMAMI_DOMAIN", "").rstrip("/")
+    website_id = os.environ.get("UMAMI_ID", "")
+    if not (domain and website_id):
+        return "", ""
+    if not re.fullmatch(r"https?://[^\"'<>\s]+", domain) or not re.fullmatch(
+        r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}", website_id
+    ):
+        logging.warning("Umami env vars are set but malformed — analytics disabled")
+        return "", ""
+    return domain, website_id
+
+
+UMAMI_DOMAIN, UMAMI_ID = _umami_config()
 
 
 class UmamiInjectionMiddleware(BaseHTTPMiddleware):
