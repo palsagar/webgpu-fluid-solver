@@ -1,3 +1,4 @@
+import { trackEvent } from './analytics.js';
 import { FluidSolver } from './fluid-solver.js';
 import { Renderer } from './renderer.js';
 import { Interaction } from './interaction.js';
@@ -82,6 +83,9 @@ async function init() {
     const particles = new ParticleSystem();
     renderer.particleSystem = particles;
     interaction._particleSystem = particles;
+    // Analytics: obstacle-inserted fires only on the insert-on-click path in
+    // obstacle-less presets (interaction.js invokes this callback there).
+    interaction.onObstacleInserted = () => trackEvent('obstacle-inserted');
 
     const ui = new UI(solver, renderer, interaction);
 

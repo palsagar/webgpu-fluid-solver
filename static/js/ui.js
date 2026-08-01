@@ -1,3 +1,4 @@
+import { trackEvent } from './analytics.js';
 import { loadPreset, PRESETS } from './presets.js';
 import {
     honestWindow, windowState, fmtRe, reFromSliderPos,
@@ -78,7 +79,14 @@ export class UI {
 
         // Insert-on-click un-hides the obstacle, so the Re badge must be
         // recomputed immediately instead of waiting for the next slider move.
-        this.interaction.onObstacleInserted = () => this._updateReBadge();
+        // This callback composes with main.js's analytics assignment: main.js
+        // sets onObstacleInserted BEFORE this constructor runs, and the chain
+        // below invokes that previous value after the badge update.
+        const prevOnObstacleInserted = this.interaction.onObstacleInserted;
+        this.interaction.onObstacleInserted = () => {
+            this._updateReBadge();
+            prevOnObstacleInserted?.();
+        };
 
         // Sync slider displays to current preset values
         this._syncSliders();
@@ -402,11 +410,12 @@ export class UI {
     /** Attach click handlers to preset buttons, mapping kebab-case attributes to preset keys. */
     _bindPresetButtons() {
         document.querySelectorAll('[data-preset]').forEach(btn => {
-            btn.addEventListener('click', () => {
+            btn.addEventListener('click', (e) => {
                 const attrName = btn.dataset.preset;
                 const presetKey = PRESET_KEY_MAP[attrName];
                 if (!presetKey) return;
                 this._loadAndApplyPreset(presetKey);
+                if (e.isTrusted) trackEvent('preset-changed', { preset: presetKey });
                 document.querySelectorAll('[data-preset]').forEach(b => b.classList.remove('active'));
                 btn.classList.add('active');
             });
@@ -588,7 +597,7 @@ export class UI {
         }
 
         document.querySelectorAll('[data-tier]').forEach(btn => {
-            btn.addEventListener('click', () => {
+            btn.addEventListener('click', (e) => {
                 const idx = parseInt(btn.dataset.tier);
                 if (!Number.isInteger(idx) || idx < 0 || idx >= this.adaptive?.tiers.length) return;
                 if (this.adaptive) {
@@ -597,6 +606,7 @@ export class UI {
                     this.adaptive.applyTier();
                     document.querySelectorAll('[data-tier]').forEach(b => b.classList.remove('active'));
                     btn.classList.add('active');
+                    if (e.isTrusted) trackEvent('resolution-changed', { tier: idx });
                 }
             });
         });
@@ -643,6 +653,7 @@ export class UI {
                     if (idx < keys.length) {
                         const presetKey = keys[idx];
                         this._loadAndApplyPreset(presetKey);
+                        trackEvent('preset-changed', { preset: presetKey });
                         const attrName = Object.keys(PRESET_KEY_MAP).find(k => PRESET_KEY_MAP[k] === presetKey);
                         document.querySelectorAll('[data-preset]').forEach(b => {
                             b.classList.toggle('active', b.dataset.preset === attrName);

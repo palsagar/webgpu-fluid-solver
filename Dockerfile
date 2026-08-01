@@ -15,6 +15,10 @@ RUN useradd -u 1000 app && chown -R app:app /app
 USER app
 
 ENV PORT=8000
+# Umami analytics is injected at request time by UmamiInjectionMiddleware,
+# driven by these runtime env vars — set them in Coolify. Empty default = inert.
+ENV UMAMI_DOMAIN="" \
+    UMAMI_ID=""
 EXPOSE 8000
 
 HEALTHCHECK --interval=10s --timeout=3s --start-period=5s \

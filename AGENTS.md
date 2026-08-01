@@ -17,6 +17,7 @@ Open `http://localhost:8000` in Chrome (WebGPU required).
 - **Backend**: FastAPI with `NoCacheMiddleware` (development only; serves static files).
 - **No build step**: vanilla ES modules.
 - **Deployment**: Dockerfile with health check; supports `PORT` env var.
+- **Analytics**: Umami tag injected at request time by `UmamiInjectionMiddleware` (env `UMAMI_DOMAIN`/`UMAMI_ID`, empty = inert; same pattern as the sibling site's nginx sub_filter). Custom events via `static/js/analytics.js` `trackEvent` — no-op when the tag is absent. Ops runbook: `DEPLOYMENT.md`.
 
 ## Key Technical Decisions
 ### WebGPU Bind Group Layouts
