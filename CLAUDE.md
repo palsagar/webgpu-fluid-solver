@@ -67,7 +67,7 @@ ES modules are cached aggressively by browsers. The server includes `NoCacheMidd
 Use discrete buttons (not a range slider) for grid resolution tiers. A continuous slider fires `input` events during drag, each triggering expensive GPU buffer destruction/recreation. Discrete buttons fire once per click. Tiers: 64–1024 (1024 added with GPU field rendering).
 
 ### Screenshots
-`static/screenshots/` holds README images (karman-smoke, karman-pressure). `.gitignore` blocks `*.png` globally but has `!static/screenshots/*.png` exception.
+`static/screenshots/` holds README images (karman-smoke, guide). `.gitignore` blocks `*.png` globally but has `!static/screenshots/*.png` exception.
 
 ### Author Link
 Title bar includes an "Author" link to sagar-pal.dev — same pattern as the Gray-Scott sibling project. Order: Author | GitHub pill | Guide(?).

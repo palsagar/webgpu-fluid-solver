@@ -12,9 +12,9 @@ Drag obstacles through the flow. Watch a vortex street form — and die when you
 
 </div>
 
-![Kármán vortex street — periodic vortex shedding behind a cylinder](static/screenshots/karman-smoke.png)
+![Kármán vortex street — periodic vortex shedding behind a cylinder, live on the GPU](static/screenshots/karman-smoke.png)
 
-![Pressure field — coolwarm colormap showing high and low pressure regions](static/screenshots/karman-pressure.png)
+![FlowLab Guide — built-in documentation with the Replay the Tour entry point](static/screenshots/guide.png)
 
 ## Features
 
