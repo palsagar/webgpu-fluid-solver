@@ -407,12 +407,12 @@ export class UI {
     /** Attach click handlers to preset buttons, mapping kebab-case attributes to preset keys. */
     _bindPresetButtons() {
         document.querySelectorAll('[data-preset]').forEach(btn => {
-            btn.addEventListener('click', () => {
+            btn.addEventListener('click', (e) => {
                 const attrName = btn.dataset.preset;
                 const presetKey = PRESET_KEY_MAP[attrName];
                 if (!presetKey) return;
                 this._loadAndApplyPreset(presetKey);
-                trackEvent('preset-changed', { preset: presetKey });
+                if (e.isTrusted) trackEvent('preset-changed', { preset: presetKey });
                 document.querySelectorAll('[data-preset]').forEach(b => b.classList.remove('active'));
                 btn.classList.add('active');
             });
@@ -594,7 +594,7 @@ export class UI {
         }
 
         document.querySelectorAll('[data-tier]').forEach(btn => {
-            btn.addEventListener('click', () => {
+            btn.addEventListener('click', (e) => {
                 const idx = parseInt(btn.dataset.tier);
                 if (!Number.isInteger(idx) || idx < 0 || idx >= this.adaptive?.tiers.length) return;
                 if (this.adaptive) {
@@ -603,7 +603,7 @@ export class UI {
                     this.adaptive.applyTier();
                     document.querySelectorAll('[data-tier]').forEach(b => b.classList.remove('active'));
                     btn.classList.add('active');
-                    trackEvent('resolution-changed', { tier: idx });
+                    if (e.isTrusted) trackEvent('resolution-changed', { tier: idx });
                 }
             });
         });

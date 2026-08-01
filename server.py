@@ -48,6 +48,9 @@ class UmamiInjectionMiddleware(BaseHTTPMiddleware):
         response = await call_next(request)
         if not (UMAMI_DOMAIN and UMAMI_ID):
             return response
+        # HEAD passes through untouched: StaticFiles sends no body for HEAD,
+        # so rebuilding would zero Content-Length (and its validators are
+        # consistent with the uninjected representation, like nginx sub_filter).
         if request.method != "GET":
             return response
         if response.status_code != 200:
@@ -63,6 +66,10 @@ class UmamiInjectionMiddleware(BaseHTTPMiddleware):
         ).encode()
         body = body.replace(b"</title>", b"</title>" + tag, 1)
         headers = dict(response.headers)
+        # The rewritten body is a different representation than the file on
+        # disk — StaticFiles' validators must not survive onto it.
+        for h in ("etag", "last-modified", "accept-ranges"):
+            headers.pop(h, None)
         headers["content-length"] = str(len(body))
         return Response(content=body, status_code=response.status_code, headers=headers)
 

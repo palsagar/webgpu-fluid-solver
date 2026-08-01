@@ -104,3 +104,16 @@ test('(g) insert-on-click in an obstacle-less preset fires obstacle-inserted', a
   await page.locator('#overlay-canvas').click();
   await expect.poll(() => eventNames(page)).toContain('obstacle-inserted');
 });
+
+test('(h) tour reset clicks do not fire preset/resolution events', async ({ page }) => {
+  await stubUmami(page);
+  await page.goto('/');
+  await page.waitForFunction(() => window.__flowlab?.tour, null, { timeout: 20_000 });
+  await page.locator('#start-tour-btn').click();
+  await expect.poll(() => eventNames(page)).toContain('tour-started');
+  await page.keyboard.press('Escape');
+  await expect.poll(() => eventNames(page)).toContain('tour-skipped');
+  const names = await eventNames(page);
+  expect(names).not.toContain('preset-changed');
+  expect(names).not.toContain('resolution-changed');
+});
