@@ -1,3 +1,5 @@
+import { trackEvent } from './analytics.js';
+
 /**
  * Onboarding tour — spotlight walkthrough of FlowLab's features.
  * Spec: docs/superpowers/specs/2026-07-31-onboarding-tour-design.md
@@ -71,6 +73,7 @@ export class Tour {
         this._resetToCleanState();
         this._buildDom();
         this._active = true;
+        trackEvent('tour-started');
         this._onKeydown = (e) => { if (e.key === 'Escape') this.skip(); };
         document.addEventListener('keydown', this._onKeydown);
         let resizeTimer = null;
@@ -102,6 +105,7 @@ export class Tour {
 
     _end(result) {
         if (!this._active) return;
+        trackEvent(result === 'skipped' ? 'tour-skipped' : 'tour-completed');
         this._teardownCurrentAction();
         const step = this._steps[this._index];
         if (step?.onLeave) step.onLeave(this._ctx);

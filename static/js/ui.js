@@ -1,3 +1,4 @@
+import { trackEvent } from './analytics.js';
 import { loadPreset, PRESETS } from './presets.js';
 import {
     honestWindow, windowState, fmtRe, reFromSliderPos,
@@ -78,7 +79,11 @@ export class UI {
 
         // Insert-on-click un-hides the obstacle, so the Re badge must be
         // recomputed immediately instead of waiting for the next slider move.
-        this.interaction.onObstacleInserted = () => this._updateReBadge();
+        const prevOnObstacleInserted = this.interaction.onObstacleInserted;
+        this.interaction.onObstacleInserted = () => {
+            this._updateReBadge();
+            prevOnObstacleInserted?.();
+        };
 
         // Sync slider displays to current preset values
         this._syncSliders();
@@ -407,6 +412,7 @@ export class UI {
                 const presetKey = PRESET_KEY_MAP[attrName];
                 if (!presetKey) return;
                 this._loadAndApplyPreset(presetKey);
+                trackEvent('preset-changed', { preset: presetKey });
                 document.querySelectorAll('[data-preset]').forEach(b => b.classList.remove('active'));
                 btn.classList.add('active');
             });
@@ -597,6 +603,7 @@ export class UI {
                     this.adaptive.applyTier();
                     document.querySelectorAll('[data-tier]').forEach(b => b.classList.remove('active'));
                     btn.classList.add('active');
+                    trackEvent('resolution-changed', { tier: idx });
                 }
             });
         });
@@ -643,6 +650,7 @@ export class UI {
                     if (idx < keys.length) {
                         const presetKey = keys[idx];
                         this._loadAndApplyPreset(presetKey);
+                        trackEvent('preset-changed', { preset: presetKey });
                         const attrName = Object.keys(PRESET_KEY_MAP).find(k => PRESET_KEY_MAP[k] === presetKey);
                         document.querySelectorAll('[data-preset]').forEach(b => {
                             b.classList.toggle('active', b.dataset.preset === attrName);
