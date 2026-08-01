@@ -48,6 +48,10 @@ class UmamiInjectionMiddleware(BaseHTTPMiddleware):
         response = await call_next(request)
         if not (UMAMI_DOMAIN and UMAMI_ID):
             return response
+        if request.method != "GET":
+            return response
+        if response.status_code != 200:
+            return response
         if "text/html" not in response.headers.get("content-type", ""):
             return response
         body = b""
