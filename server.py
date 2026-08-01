@@ -40,7 +40,7 @@ def _umami_config() -> tuple[str, str]:
     website_id = os.environ.get("UMAMI_ID", "")
     if not (domain and website_id):
         return "", ""
-    if not re.fullmatch(r"https?://[^\"'<>\s]+", domain) or not re.fullmatch(
+    if not re.fullmatch(r"https://[^\"'\u003c\u003e\s]+", domain) or not re.fullmatch(
         r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}", website_id
     ):
         logging.warning("Umami env vars are set but malformed — analytics disabled")
@@ -80,7 +80,10 @@ class UmamiInjectionMiddleware(BaseHTTPMiddleware):
             f'<script defer src="{UMAMI_DOMAIN}/script.js" '
             f'data-website-id="{UMAMI_ID}"></script>'
         ).encode()
-        body = body.replace(b"</title>", b"</title>" + tag, 1)
+        # Anchor: just before </body>, AFTER the app module tag. Deferred
+        # scripts execute in document order, so a slow analytics fetch can
+        # never delay main.js (the reverse ordering would stall app boot).
+        body = body.replace(b"</body>", tag + b"</body>", 1)
         headers = dict(response.headers)
         # The rewritten body is a different representation than the file on
         # disk — StaticFiles' validators must not survive onto it.

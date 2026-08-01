@@ -13,7 +13,7 @@ image. `UmamiInjectionMiddleware` (see `server.py`) inserts:
 <script defer src="${UMAMI_DOMAIN}/script.js" data-website-id="${UMAMI_ID}"></script>
 ```
 
-into the HTML page immediately after `</title>`, with the values read from the
+into the HTML page just before `</body>`, with the values read from the
 container env at process start.
 
 ### One-time setup

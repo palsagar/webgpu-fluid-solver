@@ -20,5 +20,12 @@ export default defineConfig({
     url: 'http://127.0.0.1:8321/api/health',
     reuseExistingServer: false,
     timeout: 60_000,
+    // Force the analytics contract under test: env-less = inert, even if the
+    // operator's shell exports real UMAMI_* values (they'd otherwise flip test
+    // (a) and send suite traffic to the production analytics).
+    env: {
+      UMAMI_DOMAIN: '',
+      UMAMI_ID: '',
+    },
   },
 });
